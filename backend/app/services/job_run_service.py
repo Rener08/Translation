@@ -1,0 +1,426 @@
+import logging
+import re
+from dataclasses import dataclass
+from typing import Literal
+
+from app.config import get_env_str
+from app.services.content_context_service import create_content_context
+from app.services.participant_candidate_service import extract_candidate_people
+from app.services.speaker_diarization_service import (
+    SpeakerDiarizationConfigurationError,
+    SpeakerDiarizationRuntimeError,
+    assign_speakers_to_transcript,
+    diarize_audio_file,
+)
+from app.services.speaker_identity_service import (
+    apply_speaker_identities,
+    resolve_speaker_identities,
+)
+from app.services.transcription_service import (
+    TranscriptSegment,
+    TranscriptionResult,
+    transcribe_audio_file,
+)
+from app.services.translation_service import (
+    TranslationSegment,
+    translate_segments_to_chinese,
+)
+from app.services.video_source_service import (
+    SOURCE_MODE_SUBTITLE_FIRST,
+    SourceMode,
+    VideoSourceResult,
+    fetch_video_source_from_info,
+)
+from app.services.yt_dlp_service import (
+    VideoMetadata,
+    build_video_metadata,
+    extract_video_info,
+)
+
+
+logger = logging.getLogger(__name__)
+SENTENCE_END_PATTERN = re.compile(r"[.!?。！？…][\"')\]]*$")
+DEFAULT_TRANSLATION_COMPACT_SEGMENT_THRESHOLD = 50
+DEFAULT_TRANSLATION_COMPACT_MAX_WORDS = 36
+DEFAULT_TRANSLATION_COMPACT_MAX_DURATION_SEC = 14.0
+DEFAULT_TRANSLATION_COMPACT_MAX_GAP_SEC = 1.3
+
+
+class JobRunError(Exception):
+    """Raised when the end-to-end job pipeline cannot produce a valid result."""
+
+
+@dataclass(frozen=True)
+class JobRunResult:
+    video: VideoMetadata
+    source_type: Literal["captions", "audio"]
+    transcript_en: TranscriptionResult
+    translation_zh_segments: list[TranslationSegment]
+    content_context_id: str
+
+
+def run_video_job(
+    url: str,
+    source_mode: SourceMode = SOURCE_MODE_SUBTITLE_FIRST,
+) -> JobRunResult:
+    return run_video_job_with_translation_config(url, source_mode=source_mode)
+
+
+def run_video_job_with_translation_config(
+    url: str,
+    translation_config: dict[str, object] | None = None,
+    source_mode: SourceMode = SOURCE_MODE_SUBTITLE_FIRST,
+) -> JobRunResult:
+    logger.info("Starting job run for %s", url)
+    video_info = extract_video_info(url)
+    video = build_video_metadata(video_info)
+    logger.info("Loaded metadata for %s (%s)", video.video_id, video.title)
+
+    source = fetch_video_source_from_info(url, video_info, source_mode=source_mode)
+    logger.info("Selected source type %s for %s", source.source_type, video.video_id)
+
+    transcript = _build_english_transcript(source)
+    if _job_run_should_attach_speakers():
+        transcript = _maybe_attach_speakers(
+            video=video, source=source, transcript=transcript
+        )
+    else:
+        logger.info(
+            "Skipping speaker attachment during main job run for %s", video.video_id
+        )
+
+    if _should_compact_transcript_for_translation(source.source_type, transcript):
+        compacted_transcript = _compact_transcript_segments(transcript)
+        if len(compacted_transcript.segments) < len(transcript.segments):
+            logger.info(
+                "Compacted transcript segments for translation from %s to %s for %s",
+                len(transcript.segments),
+                len(compacted_transcript.segments),
+                video.video_id,
+            )
+            transcript = compacted_transcript
+
+    logger.info(
+        "Prepared English transcript with %s segments for %s",
+        len(transcript.segments),
+        video.video_id,
+    )
+
+    translations = translate_segments_to_chinese(
+        [
+            {
+                "index": segment.index,
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+            }
+            for segment in transcript.segments
+        ],
+        translation_config=translation_config,
+    )
+    logger.info(
+        "Translated %s segments for %s",
+        len(translations),
+        video.video_id,
+    )
+    content_context_id = create_content_context(
+        video_title=video.title,
+        transcript_en=transcript.text,
+        translation_zh=_translation_segments_to_text(translations),
+    )
+
+    return JobRunResult(
+        video=video,
+        source_type=source.source_type,
+        transcript_en=transcript,
+        translation_zh_segments=translations,
+        content_context_id=content_context_id,
+    )
+
+
+def _build_english_transcript(source: VideoSourceResult) -> TranscriptionResult:
+    if source.source_type == "captions":
+        return _transcript_from_caption_text(source.text)
+
+    if source.source_type == "audio":
+        if not source.audio_file_path:
+            raise JobRunError("Audio source did not include an audio_file_path.")
+        transcript = transcribe_audio_file(source.audio_file_path)
+        return _ensure_transcript_segments(transcript)
+
+    raise JobRunError(
+        f"Unsupported source_type returned by source service: {source.source_type}"
+    )
+
+
+def _transcript_from_caption_text(text: str | None) -> TranscriptionResult:
+    normalized_text = (text or "").strip()
+    if not normalized_text:
+        raise JobRunError("Caption source did not include caption text.")
+
+    lines = [line.strip() for line in normalized_text.splitlines() if line.strip()]
+    if not lines:
+        raise JobRunError("Caption source did not include usable caption lines.")
+
+    merged_lines = _merge_caption_lines(lines)
+
+    return TranscriptionResult(
+        language="en",
+        text="\n".join(merged_lines),
+        segments=[
+            TranscriptSegment(
+                index=index,
+                start=0.0,
+                end=0.0,
+                text=line,
+            )
+            for index, line in enumerate(merged_lines)
+        ],
+    )
+
+
+def _ensure_transcript_segments(result: TranscriptionResult) -> TranscriptionResult:
+    if result.segments:
+        return result
+
+    normalized_text = result.text.strip()
+    if not normalized_text:
+        raise JobRunError("Transcription result did not include transcript text.")
+
+    return TranscriptionResult(
+        language=result.language or "en",
+        text=normalized_text,
+        segments=[
+            TranscriptSegment(
+                index=0,
+                start=0.0,
+                end=0.0,
+                text=normalized_text,
+            )
+        ],
+    )
+
+
+def _maybe_attach_speakers(
+    video: VideoMetadata,
+    source: VideoSourceResult,
+    transcript: TranscriptionResult,
+) -> TranscriptionResult:
+    if source.source_type != "audio" or not source.audio_file_path:
+        return transcript
+
+    try:
+        diarization = diarize_audio_file(source.audio_file_path)
+        diarized_transcript = assign_speakers_to_transcript(transcript, diarization)
+        candidates = extract_candidate_people(video)
+        if not candidates:
+            return diarized_transcript
+
+        identities = resolve_speaker_identities(diarized_transcript, candidates)
+        return apply_speaker_identities(diarized_transcript, identities)
+    except (
+        SpeakerDiarizationConfigurationError,
+        SpeakerDiarizationRuntimeError,
+    ) as error:
+        logger.warning("Speaker attachment skipped for %s: %s", video.video_id, error)
+        return transcript
+
+
+def _job_run_should_attach_speakers() -> bool:
+    raw_value = get_env_str("JOB_RUN_ATTACH_SPEAKERS").lower()
+    return raw_value in {"1", "true", "yes", "on"}
+
+
+def _should_compact_transcript_for_translation(
+    source_type: str,
+    transcript: TranscriptionResult,
+) -> bool:
+    if source_type != "audio":
+        return False
+    if len(transcript.segments) < _get_positive_int_env(
+        "JOB_TRANSLATION_COMPACT_SEGMENT_THRESHOLD",
+        DEFAULT_TRANSLATION_COMPACT_SEGMENT_THRESHOLD,
+    ):
+        return False
+    raw_value = get_env_str("JOB_TRANSLATION_COMPACT_SEGMENTS").lower()
+    if raw_value in {"0", "false", "no", "off"}:
+        return False
+    return True
+
+
+def _compact_transcript_segments(
+    transcript: TranscriptionResult,
+) -> TranscriptionResult:
+    max_words = _get_positive_int_env(
+        "JOB_TRANSLATION_COMPACT_MAX_WORDS",
+        DEFAULT_TRANSLATION_COMPACT_MAX_WORDS,
+    )
+    max_duration_sec = _get_positive_float_env(
+        "JOB_TRANSLATION_COMPACT_MAX_DURATION_SEC",
+        DEFAULT_TRANSLATION_COMPACT_MAX_DURATION_SEC,
+    )
+    max_gap_sec = _get_positive_float_env(
+        "JOB_TRANSLATION_COMPACT_MAX_GAP_SEC",
+        DEFAULT_TRANSLATION_COMPACT_MAX_GAP_SEC,
+    )
+
+    compacted: list[TranscriptSegment] = []
+    current: TranscriptSegment | None = None
+
+    for segment in transcript.segments:
+        text = segment.text.strip()
+        if not text:
+            continue
+
+        candidate = TranscriptSegment(
+            index=segment.index,
+            start=segment.start,
+            end=segment.end,
+            text=text,
+            speaker=segment.speaker,
+        )
+
+        if current is None:
+            current = candidate
+            continue
+
+        gap_sec = max(0.0, candidate.start - current.end)
+        speaker_changed = bool(
+            current.speaker and candidate.speaker and current.speaker != candidate.speaker
+        )
+        candidate_word_count = _word_count(current.text) + _word_count(candidate.text)
+        candidate_duration_sec = max(candidate.end, current.end) - current.start
+        current_is_sentence = _line_ends_sentence(current.text)
+        current_long_enough = _word_count(current.text) >= max(8, max_words // 3)
+
+        should_flush = (
+            speaker_changed
+            or gap_sec > max_gap_sec
+            or candidate_word_count > max_words
+            or candidate_duration_sec > max_duration_sec
+            or (current_is_sentence and current_long_enough)
+        )
+
+        if should_flush:
+            compacted.append(current)
+            current = candidate
+            continue
+
+        merged_speaker = current.speaker or candidate.speaker
+        current = TranscriptSegment(
+            index=current.index,
+            start=current.start,
+            end=max(current.end, candidate.end),
+            text=f"{current.text} {candidate.text}".strip(),
+            speaker=merged_speaker,
+        )
+
+    if current is not None:
+        compacted.append(current)
+
+    if len(compacted) >= len(transcript.segments):
+        return transcript
+
+    reindexed_segments = [
+        TranscriptSegment(
+            index=index,
+            start=segment.start,
+            end=segment.end,
+            text=segment.text,
+            speaker=segment.speaker,
+        )
+        for index, segment in enumerate(compacted)
+    ]
+    return TranscriptionResult(
+        language=transcript.language,
+        text="\n".join(segment.text for segment in reindexed_segments).strip(),
+        segments=reindexed_segments,
+    )
+
+
+def _line_ends_sentence(value: str) -> bool:
+    return bool(SENTENCE_END_PATTERN.search(value.strip()))
+
+
+def _word_count(value: str) -> int:
+    return len(value.split())
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    raw_value = get_env_str(name)
+    if not raw_value:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+def _get_positive_float_env(name: str, default: float) -> float:
+    raw_value = get_env_str(name)
+    if not raw_value:
+        return default
+    try:
+        parsed = float(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+CAPTION_SENTENCE_END_PATTERN = re.compile(r"[.!?。！？…][\"')\]]*$")
+CAPTION_CONTINUATION_HINT_PATTERN = re.compile(r"^[a-z0-9\"'(<\\[]")
+
+
+def _merge_caption_lines(lines: list[str]) -> list[str]:
+    merged_lines: list[str] = []
+    current_line = ""
+
+    for line in lines:
+        normalized_line = line.strip()
+        if not normalized_line:
+            continue
+
+        if not current_line:
+            current_line = normalized_line
+            continue
+
+        if _caption_line_ends_sentence(current_line):
+            merged_lines.append(current_line)
+            current_line = normalized_line
+            continue
+
+        if (
+            len(current_line.split()) >= 18
+            and normalized_line[:1].isupper()
+            and not _looks_like_caption_continuation(normalized_line)
+        ):
+            merged_lines.append(current_line)
+            current_line = normalized_line
+            continue
+
+        current_line = f"{current_line} {normalized_line}".strip()
+
+    if current_line:
+        merged_lines.append(current_line)
+
+    return merged_lines or lines
+
+
+def _caption_line_ends_sentence(value: str) -> bool:
+    return bool(CAPTION_SENTENCE_END_PATTERN.search(value.strip()))
+
+
+def _looks_like_caption_continuation(value: str) -> bool:
+    normalized = value.strip()
+    if not normalized:
+        return False
+    return bool(CAPTION_CONTINUATION_HINT_PATTERN.match(normalized))
+
+
+def _translation_segments_to_text(segments: list[TranslationSegment]) -> str:
+    return "\n".join(
+        segment.translated_text.strip()
+        for segment in segments
+        if segment.translated_text.strip()
+    ).strip()

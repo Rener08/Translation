@@ -1,0 +1,39 @@
+from fastapi.testclient import TestClient
+
+from app.main import app
+from app.youtube import parse_youtube_url
+
+
+client = TestClient(app)
+
+
+def test_parse_youtu_be_url() -> None:
+    parsed = parse_youtube_url("https://youtu.be/abc123xyz?t=12")
+    assert parsed.video_id == "abc123xyz"
+    assert parsed.normalized_url == "https://www.youtube.com/watch?v=abc123xyz"
+
+
+def test_parse_youtube_endpoint_returns_video_id() -> None:
+    response = client.post(
+        "/api/parse-youtube",
+        json={"url": "https://www.youtube.com/watch?v=abc123xyz&list=demo"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "video_id": "abc123xyz",
+        "normalized_url": "https://www.youtube.com/watch?v=abc123xyz",
+    }
+
+
+def test_parse_youtube_endpoint_rejects_invalid_url() -> None:
+    response = client.post(
+        "/api/parse-youtube",
+        json={"url": "https://example.com/watch?v=abc123xyz"},
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "detail": "URL must be a valid YouTube link.",
+    }
