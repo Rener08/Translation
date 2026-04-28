@@ -124,7 +124,13 @@ def run_video_job_with_translation_config(
         video.video_id,
     )
     content_context_id = create_content_context(
+        video_id=video.video_id,
+        video_url=url,
         video_title=video.title,
+        video_duration_sec=video.duration_sec,
+        video_uploader=video.uploader,
+        video_thumbnail=video.thumbnail,
+        source_type=source.source_type,
         transcript_en=transcript.text,
         translation_zh=_translation_segments_to_text(translations),
     )

@@ -7,12 +7,16 @@ import {
 
 type TranslationSettingsPanelProps = {
   settings: TranslationSettings;
+  rewriteFocus: string;
   onChange: (nextSettings: TranslationSettings) => void;
+  onRewriteFocusChange: (nextValue: string) => void;
 };
 
 export function TranslationSettingsPanel({
   settings,
+  rewriteFocus,
   onChange,
+  onRewriteFocusChange,
 }: TranslationSettingsPanelProps) {
   const apiKeyPlaceholder =
     settings.provider === "deepseek"
@@ -75,6 +79,33 @@ export function TranslationSettingsPanel({
               })
             }
           />
+        </label>
+
+        <label className="settings-field">
+          <span>模型</span>
+          <input
+            type="text"
+            placeholder="deepseek-chat"
+            value={settings.model}
+            onChange={(event) =>
+              onChange({
+                ...settings,
+                model: event.target.value,
+              })
+            }
+          />
+        </label>
+
+        <label className="settings-field">
+          <span>写作风格</span>
+          <select
+            value={rewriteFocus}
+            onChange={(event) => onRewriteFocusChange(event.target.value)}
+          >
+            <option value="保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。">
+              默认内置风格（晚点通用）
+            </option>
+          </select>
         </label>
       </div>
     </section>

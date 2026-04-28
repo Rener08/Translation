@@ -6,9 +6,14 @@ import { JobResult, TranslationSettings, buildTranslationText } from "../lib/job
 type JobResultPanelProps = {
   jobResult: JobResult | null;
   settings: TranslationSettings;
+  rewriteFocus: string;
 };
 
-export function JobResultPanel({ jobResult, settings }: JobResultPanelProps) {
+export function JobResultPanel({
+  jobResult,
+  settings,
+  rewriteFocus,
+}: JobResultPanelProps) {
   const rewriteSourceText = jobResult
     ? buildTranslationText(jobResult.translation_zh.segments)
     : "";
@@ -18,6 +23,10 @@ export function JobResultPanel({ jobResult, settings }: JobResultPanelProps) {
       <ContentRewritePanel
         settings={settings}
         initialSourceText={rewriteSourceText}
+        contentContextId={jobResult?.content_context_id ?? ""}
+        rewriteFocus={rewriteFocus}
+        title="中文改写"
+        subtitle="改写内容会自动生成在这里，支持复制和导出。"
         sourceLocked
         resultOnly
       />

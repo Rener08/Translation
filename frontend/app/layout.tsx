@@ -16,9 +16,9 @@ const notoSansSc = Noto_Sans_SC({
 });
 
 export const metadata: Metadata = {
-  title: "Research Desk",
+  title: "YouTube 翻译助手",
   description:
-    "A speaker-aware YouTube research desk for local transcription, translation, and content chat.",
+    "A local YouTube translation and rewrite GUI for transcription, translation, content rewrite, and follow-up chat.",
 };
 
 export default function RootLayout({

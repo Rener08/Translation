@@ -10,7 +10,9 @@ from app.services.content_chat_service import (
     answer_content_question,
 )
 from app.services.content_rewrite_service import (
+    ContentRewriteEmptyOutputError,
     ContentRewriteConfigurationError,
+    ContentRewriteInputError,
     ContentRewriteProviderError,
     rewrite_content,
 )
@@ -21,6 +23,13 @@ from app.services.job_run_service import (
     run_video_job_with_translation_config,
 )
 from app.services.participant_candidate_service import extract_candidate_people
+from app.services.session_history_service import (
+    append_chat_exchange,
+    list_session_history,
+    load_session_history,
+    record_rewrite_result,
+    upsert_job_session,
+)
 from app.services.speaker_diarization_service import (
     SpeakerDiarizationConfigurationError,
     SpeakerDiarizationRuntimeError,
@@ -68,6 +77,9 @@ from app.youtube import (
     ResolveSpeakersResponse,
     ResolvedSpeakerMappingResponse,
     ResolvedTranscriptSegmentResponse,
+    SessionHistoryDetailResponse,
+    SessionHistoryListResponse,
+    SessionHistorySummaryResponse,
     TranslateItemResponse,
     TranslateRequest,
     TranslateResponse,
@@ -431,12 +443,48 @@ async def content_chat(request: ContentChatRequest) -> ContentChatResponse:
     except ContentChatProviderError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
+    if request.content_context_id:
+        try:
+            append_chat_exchange(
+                content_context_id=request.content_context_id,
+                question=request.question,
+                answer=result.answer,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist chat history for %s",
+                request.content_context_id,
+            )
+
     return ContentChatResponse(
         ok=True,
         provider=result.provider,
         model=result.model,
         answer=result.answer,
     )
+
+
+@app.get("/api/session-history", response_model=SessionHistoryListResponse)
+async def session_history(limit: int = 20) -> SessionHistoryListResponse:
+    return SessionHistoryListResponse(
+        ok=True,
+        items=[
+            SessionHistorySummaryResponse.model_validate(item)
+            for item in list_session_history(limit=limit)
+        ],
+    )
+
+
+@app.get(
+    "/api/session-history/{content_context_id}",
+    response_model=SessionHistoryDetailResponse,
+)
+async def session_history_detail(content_context_id: str) -> SessionHistoryDetailResponse:
+    payload = load_session_history(content_context_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="Session history not found.")
+
+    return SessionHistoryDetailResponse.model_validate(payload)
 
 
 @app.post("/api/content-rewrite", response_model=ContentRewriteResponse)
@@ -453,16 +501,42 @@ async def content_rewrite(request: ContentRewriteRequest) -> ContentRewriteRespo
             rewrite_focus=request.rewrite_focus,
             rewrite_config=rewrite_config,
         )
+    except ContentRewriteInputError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
     except ContentRewriteConfigurationError as error:
         raise HTTPException(status_code=500, detail=str(error)) from error
-    except ContentRewriteProviderError as error:
+    except ContentRewriteEmptyOutputError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
+    except ContentRewriteProviderError as error:
+        raise HTTPException(
+            status_code=502,
+            detail=f"内容改写失败：上游模型服务返回错误。{error}",
+        ) from error
+
+    if request.content_context_id:
+        try:
+            quality_issues = list(getattr(result, "quality_issues", ()) or [])
+            record_rewrite_result(
+                content_context_id=request.content_context_id,
+                rewrite_focus=request.rewrite_focus,
+                rewrite_source_text=request.source_text,
+                rewritten_text=result.rewritten_text,
+                rewrite_quality_issues=quality_issues,
+                rewrite_provider=result.provider,
+                rewrite_model=result.model,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to persist rewrite history for %s",
+                request.content_context_id,
+            )
 
     return ContentRewriteResponse(
         ok=True,
         provider=result.provider,
         model=result.model,
         rewritten_text=result.rewritten_text,
+        quality_issues=list(getattr(result, "quality_issues", ()) or []),
     )
 
 
@@ -501,6 +575,55 @@ async def run_job(request: JobRunRequest) -> JobRunResponse:
     ) as error:
         logger.error("Job run failed for %s: %s", request.url, error)
         raise HTTPException(status_code=502, detail=str(error)) from error
+
+    try:
+        upsert_job_session(
+            content_context_id=result.content_context_id,
+            video_id=result.video.video_id,
+            video_url=parsed.normalized_url,
+            video_title=result.video.title,
+            video_duration_sec=result.video.duration_sec,
+            video_uploader=result.video.uploader,
+            video_thumbnail=result.video.thumbnail,
+            source_mode=request.source_mode,
+            source_type=result.source_type,
+            translation_provider=(
+                request.translation_config.provider
+                if request.translation_config
+                else None
+            ),
+            translation_model=(
+                request.translation_config.model if request.translation_config else None
+            ),
+            transcript_en_text=result.transcript_en.text,
+            transcript_en_segments=[
+                {
+                    "index": segment.index,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                    "speaker": segment.speaker,
+                }
+                for segment in result.transcript_en.segments
+            ],
+            translation_zh_text="\n".join(
+                item.translated_text.strip()
+                for item in result.translation_zh_segments
+                if item.translated_text.strip()
+            ),
+            translation_zh_segments=[
+                {
+                    "index": item.index,
+                    "start": item.start,
+                    "end": item.end,
+                    "source_text": item.source_text,
+                    "translated_text": item.translated_text,
+                }
+                for item in result.translation_zh_segments
+            ],
+        )
+    except Exception:
+        logger.warning("Failed to persist session history for %s", request.url)
 
     return JobRunResponse(
         ok=True,

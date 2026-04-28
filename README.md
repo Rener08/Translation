@@ -1,6 +1,23 @@
-# YouTube Translator MVP
+# Translation Writing Workbench MVP
 
-This repository contains a local MVP skeleton for a YouTube translation workflow.
+This repository contains a local macOS-first workbench for turning YouTube videos,
+transcripts, and source material into rewritten Chinese article output.
+
+The current product direction is:
+
+- deterministic media pipeline for inspect -> fetch source -> transcribe -> translate
+- style-prompt-driven Chinese rewriting on top of the translated material
+- follow-up content chat for summary, explanation, and secondary edits
+- native desktop testing workflow with copy/export as the main local loop
+
+Documentation map:
+
+- [`docs/README.md`](/Users/jack/Documents/coding/Translation/docs/README.md)
+
+Rewrite precedence is explicit:
+
+1. If desktop or API sends a full writing prompt containing `{{transcript}}`, backend injects source text directly and uses that prompt as the source of truth.
+2. Otherwise backend falls back to its managed rewrite references and routing logic.
 
 ## Project Structure
 
@@ -422,9 +439,9 @@ Stop both:
 ./stop-dev.sh
 ```
 
-### Desktop Test App
+### Desktop App
 
-A native desktop app is included for local testing.
+A native desktop app is included for the primary local workflow.
 
 Install desktop dependency once:
 
@@ -444,28 +461,56 @@ Backend resolution for desktop app:
 - You can override with env var `DESKTOP_BACKEND_URL`
 If backend is not running, desktop app will attempt to auto-start it using `start-backend.sh --daemon`.
 
+Writing styles are local prompt files in `skills/`.
+
+- Supported files: `*.md`, `*.txt`
+- File name becomes the dropdown label in the desktop app
+- If a prompt contains `{{transcript}}`, backend treats it as a full prompt and injects the source text there
+- If a prompt does not contain `{{transcript}}`, backend uses it as a style hint and falls back to managed rewrite references and routing
+
+See [docs/writing_style_prompt_format.md](/Users/jack/Documents/coding/Translation/docs/writing_style_prompt_format.md) for the current format contract.
+
 ### Phase 8 UI
 
 - The homepage now uses a minimal centered input layout inspired by notebook-style tools.
 - The initial screen only shows the product title, a short description, one large input box, and one start button.
 - A small built-in settings section lets you pick the translation provider and optionally override API key, base URL, model, and custom headers.
 - The result area keeps four states visually distinct: ready, processing, completed, and failed.
-- Successful runs show a video card plus separate English transcript and Simplified Chinese translation cards.
-- The right panel includes `Content Chat` and a new `内容改写` block that can rewrite transcript/translation content in one click.
+- Successful runs can feed transcript and translation content into the rewrite pipeline.
+- The local desktop app is rewrite-first: the main result view prioritizes Chinese rewritten output, with `Content Chat` as a secondary follow-up layer.
+- The local desktop app includes a session history sidebar with search for reopening recent runs and reviewing saved rewrite/chat state.
+- The local desktop app preserves raw rewrite text separately from the rendered view so copy and export keep Markdown structure intact.
+- The desktop app validates imported writing prompts before rewrite and clearly labels full prompts versus style hints.
+- The desktop app includes a built-in default writing style, rewrite quality checks, one-click rewrite again, and chat shortcuts for summary / explanation / polish / reframe.
+- The desktop app remembers the last provider, model, source mode, and writing style across launches.
+- Desktop export defaults now prefer the video title or the first rewritten heading when naming files.
+- Desktop export supports `docx`, `md`, `txt`, `html`, and `json`.
+- Desktop export can open the exported file location after saving.
+- The desktop app includes a lightweight runtime log viewer for backend and desktop logs.
+- Keyboard shortcuts cover run, copy, export, and send chat.
 - Frontend structure is split into `app/components` and `app/lib` so the page, settings panel, status panel, and result panel are no longer coupled in one file.
 
 ## Local Development Flow
 
+Recommended local loop:
+
+1. Start backend on port `8000`, or launch the desktop app and let it auto-start backend.
+2. Start the native desktop app with `./start-desktop.sh`.
+3. Choose provider, model, content source mode, and writing style.
+4. Enter a YouTube link.
+5. Run the deterministic pipeline: inspect video -> fetch captions or audio -> transcribe when needed -> translate.
+6. Feed the normalized source text into `POST /api/content-rewrite`.
+7. Pass the material into the configured writing prompt or skill and output rewritten Chinese正文.
+8. Use `Content Chat` only after the main rewrite is ready, for summary, explanation, follow-up questions, or local revision requests.
+9. Copy or export the rewritten result.
+
+Web frontend loop for component development:
+
 1. Start backend on port `8000`.
 2. Start frontend on port `3000`.
 3. Open the frontend page.
-4. Enter any YouTube link.
-5. Click `Start`.
-6. Wait for the request to finish. Audio-based videos take longer than caption-based videos.
-7. Verify the page shows the video title and thumbnail.
-8. Verify the page shows the English transcript.
-9. Verify the page shows the Simplified Chinese translation.
-10. Verify the page shows aligned English and Simplified Chinese segments side by side.
+4. Enter a YouTube link and complete the same inspect -> source -> transcribe -> translate -> rewrite flow.
+5. Verify that rewrite output is available from the result panel.
 
 ## Current Phase Scope
 
@@ -489,17 +534,40 @@ If backend is not running, desktop app will attempt to auto-start it using `star
 - Translates transcript segments through the OpenAI responses API
 - Translates transcript segments through either OpenAI or DeepSeek
 - Runs the full metadata -> source -> transcript -> translation flow in one synchronous API call
+- Exposes `POST /api/content-rewrite` as the article-writing layer on top of the translation pipeline
+- Supports desktop-selected writing prompts / skills for rewrite requests
+- Validates selected writing prompts before rewrite, blocking empty bodies and broken placeholders
+- If the selected rewrite prompt contains `{{transcript}}`, backend injects source text into that prompt directly
+- Falls back to backend-managed rewrite references and routing when no full skill prompt is provided
+- Treats rewritten Chinese article text as the primary desktop result
+- Preserves raw rewrite text separately from rendered Markdown for copy/export and history replay
+- Provides post-generation `Content Chat` for follow-up questions, summary, explanation, and secondary edits
+- Includes rewrite quality checks and a built-in default writing style for non-imported prompt users
+- Supports one-click rewrite again from the current source text and prompt
+- Provides chat shortcuts for summary, explanation, polish, and reframing
+- Supports copy/export of rewrite output from the native desktop app
+- Supports DOCX export in addition to markdown, text, HTML, and JSON
+- Supports opening the exported file location after save
+- Includes a lightweight runtime log viewer for backend and desktop logs
+- Persists local session history for the job run, rewrite result, and chat turns
+- Persists intermediate debugging artifacts including inspect metadata, source mode, transcript text, and translated text
+- Keeps session-history writes atomic per `content_context_id` so rewrite and chat updates do not clobber each other
+- Exposes `GET /api/session-history` and `GET /api/session-history/{content_context_id}` for local history viewing and search-backed reopening
+- Stores explicit saved sections for raw transcript, translated Chinese, rewritten Chinese, and chat follow-ups
+- Remembers the last provider, model, source mode, and style selection in the desktop app
+- Shows explicit busy state and clearer captions vs audio progress in the desktop app
+- Normalizes user-facing errors for cookie, auth, upstream disconnect, and Whisper failures
 - Reads `DEEPSEEK_API_KEY` and `TRANSLATION_PROVIDER` from environment variables or `.env`
 - Reads `WHISPER_MODEL`, `WHISPER_DEVICE`, and `WHISPER_COMPUTE_TYPE` from environment variables or `.env`
 - Rejects missing files before transcription
 - Preserves per-segment timestamps and returns one-to-one aligned Chinese translations
 - Returns subtitle and automatic caption language lists
 - Returns a clear error when `yt-dlp` is not installed
-- Includes a minimal frontend page with one large YouTube input and one `Start` button
+- Includes a dev frontend that stays aligned with the rewrite-first workflow for debugging and side-by-side verification
 - Includes frontend to backend full-job flow
 - Includes frontend to backend content-rewrite flow (reference-driven rewriting prompt)
 - Includes backend CORS for local development
-- Does not include auth, database, queue, or deployment
+- Does not include auth, database-backed runs, queue, or deployment
 
 ## Verification Notes
 

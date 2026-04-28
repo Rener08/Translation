@@ -8,6 +8,7 @@ from typing import Literal
 import httpx
 
 from app.config import get_env_str
+from app.services.rewrite_quality_service import analyze_rewrite_quality
 from app.services.translation_service import (
     RETRYABLE_STATUS_CODES,
     _build_endpoint_url,
@@ -19,6 +20,7 @@ from app.services.translation_service import (
     _provider_default_model,
     _provider_env_prefix,
 )
+from app.services.prompt_validation import validate_rewrite_prompt
 
 SUPPORTED_REWRITE_PROVIDERS = {"openai", "deepseek", "lmstudio", "ollama"}
 MAX_REWRITE_REQUEST_ATTEMPTS = 3
@@ -49,8 +51,16 @@ class ContentRewriteConfigurationError(ContentRewriteError):
     """Raised when rewrite configuration is missing or invalid."""
 
 
+class ContentRewriteInputError(ContentRewriteError):
+    """Raised when rewrite request input is invalid."""
+
+
 class ContentRewriteProviderError(ContentRewriteError):
     """Raised when the upstream rewrite provider fails."""
+
+
+class ContentRewriteEmptyOutputError(ContentRewriteProviderError):
+    """Raised when the upstream provider returns an empty rewrite output."""
 
 
 @dataclass(frozen=True)
@@ -67,6 +77,7 @@ class ContentRewriteResult:
     rewritten_text: str
     provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
     model: str
+    quality_issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -333,11 +344,25 @@ def rewrite_content(
     if not normalized_source:
         raise ContentRewriteConfigurationError("source_text must not be empty.")
 
-    normalized_focus = str(rewrite_focus or "").strip() or DEFAULT_REWRITE_FOCUS
+    if rewrite_focus is None:
+        normalized_focus = DEFAULT_REWRITE_FOCUS
+    else:
+        normalized_focus = str(rewrite_focus).strip()
+        if not normalized_focus:
+            raise ContentRewriteInputError(
+                "改写提示为空。请重新选择写作风格，或移除空白 rewrite_focus 后重试。"
+            )
+
+    prompt_validation = validate_rewrite_prompt(normalized_focus)
+    if not prompt_validation.is_valid:
+        raise ContentRewriteInputError("；".join(prompt_validation.errors))
+
     config = _resolve_rewrite_config(rewrite_config)
+    references = None if prompt_validation.has_transcript_placeholder else load_rewrite_references()
     messages = _build_rewrite_messages(
         source_text=normalized_source,
         rewrite_focus=normalized_focus,
+        references=references,
     )
 
     if config.provider == "ollama":
@@ -347,14 +372,16 @@ def rewrite_content(
 
     cleaned = _clean_model_output_text(rewritten_text).strip()
     if not cleaned:
-        raise ContentRewriteProviderError(
-            f"{config.provider} returned an empty rewrite output."
+        raise ContentRewriteEmptyOutputError(
+            f"内容改写失败：{config.provider} 返回了空内容。请重试，或更换模型/提示词。"
         )
+    quality_issues = tuple(analyze_rewrite_quality(cleaned))
 
     return ContentRewriteResult(
         rewritten_text=cleaned,
         provider=config.provider,
         model=config.model,
+        quality_issues=quality_issues,
     )
 
 
@@ -405,22 +432,55 @@ def _build_rewrite_messages(
     *,
     source_text: str,
     rewrite_focus: str,
+    references: RewriteReferences | None,
 ) -> list[dict[str, str]]:
-    if "{{transcript}}" in rewrite_focus:
+    if _uses_full_skill_prompt(rewrite_focus):
         # 如果前端传来了包含 {{transcript}} 占位符的完整 Skill Prompt，直接替换并使用
         user_prompt = rewrite_focus.replace("{{transcript}}", source_text)
         return [
             {"role": "system", "content": "你是一个智能写作助手。请严格遵守用户的格式要求。"},
             {"role": "user", "content": user_prompt},
         ]
-    
-    # 兼容老逻辑：如果没有占位符，当作附加要求处理
+
+    if references is None:
+        raise ContentRewriteConfigurationError(
+            "Rewrite references are required when no full skill prompt is provided."
+        )
+
+    selected_template = _select_rewrite_template(
+        source_text=source_text,
+        rewrite_focus=rewrite_focus,
+        references=references,
+    )
+    reference_context = (
+        f"【参考来源】\n{references.reference_profile}\n\n"
+        "【晚点题材路由】\n"
+        f"模板：{selected_template.label}\n"
+        f"判定：{selected_template.route_reason}\n\n"
+        "【场景模板】\n"
+        f"{selected_template.body}\n\n"
+        "【通用一页模板】\n"
+        f"{references.article_template}\n\n"
+        "【标题与反向提示】\n"
+        f"{references.section_title_rules}\n\n"
+        "【内容方法论参考】\n"
+        f"{references.content_methodology}\n\n"
+        "【风格示例参考】\n"
+        f"{references.style_examples}\n\n"
+        "【写作规则参考】\n"
+        f"{references.skill_guide}\n\n"
+        "【质量流程参考】\n"
+        f"{references.quality_pipeline}"
+    )
+
+    # 没有完整 skill prompt 时，统一落到 backend 维护的参考材料和题材路由
     user_prompt = (
         "请改写以下内容。\n\n"
         f"改写目标：{rewrite_focus}\n\n"
         "限制要求：\n"
         "- 不编造事实，不添加原文没有的关键结论。\n"
         "- 保持原始信息。\n"
+        "- 优先遵守场景模板、标题规则和质量流程。\n"
         "- 输出只包含改写后的正文。\n\n"
         "原始内容：\n"
         f"{source_text}"
@@ -428,8 +488,13 @@ def _build_rewrite_messages(
 
     return [
         {"role": "system", "content": REWRITE_ASSISTANT_INSTRUCTIONS},
+        {"role": "system", "content": reference_context},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def _uses_full_skill_prompt(rewrite_focus: str) -> bool:
+    return "{{transcript}}" in rewrite_focus
 
 
 def _resolve_rewrite_config(

@@ -285,8 +285,16 @@ class ContentChatResponse(BaseModel):
 
 class ContentRewriteRequest(BaseModel):
     source_text: str
-    rewrite_focus: str | None = None
+    rewrite_focus: str | None = Field(
+        default=None,
+        description=(
+            "Rewrite instruction precedence: if this contains '{{transcript}}', "
+            "backend treats it as a full writing prompt and injects source_text directly. "
+            "Otherwise backend falls back to its managed rewrite references and routing."
+        ),
+    )
     translation_config: TranslationConfigRequest | None = None
+    content_context_id: str | None = None
 
     @field_validator("source_text")
     @classmethod
@@ -301,6 +309,65 @@ class ContentRewriteResponse(BaseModel):
     provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
     model: str
     rewritten_text: str
+    quality_issues: list[str] = Field(default_factory=list)
+
+
+class SessionHistoryTurnResponse(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: str
+
+
+class SessionHistorySummaryResponse(BaseModel):
+    content_context_id: str
+    video_id: str | None = None
+    video_url: str | None = None
+    video_title: str | None = None
+    video_duration_sec: int | None = None
+    video_uploader: str | None = None
+    video_thumbnail: str | None = None
+    source_mode: SourceMode | None = None
+    source_type: Literal["captions", "audio"] | None = None
+    created_at: str
+    updated_at: str
+    has_rewrite: bool
+    chat_turn_count: int
+    transcript_preview: str = ""
+    translation_preview: str = ""
+    rewritten_preview: str = ""
+    rewrite_quality_issue_count: int = 0
+
+
+class SessionHistoryDetailResponse(BaseModel):
+    content_context_id: str
+    video_id: str | None = None
+    video_url: str | None = None
+    video_title: str | None = None
+    video_duration_sec: int | None = None
+    video_uploader: str | None = None
+    video_thumbnail: str | None = None
+    source_mode: SourceMode | None = None
+    source_type: Literal["captions", "audio"] | None = None
+    created_at: str
+    updated_at: str
+    translation_provider: str | None = None
+    translation_model: str | None = None
+    transcript_en_text: str = ""
+    transcript_en_segments: list[TranscriptSegmentResponse] = Field(default_factory=list)
+    translation_zh_text: str = ""
+    translation_zh_segments: list[TranslateItemResponse] = Field(default_factory=list)
+    rewrite_focus: str | None = None
+    rewrite_source_text: str = ""
+    rewritten_text: str = ""
+    rewrite_quality_issues: list[str] = Field(default_factory=list)
+    rewrite_provider: str | None = None
+    rewrite_model: str | None = None
+    chat_turns: list[SessionHistoryTurnResponse] = Field(default_factory=list)
+
+
+class SessionHistoryListResponse(BaseModel):
+    ok: bool
+    items: list[SessionHistorySummaryResponse] = Field(default_factory=list)
 
 
 class ParsedYouTubeUrl(BaseModel):

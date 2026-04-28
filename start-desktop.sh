@@ -16,7 +16,7 @@ fi
 PYTHON_BIN="$DESKTOP_VENV/bin/python"
 PIP_BIN="$DESKTOP_VENV/bin/pip"
 
-if ! "$PYTHON_BIN" -c "import PyQt6, requests" >/dev/null 2>&1; then
+if ! "$PYTHON_BIN" -c "import PyQt6, requests, docx" >/dev/null 2>&1; then
   "$PIP_BIN" install -q -r "$ROOT_DIR/requirements-desktop.txt"
 fi
 

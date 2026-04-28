@@ -14,6 +14,8 @@ import {
 type ContentRewritePanelProps = {
   settings: TranslationSettings;
   initialSourceText?: string;
+  contentContextId?: string;
+  rewriteFocus?: string;
   title?: string;
   subtitle?: string;
   sourceLocked?: boolean;
@@ -23,6 +25,8 @@ type ContentRewritePanelProps = {
 export function ContentRewritePanel({
   settings,
   initialSourceText = "",
+  contentContextId = "",
+  rewriteFocus = "",
   title = "内容改写",
   subtitle = "粘贴原文后点击改写。",
   sourceLocked = false,
@@ -74,11 +78,13 @@ export function ContentRewritePanel({
         headers: {
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          source_text: source,
-          translation_config: translationConfig,
-        }),
-      });
+          body: JSON.stringify({
+            source_text: source,
+            translation_config: translationConfig,
+            content_context_id: contentContextId || undefined,
+            rewrite_focus: rewriteFocus.trim() || undefined,
+          }),
+        });
 
       if (!response.ok) {
         throw new Error(await extractApiErrorMessage(response));
@@ -116,6 +122,24 @@ export function ContentRewritePanel({
     }
   }
 
+  async function handleExportRewrite() {
+    const text = rewrittenText.trim();
+    if (!text) {
+      return;
+    }
+
+    const exportBlob = new Blob(
+      [`# 中文改写\n\n${text}\n`],
+      { type: "text/markdown;charset=utf-8" },
+    );
+    const url = URL.createObjectURL(exportBlob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "rewrite.md";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
   useEffect(() => {
     if (!resultOnly) {
       return;
@@ -131,11 +155,13 @@ export function ContentRewritePanel({
 
     const rewriteKey = [
       normalizedSource,
+      rewriteFocus.trim(),
       settings.provider,
       settings.baseUrl,
       settings.model,
       settings.apiKey,
       settings.headersJson,
+      contentContextId,
     ].join("::");
 
     if (autoRewriteKeyRef.current === rewriteKey) {
@@ -153,11 +179,46 @@ export function ContentRewritePanel({
     settings.headersJson,
     settings.model,
     settings.provider,
+    rewriteFocus,
+    contentContextId,
   ]);
 
   if (resultOnly) {
     return (
       <section className="rewrite-result-only">
+        <div className="rewrite-panel-header rewrite-result-header">
+          <div>
+            <p className="card-label">Write</p>
+            <h2 className="panel-title">{title}</h2>
+            <p className="rewrite-subtitle">改写内容会显示在这里，支持复制和导出。</p>
+          </div>
+          <div className="rewrite-result-actions">
+            <button
+              className="copy-answer-button"
+              type="button"
+              disabled={!rewrittenText.trim()}
+              onClick={handleCopyRewrite}
+            >
+              {isRewriteCopied ? "已复制" : "复制"}
+            </button>
+            <button
+              className="copy-answer-button"
+              type="button"
+              disabled={!rewrittenText.trim()}
+              onClick={handleExportRewrite}
+            >
+              导出
+            </button>
+            <button
+              className="copy-answer-button"
+              type="button"
+              disabled={!rewrittenText.trim()}
+              onClick={() => void executeRewrite()}
+            >
+              再改写
+            </button>
+          </div>
+        </div>
         {rewriteErrorMessage ? (
           <p className="chat-error-text">{rewriteErrorMessage}</p>
         ) : null}
@@ -226,6 +287,14 @@ export function ContentRewritePanel({
           onClick={handleCopyRewrite}
         >
           {isRewriteCopied ? "已复制" : "复制改写"}
+        </button>
+        <button
+          className="copy-answer-button"
+          type="button"
+          disabled={!rewrittenText.trim()}
+          onClick={handleExportRewrite}
+        >
+          导出
         </button>
       </div>
 

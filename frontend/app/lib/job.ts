@@ -133,6 +133,7 @@ export type ContentRewriteResponse = {
   provider: TranslationProvider;
   model: string;
   rewritten_text: string;
+  quality_issues?: string[];
 };
 
 export type ViewState = {

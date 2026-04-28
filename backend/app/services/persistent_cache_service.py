@@ -1,7 +1,9 @@
 import json
+import os
 from hashlib import sha1
 from pathlib import Path
 from typing import Any
+import tempfile
 
 from app.config import ROOT_DIR
 
@@ -32,13 +34,26 @@ def load_json_cache(namespace: str, key: str) -> Any | None:
 
 def store_json_cache(namespace: str, key: str, payload: object) -> None:
     path = _cache_path(namespace, key)
+    temp_name = ""
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True),
+        with tempfile.NamedTemporaryFile(
+            "w",
             encoding="utf-8",
-        )
+            dir=path.parent,
+            delete=False,
+        ) as temp_file:
+            temp_name = temp_file.name
+            temp_file.write(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        os.replace(temp_name, path)
     except OSError:
+        if temp_name:
+            try:
+                Path(temp_name).unlink(missing_ok=True)
+            except OSError:
+                pass
         return
 
 

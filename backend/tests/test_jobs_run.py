@@ -1,3 +1,4 @@
+import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -681,6 +682,130 @@ def test_jobs_run_endpoint_returns_final_result(monkeypatch) -> None:
             ]
         },
         "content_context_id": "ctx_demo",
+    }
+
+
+def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(
+        url: str,
+        source_mode: str = "subtitle_first",
+        translation_config: dict[str, object] | None = None,
+    ) -> JobRunResult:
+        assert url == "https://www.youtube.com/watch?v=abc123xyz"
+        assert source_mode == "subtitle_first"
+        assert translation_config == {
+            "provider": "deepseek",
+            "api_key": "test-key",
+            "base_url": None,
+            "model": "deepseek-chat",
+            "extra_headers": {},
+        }
+        return JobRunResult(
+            video=VideoMetadata(
+                video_id="abc123xyz",
+                title="Test video",
+                duration_sec=10,
+                uploader="Uploader",
+                thumbnail="https://example.com/thumb.jpg",
+                subtitles=["en"],
+                automatic_captions=[],
+            ),
+            source_type="captions",
+            transcript_en=TranscriptionResult(
+                language="en",
+                text="We tested three real tasks.",
+                segments=[
+                    TranscriptSegment(
+                        index=0,
+                        start=0.0,
+                        end=4.0,
+                        text="We tested three real tasks.",
+                    )
+                ],
+            ),
+            translation_zh_segments=[
+                TranslationSegment(
+                    index=0,
+                    start=0.0,
+                    end=4.0,
+                    source_text="We tested three real tasks.",
+                    translated_text="我们实测了三个真实任务。",
+                )
+            ],
+            content_context_id="ctx_demo",
+        )
+
+    def fake_post(*args, **kwargs):
+        captured["url"] = args[0]
+        captured["json"] = kwargs["json"]
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", "https://api.deepseek.com/chat/completions"),
+            json={
+                "choices": [
+                    {"message": {"content": "# 测试标题\n\n这是改写后的中文正文。"}}
+                ]
+            },
+        )
+
+    monkeypatch.setattr("app.main.run_video_job_with_translation_config", fake_run)
+    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+
+    job_response = client.post(
+        "/api/jobs/run",
+        json={
+            "url": "https://youtu.be/abc123xyz?t=12",
+            "translation_config": {
+                "provider": "deepseek",
+                "api_key": "test-key",
+                "model": "deepseek-chat",
+            },
+        },
+    )
+
+    assert job_response.status_code == 200
+    job_data = job_response.json()
+    assert (
+        job_data["translation_zh"]["segments"][0]["translated_text"]
+        == "我们实测了三个真实任务。"
+    )
+
+    rewrite_response = client.post(
+        "/api/content-rewrite",
+        json={
+            "source_text": "\n".join(
+                item["translated_text"]
+                for item in job_data["translation_zh"]["segments"]
+            ),
+            "rewrite_focus": "标题：测试技能\n正文：{{transcript}}\n结尾：保持克制。",
+            "translation_config": {
+                "provider": "deepseek",
+                "api_key": "test-key",
+                "model": "deepseek-chat",
+            },
+        },
+    )
+
+    assert rewrite_response.status_code == 200
+    assert captured["url"] == "https://api.deepseek.com/chat/completions"
+    payload = captured["json"]
+    assert isinstance(payload, dict)
+    messages = payload["messages"]
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert (
+        messages[1]["content"]
+        == "标题：测试技能\n正文：我们实测了三个真实任务。\n结尾：保持克制。"
+    )
+    assert rewrite_response.json() == {
+        "ok": True,
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "rewritten_text": "# 测试标题\n\n这是改写后的中文正文。",
     }
 
 

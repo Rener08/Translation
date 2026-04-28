@@ -22,16 +22,10 @@ type ThreadMessage = ContentChatMessage & {
 };
 
 export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps) {
-  const starterPrompts = [
-    "这条视频的核心观点是什么？",
-    "请总结成 5 个要点。",
-    "Felix 和 Ben 的重点分别是什么？",
-  ];
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [question, setQuestion] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
-  const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
   const translationText = useMemo(
     () =>
@@ -45,7 +39,6 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
     setMessages([]);
     setQuestion("");
     setErrorMessage("");
-    setCopiedIndex(null);
   }, [jobResult?.video.video_id]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -117,16 +110,6 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
     }
   }
 
-  async function handleCopy(content: string, index: number) {
-    try {
-      await navigator.clipboard.writeText(content);
-      setCopiedIndex(index);
-      window.setTimeout(() => setCopiedIndex(null), 1500);
-    } catch {
-      setCopiedIndex(null);
-    }
-  }
-
   return (
     <section className="chat-card compact-chat-card">
       <div className="chat-card-header compact-chat-header simple-chat-header">
@@ -148,18 +131,10 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
         ) : messages.length === 0 ? (
           <div className="chat-empty-state compact-chat-empty-state">
             <p>你可以直接从这里开始：</p>
-            <div className="chat-starter-grid">
-              {starterPrompts.map((prompt) => (
-                <button
-                  key={prompt}
-                  className="chat-starter-button"
-                  type="button"
-                  onClick={() => setQuestion(prompt)}
-                >
-                  {prompt}
-                </button>
-              ))}
-            </div>
+            <ul>
+              <li>右侧聊天会自动使用当前视频内容。</li>
+              <li>支持继续追问、总结、解释和提炼观点。</li>
+            </ul>
           </div>
         ) : (
           messages.map((message, index) => (
@@ -171,15 +146,6 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
                 <span className="chat-role">
                   {message.role === "user" ? "我" : "内容助手"}
                 </span>
-                {message.role === "assistant" && !message.pending ? (
-                  <button
-                    className="copy-answer-button"
-                    type="button"
-                    onClick={() => handleCopy(message.content, index)}
-                  >
-                    {copiedIndex === index ? "已复制" : "复制"}
-                  </button>
-                ) : null}
               </div>
               <p className="chat-message-content">{message.content}</p>
             </article>
@@ -193,7 +159,7 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
         <textarea
           className="chat-question-input"
           rows={3}
-          placeholder="继续追问、总结、解释或提炼观点..."
+          placeholder="输入问题，回车发送，Shift+Enter 换行。"
           value={question}
           disabled={!jobResult}
           onChange={(event) => setQuestion(event.target.value)}
@@ -204,7 +170,7 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
             type="submit"
             disabled={!jobResult || isSubmitting || question.trim().length === 0}
           >
-            {isSubmitting ? "回答中..." : "发送"}
+            {isSubmitting ? "…" : "↑"}
           </button>
         </div>
       </form>
