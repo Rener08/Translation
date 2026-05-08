@@ -23,6 +23,27 @@ from app.services.yt_dlp_service import VideoMetadata
 client = TestClient(app)
 
 
+def _wait_for_job_result(job_id: str, timeout_seconds: float = 5.0) -> dict[str, object]:
+    deadline = time.time() + timeout_seconds
+    last_body: dict[str, object] | None = None
+
+    while time.time() < deadline:
+        response = client.get(f"/api/jobs/{job_id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert isinstance(body, dict)
+        last_body = body
+        if body.get("status") == "done":
+            return body
+        if body.get("status") == "failed":
+            raise AssertionError(str(body.get("error") or "job failed"))
+        time.sleep(0.05)
+
+    raise AssertionError(
+        f"job {job_id} did not finish within {timeout_seconds} seconds: {last_body}"
+    )
+
+
 def _use_tmp_cache(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         "app.services.persistent_cache_service.CACHE_ROOT_DIR",
@@ -113,7 +134,13 @@ def test_jobs_run_persists_session_history(monkeypatch, tmp_path: Path) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["content_context_id"] == content_context_id
+    assert body["ok"] is True
+    assert body["status"] == "queued"
+    assert body["job_id"]
+
+    finished_job = _wait_for_job_result(str(body["job_id"]))
+    assert finished_job["status"] == "done"
+    assert finished_job["result"]["content_context_id"] == content_context_id
 
     history_list = client.get("/api/session-history")
     assert history_list.status_code == 200

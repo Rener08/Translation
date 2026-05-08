@@ -34,6 +34,18 @@ export type JobResult = {
   };
 };
 
+export type JobStatus = "queued" | "running" | "done" | "failed";
+
+export type JobRunStatusResponse = {
+  ok: boolean;
+  job_id: string;
+  status: JobStatus;
+  progress_value: number;
+  progress_text?: string | null;
+  result?: JobResult | null;
+  error?: string | null;
+};
+
 export type ResolvedSpeakerMapping = {
   speaker_id: string;
   speaker: string;
@@ -487,6 +499,47 @@ export async function extractApiErrorMessage(
   }
 
   return `Request failed with status ${response.status}`;
+}
+
+export async function waitForJobResult(
+  jobId: string,
+  onStatus?: (status: JobRunStatusResponse) => void,
+): Promise<JobResult> {
+  const normalizedJobId = jobId.trim();
+  if (!normalizedJobId) {
+    throw new Error("Job id is missing.");
+  }
+
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let lastMessage = "正在等待任务完成...";
+
+  while (Date.now() < deadline) {
+    const response = await apiFetch(`/api/jobs/${encodeURIComponent(normalizedJobId)}`);
+    if (!response.ok) {
+      throw new Error(await extractApiErrorMessage(response));
+    }
+
+    const data = (await response.json()) as JobRunStatusResponse;
+    onStatus?.(data);
+    if (data.progress_text) {
+      lastMessage = data.progress_text;
+    }
+
+    if (data.status === "done") {
+      if (!data.result) {
+        throw new Error("Job completed without a result.");
+      }
+      return data.result;
+    }
+
+    if (data.status === "failed") {
+      throw new Error(data.error || lastMessage || "Job failed.");
+    }
+
+    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+  }
+
+  throw new Error(lastMessage || "Job timed out while waiting for completion.");
 }
 
 export function getViewState(

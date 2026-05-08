@@ -1,4 +1,5 @@
 import httpx
+import time
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -17,6 +18,34 @@ from app.services.yt_dlp_service import VideoMetadata
 
 
 client = TestClient(app)
+
+
+def _wait_for_job_result(
+    job_id: str,
+    timeout_seconds: float = 5.0,
+    *,
+    allow_failed: bool = False,
+) -> dict[str, object]:
+    deadline = time.time() + timeout_seconds
+    last_body: dict[str, object] | None = None
+
+    while time.time() < deadline:
+        response = client.get(f"/api/jobs/{job_id}")
+        assert response.status_code == 200
+        body = response.json()
+        assert isinstance(body, dict)
+        last_body = body
+        if body.get("status") == "done":
+            return body
+        if body.get("status") == "failed":
+            if allow_failed:
+                return body
+            raise AssertionError(str(body.get("error") or "job failed"))
+        time.sleep(0.05)
+
+    raise AssertionError(
+        f"job {job_id} did not finish within {timeout_seconds} seconds: {last_body}"
+    )
 
 
 def test_run_video_job_uses_caption_source_without_transcription(monkeypatch) -> None:
@@ -648,7 +677,15 @@ def test_jobs_run_endpoint_returns_final_result(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {
+    submission = response.json()
+    assert submission["ok"] is True
+    assert submission["status"] == "queued"
+    assert submission["progress_text"] == "已加入队列"
+    assert submission["job_id"]
+
+    job_data = _wait_for_job_result(str(submission["job_id"]))
+    assert job_data["status"] == "done"
+    assert job_data["result"] == {
         "ok": True,
         "video": {
             "video_id": "abc123xyz",
@@ -768,18 +805,21 @@ def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
     )
 
     assert job_response.status_code == 200
-    job_data = job_response.json()
-    assert (
-        job_data["translation_zh"]["segments"][0]["translated_text"]
-        == "我们实测了三个真实任务。"
-    )
+    submission = job_response.json()
+    assert submission["ok"] is True
+    assert submission["status"] == "queued"
+    job_data = _wait_for_job_result(str(submission["job_id"]))
+    assert job_data["status"] == "done"
+    result = job_data["result"]
+    assert isinstance(result, dict)
+    assert result["translation_zh"]["segments"][0]["translated_text"] == "我们实测了三个真实任务。"
 
     rewrite_response = client.post(
         "/api/content-rewrite",
         json={
             "source_text": "\n".join(
                 item["translated_text"]
-                for item in job_data["translation_zh"]["segments"]
+                for item in result["translation_zh"]["segments"]
             ),
             "rewrite_focus": "标题：测试技能\n正文：{{transcript}}\n结尾：保持克制。",
             "translation_config": {
@@ -835,8 +875,13 @@ def test_jobs_run_endpoint_returns_upstream_error(monkeypatch) -> None:
         json={"url": "https://www.youtube.com/watch?v=abc123xyz"},
     )
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "Upstream translation failed."}
+    assert response.status_code == 200
+    submission = response.json()
+    assert submission["ok"] is True
+    assert submission["status"] == "queued"
+    job_data = _wait_for_job_result(str(submission["job_id"]), allow_failed=True)
+    assert job_data["status"] == "failed"
+    assert job_data["error"] == "Upstream translation failed."
 
 
 def test_jobs_run_endpoint_forwards_translation_config(monkeypatch) -> None:
@@ -906,6 +951,15 @@ def test_jobs_run_endpoint_forwards_translation_config(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
+    submission = response.json()
+    assert submission["ok"] is True
+    assert submission["status"] == "queued"
+    job_data = _wait_for_job_result(str(submission["job_id"]))
+    assert job_data["status"] == "done"
+    result = job_data["result"]
+    assert isinstance(result, dict)
+    assert result["content_context_id"] == "ctx_demo"
+    assert result["translation_zh"]["segments"][0]["translated_text"] == "大家好。"
 
 
 def test_jobs_run_endpoint_forwards_source_mode(monkeypatch) -> None:
@@ -963,4 +1017,9 @@ def test_jobs_run_endpoint_forwards_source_mode(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json()["source_type"] == "audio"
+    submission = response.json()
+    assert submission["ok"] is True
+    assert submission["status"] == "queued"
+    job_data = _wait_for_job_result(str(submission["job_id"]))
+    assert job_data["status"] == "done"
+    assert job_data["result"]["source_type"] == "audio"

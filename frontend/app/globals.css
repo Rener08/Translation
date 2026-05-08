@@ -1,5 +1,7 @@
 :root {
   color-scheme: light;
+  --font-sans: "Inter", "SF Pro Text", "IBM Plex Sans", "Helvetica Neue", sans-serif;
+  --font-cjk: "Noto Sans SC", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
   --bg: #f4efe7;
   --panel: rgba(255, 251, 245, 0.82);
   --panel-strong: #fffdfa;
@@ -2225,7 +2227,7 @@ body::before {
 }
 
 :root {
-  --font-sans-stack: var(--font-sans), "SF Pro Text", "IBM Plex Sans", "Helvetica Neue", var(--font-cjk), sans-serif;
+  --font-sans-stack: var(--font-sans), var(--font-cjk), "SF Pro Text", "IBM Plex Sans", "Helvetica Neue", sans-serif;
   --title-strong: #121212;
   --text-strong: #2d2d2d;
   --text-mid: #4a4a4a;

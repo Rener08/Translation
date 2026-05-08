@@ -177,6 +177,75 @@ def _post_json_with_backend_retry(
         return response, fallback_backend_url
 
 
+def _get_json_with_backend_retry(
+    backend_url: str,
+    path: str,
+    timeout: float,
+) -> tuple[requests.Response, str]:
+    normalized_backend_url = str(backend_url or "").strip().rstrip("/")
+    if not normalized_backend_url:
+        raise requests.exceptions.ConnectionError("backend_url is empty")
+
+    try:
+        response = requests.get(
+            f"{normalized_backend_url}{path}",
+            timeout=timeout,
+        )
+        return response, normalized_backend_url
+    except requests.exceptions.ConnectionError:
+        fallback_backend_url = _resolve_backend_url_for_retry(normalized_backend_url)
+        if not fallback_backend_url or fallback_backend_url == normalized_backend_url:
+            raise
+
+        response = requests.get(
+            f"{fallback_backend_url}{path}",
+            timeout=timeout,
+        )
+        return response, fallback_backend_url
+
+
+def _poll_job_status(
+    backend_url: str,
+    job_id: str,
+    *,
+    timeout: float = 20,
+    poll_interval: float = 1.0,
+) -> tuple[dict[str, object], str]:
+    normalized_job_id = str(job_id or "").strip()
+    if not normalized_job_id:
+        raise RuntimeError("job_id is empty")
+
+    current_backend_url = str(backend_url or "").strip().rstrip("/")
+    if not current_backend_url:
+        raise requests.exceptions.ConnectionError("backend_url is empty")
+
+    while True:
+        resp, resolved_backend_url = _get_json_with_backend_retry(
+            current_backend_url,
+            f"/api/jobs/{normalized_job_id}",
+            timeout,
+        )
+        current_backend_url = resolved_backend_url
+        if resp.status_code >= 400:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
+            raise RuntimeError(str(detail or "jobs status failed"))
+
+        data = resp.json()
+        if not isinstance(data, dict):
+            raise RuntimeError("Invalid job status response")
+
+        status = str(data.get("status", "")).strip().lower()
+        if status == "done":
+            return data, current_backend_url
+        if status == "failed":
+            raise RuntimeError(str(data.get("error") or data.get("progress_text") or "Job failed"))
+
+        time.sleep(max(0.2, float(poll_interval)))
+
+
 def bootstrap_local_backend_daemon() -> tuple[bool, str, str]:
     root_dir = os.path.dirname(os.path.abspath(__file__))
     script_path = os.path.join(root_dir, "start-backend.sh")
@@ -305,16 +374,49 @@ class WorkerThread(QThread):
                 self.error.emit(str(detail or "jobs/run failed"))
                 return
 
-            data = resp.json()
-            if not data.get("ok"):
-                self.error.emit(data.get("detail", "Unknown error"))
+            submission = resp.json()
+            if not isinstance(submission, dict):
+                self.error.emit("jobs/run returned invalid response")
+                return
+            if not submission.get("ok"):
+                self.error.emit(str(submission.get("detail", "Unknown error")))
                 return
 
+            job_id = str(submission.get("job_id", "")).strip()
+            if not job_id:
+                self.error.emit("jobs/run did not return a job id")
+                return
+
+            job_status_message = str(submission.get("progress_text", "")).strip()
+            if job_status_message:
+                self.progress.emit(15, job_status_message)
+
+            status_response, resolved_backend_url = _poll_job_status(self.backend_url, job_id)
+            if resolved_backend_url != self.backend_url:
+                self.backend_url = resolved_backend_url
+                self.backend_url_resolved.emit(resolved_backend_url)
+
+            status = str(status_response.get("status", "")).strip().lower()
+            progress_value = int(status_response.get("progress_value", 0) or 0)
+            progress_text = str(status_response.get("progress_text", "")).strip()
+            if progress_text:
+                self.progress.emit(max(15, min(95, progress_value)), progress_text)
+
+            if status != "done":
+                self.error.emit(str(status_response.get("error") or "jobs run did not finish"))
+                return
+
+            result_payload = status_response.get("result")
+            if not isinstance(result_payload, dict):
+                self.error.emit("Job completed without a usable result")
+                return
+
+            data = result_payload
             source_type = str(data.get("source_type", "")).strip()
             if source_type == "captions":
-                self.progress.emit(45, "已获取字幕，正在翻译并改写...")
+                self.progress.emit(80, "已获取字幕，正在整理并改写...")
             elif source_type == "audio":
-                self.progress.emit(45, "已获取音频，正在转录、翻译并改写...")
+                self.progress.emit(80, "已获取音频，正在整理并改写...")
 
             translation = data.get("translation_zh", {})
             zh_segments = translation.get("segments", [])
@@ -325,7 +427,7 @@ class WorkerThread(QThread):
             ).strip()
 
             if zh_text:
-                self.progress.emit(75, "正在改写中文内容...")
+                self.progress.emit(90, "正在改写中文内容...")
                 rewrite_payload = {
                     "source_text": zh_text,
                     "translation_config": translation_config,
@@ -365,6 +467,7 @@ class WorkerThread(QThread):
 
             self.progress.emit(100, "完成!")
             self.result.emit(data)
+            return
 
         except requests.exceptions.Timeout:
             self.error.emit("请求超时，视频可能太长或后端忙碌")

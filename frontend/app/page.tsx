@@ -15,6 +15,7 @@ import {
   buildTranslationConfig,
   defaultSettings,
   extractApiErrorMessage,
+  waitForJobResult,
 } from "./lib/job";
 
 const DEFAULT_REWRITE_FOCUS =
@@ -78,6 +79,7 @@ export default function HomePage() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
   const [errorMessage, setErrorMessage] = useState("");
+  const [jobStatusMessage, setJobStatusMessage] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
   const [rewriteFocus, setRewriteFocus] = useState(DEFAULT_REWRITE_FOCUS);
@@ -93,7 +95,7 @@ export default function HomePage() {
   const [historyError, setHistoryError] = useState("");
 
   const runStateLabel = isRunning
-    ? "处理中"
+    ? jobStatusMessage || "处理中"
     : jobResult
       ? "已完成"
       : "待运行";
@@ -321,6 +323,7 @@ export default function HomePage() {
     setIsRunning(true);
     setJobResult(null);
     setErrorMessage("");
+    setJobStatusMessage("正在提交任务...");
 
     try {
       const response = await apiFetch("/api/jobs/run", {
@@ -339,8 +342,37 @@ export default function HomePage() {
         throw new Error(await extractApiErrorMessage(response));
       }
 
-      const data = (await response.json()) as JobResult;
+      const submission = (await response.json()) as {
+        ok?: boolean;
+        job_id?: string;
+        status?: string;
+        progress_text?: string | null;
+      };
+      const jobId = typeof submission.job_id === "string" ? submission.job_id.trim() : "";
+      if (!jobId) {
+        throw new Error("Job submission did not return a job id.");
+      }
+      if (submission.progress_text) {
+        setJobStatusMessage(submission.progress_text);
+      }
+
+      const data = await waitForJobResult(jobId, (status) => {
+        const statusText =
+          typeof status.progress_text === "string" ? status.progress_text.trim() : "";
+        if (statusText) {
+          setJobStatusMessage(statusText);
+          return;
+        }
+        if (status.status === "queued") {
+          setJobStatusMessage("任务已排队...");
+          return;
+        }
+        if (status.status === "running") {
+          setJobStatusMessage("任务处理中...");
+        }
+      });
       setJobResult(data);
+      setJobStatusMessage("");
       recordSearchHistory(
         youtubeUrl,
         data.video.title || youtubeUrl.trim() || "YouTube 视频",
@@ -349,6 +381,7 @@ export default function HomePage() {
       const message =
         error instanceof Error ? error.message : "Unknown request error";
       setErrorMessage(message);
+      setJobStatusMessage("");
     } finally {
       setIsRunning(false);
     }
@@ -409,7 +442,11 @@ export default function HomePage() {
             </button>
           </form>
 
-          {isRunning ? <p className="landing-progress-text">正在处理</p> : null}
+          {isRunning ? (
+            <p className="landing-progress-text">
+              {jobStatusMessage || "正在处理"}
+            </p>
+          ) : null}
 
           {errorMessage ? <p className="control-error-text landing-error-text">{errorMessage}</p> : null}
         </section>
@@ -529,7 +566,7 @@ export default function HomePage() {
               </button>
               {isRunning ? (
                 <p className="composer-help-text">
-                  正在处理，通常需要 1-3 分钟（下载音频、Whisper 转写、翻译）。
+                  {jobStatusMessage || "正在处理"}，通常需要 1-3 分钟（下载音频、Whisper 转写、翻译）。
                 </p>
               ) : null}
             </div>

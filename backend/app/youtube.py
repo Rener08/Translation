@@ -236,6 +236,16 @@ class JobRunResponse(BaseModel):
     content_context_id: str
 
 
+class JobRunStatusResponse(BaseModel):
+    ok: bool
+    job_id: str
+    status: Literal["queued", "running", "done", "failed"]
+    progress_value: int = 0
+    progress_text: str | None = None
+    result: JobRunResponse | None = None
+    error: str | None = None
+
+
 class ContentChatMessageRequest(BaseModel):
     role: Literal["user", "assistant"]
     content: str

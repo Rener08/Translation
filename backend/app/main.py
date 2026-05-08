@@ -25,6 +25,11 @@ from app.services.job_run_service import (
     JobRunError,
     run_video_job_with_translation_config,
 )
+from app.services.job_queue_service import (
+    get_job_record,
+    submit_background_job,
+    update_job_progress,
+)
 from app.services.participant_candidate_service import extract_candidate_people
 from app.services.session_history_service import (
     append_chat_exchange,
@@ -73,6 +78,7 @@ from app.youtube import (
     DiarizedTranscriptSegmentResponse,
     JobRunRequest,
     JobRunResponse,
+    JobRunStatusResponse,
     JobTranscriptResponse,
     JobTranslationResponse,
     JobVideoResponse,
@@ -613,30 +619,119 @@ async def content_rewrite(request: ContentRewriteRequest) -> ContentRewriteRespo
 
 
 @app.post(
-    "/api/jobs/run", response_model=JobRunResponse, response_model_exclude_none=True
+    "/api/jobs/run",
+    response_model=JobRunStatusResponse,
+    response_model_exclude_none=True,
 )
-async def run_job(request: JobRunRequest) -> JobRunResponse:
+async def run_job(request: JobRunRequest) -> JobRunStatusResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
-        translation_config = (
-            request.translation_config.model_dump()
-            if request.translation_config
-            else None
-        )
-        result = await run_in_threadpool(
-            run_video_job_with_translation_config,
-            parsed.normalized_url,
-            source_mode=request.source_mode,
-            translation_config=translation_config,
-        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
+    translation_config = (
+        request.translation_config.model_dump()
+        if request.translation_config
+        else None
+    )
+    job_id = submit_background_job(
+        lambda created_job_id: _run_job_background(
+            created_job_id,
+            parsed.normalized_url,
+            request.source_mode,
+            translation_config,
+        )
+    )
+    return JobRunStatusResponse(
+        ok=True,
+        job_id=job_id,
+        status="queued",
+        progress_value=0,
+        progress_text="已加入队列",
+    )
+
+
+@app.get(
+    "/api/jobs/{job_id}",
+    response_model=JobRunStatusResponse,
+    response_model_exclude_none=True,
+)
+async def get_job_status(job_id: str) -> JobRunStatusResponse:
+    record = get_job_record(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    return _job_record_to_response(record)
+
+
+def _run_job_background(
+    job_id: str,
+    normalized_url: str,
+    source_mode: str,
+    translation_config: dict[str, object] | None,
+) -> None:
+    try:
+        update_job_progress(
+            job_id,
+            status="running",
+            progress_value=10,
+            progress_text="正在处理视频...",
+        )
+        result = run_video_job_with_translation_config(
+            normalized_url,
+            source_mode=source_mode,
+            translation_config=translation_config,
+        )
+        update_job_progress(
+            job_id,
+            progress_value=90,
+            progress_text="正在保存会话...",
+        )
+        _persist_job_session(
+            result=result,
+            normalized_url=normalized_url,
+            source_mode=source_mode,
+            translation_config=translation_config,
+        )
+        response = _build_job_run_response(result)
+        update_job_progress(
+            job_id,
+            status="done",
+            progress_value=100,
+            progress_text="处理完成",
+            result=response.model_dump(mode="json"),
+        )
+    except ValueError as error:
+        update_job_progress(
+            job_id,
+            status="failed",
+            progress_value=100,
+            progress_text="处理失败",
+            error=str(error),
+        )
     except AudioFileNotFoundError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        update_job_progress(
+            job_id,
+            status="failed",
+            progress_value=100,
+            progress_text="处理失败",
+            error=str(error),
+        )
     except (TranscriptionConfigurationError, TranslationConfigurationError) as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
+        update_job_progress(
+            job_id,
+            status="failed",
+            progress_value=100,
+            progress_text="处理失败",
+            error=str(error),
+        )
     except YtDlpNotInstalledError as error:
-        raise HTTPException(status_code=500, detail=str(error)) from error
+        update_job_progress(
+            job_id,
+            status="failed",
+            progress_value=100,
+            progress_text="处理失败",
+            error=str(error),
+        )
     except (
         AudioDownloadError,
         CaptionServiceError,
@@ -645,28 +740,52 @@ async def run_job(request: JobRunRequest) -> JobRunResponse:
         TranslationProviderError,
         VideoInspectError,
     ) as error:
-        logger.error("Job run failed for %s: %s", request.url, error)
-        raise HTTPException(status_code=502, detail=str(error)) from error
+        logger.error("Job run failed for %s: %s", normalized_url, error)
+        update_job_progress(
+            job_id,
+            status="failed",
+            progress_value=100,
+            progress_text="处理失败",
+            error=str(error),
+        )
+    except Exception as error:  # pragma: no cover - defensive
+        logger.exception("Unexpected job failure for %s", normalized_url)
+        update_job_progress(
+            job_id,
+            status="failed",
+            progress_value=100,
+            progress_text="处理失败",
+            error=str(error),
+        )
 
+
+def _persist_job_session(
+    *,
+    result,
+    normalized_url: str,
+    source_mode: str,
+    translation_config: dict[str, object] | None,
+) -> None:
     try:
-        await run_in_threadpool(
-            upsert_job_session,
+        upsert_job_session(
             content_context_id=result.content_context_id,
             video_id=result.video.video_id,
-            video_url=parsed.normalized_url,
+            video_url=normalized_url,
             video_title=result.video.title,
             video_duration_sec=result.video.duration_sec,
             video_uploader=result.video.uploader,
             video_thumbnail=result.video.thumbnail,
-            source_mode=request.source_mode,
+            source_mode=source_mode,
             source_type=result.source_type,
             translation_provider=(
-                request.translation_config.provider
-                if request.translation_config
+                str(translation_config.get("provider"))
+                if translation_config and translation_config.get("provider")
                 else None
             ),
             translation_model=(
-                request.translation_config.model if request.translation_config else None
+                str(translation_config.get("model"))
+                if translation_config and translation_config.get("model")
+                else None
             ),
             transcript_en_text=result.transcript_en.text,
             transcript_en_segments=[
@@ -696,8 +815,10 @@ async def run_job(request: JobRunRequest) -> JobRunResponse:
             ],
         )
     except Exception:
-        logger.warning("Failed to persist session history for %s", request.url)
+        logger.warning("Failed to persist session history for %s", normalized_url)
 
+
+def _build_job_run_response(result) -> JobRunResponse:
     return JobRunResponse(
         ok=True,
         video=JobVideoResponse(
@@ -734,4 +855,18 @@ async def run_job(request: JobRunRequest) -> JobRunResponse:
             ]
         ),
         content_context_id=result.content_context_id,
+    )
+
+
+def _job_record_to_response(record) -> JobRunStatusResponse:
+    result = record.result
+    job_result = JobRunResponse(**result) if isinstance(result, dict) else None
+    return JobRunStatusResponse(
+        ok=True,
+        job_id=record.job_id,
+        status=record.status,
+        progress_value=record.progress_value,
+        progress_text=record.progress_text or None,
+        result=job_result,
+        error=record.error or None,
     )
