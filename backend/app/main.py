@@ -1,4 +1,5 @@
 import logging
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -103,7 +104,15 @@ from app.youtube import (
 
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="YouTube Translator MVP API")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await run_in_threadpool(cleanup_stale_tmp_artifacts)
+    yield
+
+
+app = FastAPI(title="YouTube Translator MVP API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -117,12 +126,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-async def cleanup_tmp_artifacts_on_startup() -> None:
-    await run_in_threadpool(cleanup_stale_tmp_artifacts)
-
 
 @app.get("/health")
 async def health() -> dict[str, str]:
