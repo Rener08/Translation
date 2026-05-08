@@ -3,10 +3,13 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
+
+from app.config import get_env_str
 
 
 logger = logging.getLogger(__name__)
@@ -31,6 +34,9 @@ class JobRecord:
 
 _JOB_RECORDS: dict[str, JobRecord] = {}
 _JOB_RECORDS_LOCK = threading.RLock()
+_JOB_EXECUTOR: ThreadPoolExecutor | None = None
+_JOB_EXECUTOR_MAX_WORKERS: int | None = None
+_JOB_EXECUTOR_LOCK = threading.Lock()
 
 
 def submit_background_job(
@@ -42,14 +48,9 @@ def submit_background_job(
     record = JobRecord(job_id=normalized_job_id)
     with _JOB_RECORDS_LOCK:
         _JOB_RECORDS[normalized_job_id] = record
+        _prune_job_records_locked()
 
-    thread = threading.Thread(
-        target=_run_background_job,
-        args=(normalized_job_id, target),
-        daemon=True,
-        name=f"job-{normalized_job_id[:8]}",
-    )
-    thread.start()
+    _get_job_executor().submit(_run_background_job, normalized_job_id, target)
     return normalized_job_id
 
 
@@ -59,10 +60,16 @@ def get_job_record(job_id: str) -> JobRecord | None:
         return None
 
     with _JOB_RECORDS_LOCK:
+        _prune_job_records_locked()
         record = _JOB_RECORDS.get(normalized_job_id)
         if record is None:
             return None
         return _copy_record(record)
+
+
+def prune_job_records() -> None:
+    with _JOB_RECORDS_LOCK:
+        _prune_job_records_locked()
 
 
 def update_job_progress(
@@ -98,7 +105,12 @@ def update_job_progress(
 
 def _run_background_job(job_id: str, target: Callable[[str], None]) -> None:
     try:
-        update_job_progress(job_id, status="running", progress_value=5, progress_text="正在处理")
+        update_job_progress(
+            job_id,
+            status="running",
+            progress_value=5,
+            progress_text="正在处理",
+        )
         target(job_id)
     except Exception as error:  # pragma: no cover - defensive
         logger.exception("Job %s failed unexpectedly", job_id)
@@ -109,6 +121,113 @@ def _run_background_job(job_id: str, target: Callable[[str], None]) -> None:
             progress_text="处理失败",
             error=str(error),
         )
+
+
+def _get_job_executor() -> ThreadPoolExecutor:
+    max_workers = _get_job_queue_max_workers()
+    global _JOB_EXECUTOR, _JOB_EXECUTOR_MAX_WORKERS
+
+    with _JOB_EXECUTOR_LOCK:
+        if _JOB_EXECUTOR is None or _JOB_EXECUTOR_MAX_WORKERS != max_workers:
+            previous_executor = _JOB_EXECUTOR
+            _JOB_EXECUTOR = ThreadPoolExecutor(
+                max_workers=max_workers,
+                thread_name_prefix="job-queue",
+            )
+            _JOB_EXECUTOR_MAX_WORKERS = max_workers
+            if previous_executor is not None:
+                previous_executor.shutdown(wait=False, cancel_futures=False)
+
+        assert _JOB_EXECUTOR is not None
+        return _JOB_EXECUTOR
+
+
+def _get_job_queue_max_workers() -> int:
+    return _clamp_int_env("JOB_QUEUE_MAX_WORKERS", default=1, minimum=1, maximum=4)
+
+
+def _get_job_record_ttl_hours() -> int:
+    return _positive_int_env("JOB_RECORD_TTL_HOURS", default=24)
+
+
+def _get_job_record_max_count() -> int:
+    return _positive_int_env("JOB_RECORD_MAX_COUNT", default=200)
+
+
+def _positive_int_env(name: str, default: int) -> int:
+    raw_value = get_env_str(name)
+    if not raw_value:
+        return default
+
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+
+    if parsed <= 0:
+        return default
+    return parsed
+
+
+def _clamp_int_env(name: str, *, default: int, minimum: int, maximum: int) -> int:
+    raw_value = get_env_str(name)
+    if not raw_value:
+        return default
+
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+
+    if parsed < minimum:
+        return minimum
+    if parsed > maximum:
+        return maximum
+    return parsed
+
+
+def _prune_job_records_locked() -> None:
+    ttl_hours = _get_job_record_ttl_hours()
+    max_count = _get_job_record_max_count()
+    now = datetime.now(timezone.utc)
+    finished_records: list[tuple[str, datetime]] = []
+
+    for job_id, record in list(_JOB_RECORDS.items()):
+        if record.status in ("queued", "running"):
+            continue
+        finished_records.append((job_id, _parse_record_timestamp(record.updated_at)))
+
+    stale_cutoff = now - timedelta(hours=ttl_hours)
+    for job_id, updated_at in finished_records:
+        if updated_at < stale_cutoff:
+            _JOB_RECORDS.pop(job_id, None)
+
+    if len(_JOB_RECORDS) <= max_count:
+        return
+
+    remaining_finished = sorted(
+        (
+            (job_id, updated_at)
+            for job_id, updated_at in finished_records
+            if job_id in _JOB_RECORDS
+        ),
+        key=lambda item: item[1],
+    )
+    excess = len(_JOB_RECORDS) - max_count
+    for job_id, _ in remaining_finished[:excess]:
+        _JOB_RECORDS.pop(job_id, None)
+
+
+def _parse_record_timestamp(value: str) -> datetime:
+    normalized_value = str(value or "").strip().replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized_value)
+    except ValueError:
+        return datetime.min.replace(tzinfo=timezone.utc)
+
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _copy_record(record: JobRecord) -> JobRecord:

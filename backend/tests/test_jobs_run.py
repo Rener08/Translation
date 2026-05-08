@@ -676,7 +676,7 @@ def test_jobs_run_endpoint_returns_final_result(monkeypatch) -> None:
         json={"url": "https://youtu.be/abc123xyz?t=12"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     submission = response.json()
     assert submission["ok"] is True
     assert submission["status"] == "queued"
@@ -804,7 +804,7 @@ def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
         },
     )
 
-    assert job_response.status_code == 200
+    assert job_response.status_code == 202
     submission = job_response.json()
     assert submission["ok"] is True
     assert submission["status"] == "queued"
@@ -875,7 +875,7 @@ def test_jobs_run_endpoint_returns_upstream_error(monkeypatch) -> None:
         json={"url": "https://www.youtube.com/watch?v=abc123xyz"},
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     submission = response.json()
     assert submission["ok"] is True
     assert submission["status"] == "queued"
@@ -950,7 +950,7 @@ def test_jobs_run_endpoint_forwards_translation_config(monkeypatch) -> None:
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     submission = response.json()
     assert submission["ok"] is True
     assert submission["status"] == "queued"
@@ -1016,7 +1016,7 @@ def test_jobs_run_endpoint_forwards_source_mode(monkeypatch) -> None:
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     submission = response.json()
     assert submission["ok"] is True
     assert submission["status"] == "queued"

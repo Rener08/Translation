@@ -132,7 +132,7 @@ def test_jobs_run_persists_session_history(monkeypatch, tmp_path: Path) -> None:
         },
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 202
     body = response.json()
     assert body["ok"] is True
     assert body["status"] == "queued"

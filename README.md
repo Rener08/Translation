@@ -35,7 +35,6 @@ Rewrite precedence is explicit:
 |   |   |   |-- video_source_service.py
 |   |   |   `-- yt_dlp_service.py
 |   |   `-- youtube.py
-|   |-- .venv/
 |   |-- requirements.txt
 |   |-- tests/
 |   |   |-- test_fetch_source.py
@@ -54,15 +53,19 @@ Rewrite precedence is explicit:
 |   |   `-- page.tsx
 |   |-- next-env.d.ts
 |   |-- next.config.ts
-|   |-- node_modules/
 |   |-- npm.cmd
 |   |-- package-lock.json
 |   |-- package.json
 |   `-- tsconfig.json
-|-- tmp/
 |-- .env.example
 `-- README.md
 ```
+
+Local generated files created during setup or runtime, not source directories:
+
+- `backend/.venv/`
+- `frontend/node_modules/`
+- `tmp/`
 
 ## Tech Stack
 
@@ -336,7 +339,7 @@ Translation prompt design:
 - Request-level translation settings can override the provider, API key, base URL, model, and extra headers.
 - Audio transcription runs locally through `faster-whisper` in this MVP.
 
-Run full job endpoint:
+Submit async job endpoint:
 
 ```bash
 curl -X POST http://localhost:8000/api/jobs/run ^
@@ -349,38 +352,20 @@ Expected response shape:
 ```json
 {
   "ok": true,
-  "video": {
-    "video_id": "dQw4w9WgXcQ",
-    "title": "video title",
-    "thumbnail": "https://...",
-    "duration_sec": 213,
-    "uploader": "channel name"
-  },
-  "source_type": "captions",
-  "transcript_en": {
-    "text": "full english transcript",
-    "segments": [
-      {
-        "index": 0,
-        "start": 0.0,
-        "end": 0.0,
-        "text": "Hello everyone..."
-      }
-    ]
-  },
-  "translation_zh": {
-    "segments": [
-      {
-        "index": 0,
-        "start": 0.0,
-        "end": 0.0,
-        "source_text": "Hello everyone...",
-        "translated_text": "\u5927\u5bb6\u597d\u2026\u2026"
-      }
-    ]
-  }
+  "job_id": "3f7a1f1e9f5e4d56a1d0f4b7d1a4d2c3",
+  "status": "queued",
+  "progress_value": 0,
+  "progress_text": "已加入队列"
 }
 ```
+
+Poll job status endpoint:
+
+```bash
+curl http://localhost:8000/api/jobs/3f7a1f1e9f5e4d56a1d0f4b7d1a4d2c3
+```
+
+When the job finishes, `done` responses include `result`, and `failed` responses include `error`.
 
 Job orchestration notes:
 
@@ -388,7 +373,9 @@ Job orchestration notes:
 - Metadata and source selection share the same `yt-dlp` inspection payload, so the job does not inspect the same video twice.
 - The pipeline prefers English captions. If captions are unavailable, it downloads audio to `tmp/`, transcribes in English, then translates to Simplified Chinese.
 - The job request can include `translation_config` so the UI can switch between OpenAI and DeepSeek without editing backend files.
-- The full job runs synchronously in one request. No database, queue, or background worker is used.
+- `POST /api/jobs/run` submits the full metadata -> source -> transcript -> translation flow to an in-memory job queue and returns immediately with `202 Accepted`.
+- `GET /api/jobs/{job_id}` polls job progress. `done` responses include `result`, and `failed` responses include `error`.
+- The queue is in-memory and designed for local single-process development. Restarting the backend drops queued and running job state.
 
 Run tests:
 
@@ -525,6 +512,7 @@ Web frontend loop for component development:
 - Includes `POST /api/translate`
 - Includes `POST /api/content-rewrite`
 - Includes `POST /api/jobs/run`
+- Uses an in-memory queue for async job runs and `GET /api/jobs/{job_id}` polling
 - Supports `youtube.com/watch?v=...`
 - Supports `youtu.be/...`
 - Supports extra query parameters and normalizes the URL
@@ -536,7 +524,7 @@ Web frontend loop for component development:
 - Transcribes local audio files through `faster-whisper`
 - Translates transcript segments through the OpenAI responses API
 - Translates transcript segments through either OpenAI or DeepSeek
-- Runs the full metadata -> source -> transcript -> translation flow in one synchronous API call
+- Submits the full metadata -> source -> transcript -> translation flow through the in-memory job queue
 - Exposes `POST /api/content-rewrite` as the article-writing layer on top of the translation pipeline
 - Supports desktop-selected writing prompts / skills for rewrite requests
 - Validates selected writing prompts before rewrite, blocking empty bodies and broken placeholders
@@ -570,7 +558,7 @@ Web frontend loop for component development:
 - Includes frontend to backend full-job flow
 - Includes frontend to backend content-rewrite flow (reference-driven rewriting prompt)
 - Includes backend CORS for local development
-- Does not include auth, database-backed runs, queue, or deployment
+- Does not include auth, database-backed persistence, or deployment
 
 ## Verification Notes
 

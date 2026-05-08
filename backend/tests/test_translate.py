@@ -10,11 +10,13 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.services.translation_service import (
     _build_translation_chunks,
+    _translation_cache_key,
     clean_translated_chinese_text,
     _segment_to_chunk_item,
     _translation_output_token_budget,
     TranslationSegment,
     TranslationChunkItem,
+    TranslationProviderConfig,
     TranslationConfigurationError,
     TranslationProviderError,
     translate_segments_to_chinese,
@@ -69,6 +71,37 @@ def test_clean_translated_chinese_text_removes_inline_pause_tokens() -> None:
     assert (
         clean_translated_chinese_text(value)
         == "甲：我们今天开始。乙：那就继续。其实已经很清楚了。"
+    )
+
+
+def test_clean_translated_chinese_text_removes_common_stage_direction_variants() -> None:
+    value = "[音乐]\n【掌声】\n(laughter)\n正文。"
+
+    assert clean_translated_chinese_text(value) == "正文。"
+
+
+def test_translation_cache_key_ignores_extra_header_order() -> None:
+    segments = [
+        {"index": 0, "start": 0.0, "end": 1.2, "text": "Hello there."},
+    ]
+    config_a = TranslationProviderConfig(
+        provider="deepseek",
+        api_key="demo-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-chat",
+        extra_headers={"X-Trace-Id": "1", "X-Session-Id": "2"},
+    )
+    config_b = TranslationProviderConfig(
+        provider="deepseek",
+        api_key="demo-key",
+        base_url="https://api.deepseek.com",
+        model="deepseek-chat",
+        extra_headers={"X-Session-Id": "2", "X-Trace-Id": "1"},
+    )
+
+    assert _translation_cache_key(segments, config_a) == _translation_cache_key(
+        segments,
+        config_b,
     )
 
 

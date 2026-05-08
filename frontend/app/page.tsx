@@ -179,7 +179,6 @@ export default function HomePage() {
           sourceMode: SOURCE_MODE_VALUES.has(parsed.sourceMode ?? "")
             ? (parsed.sourceMode as TranslationSettings["sourceMode"])
             : current.sourceMode,
-          apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : current.apiKey,
           baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : current.baseUrl,
           model: typeof parsed.model === "string" ? parsed.model : current.model,
           headersJson:
@@ -222,9 +221,16 @@ export default function HomePage() {
       return;
     }
     try {
+      const persistedSettings = {
+        provider: settings.provider,
+        sourceMode: settings.sourceMode,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+        headersJson: settings.headersJson,
+      };
       window.localStorage.setItem(
         TRANSLATION_SETTINGS_STORAGE_KEY,
-        JSON.stringify(settings),
+        JSON.stringify(persistedSettings),
       );
     } catch {
       // Ignore storage failures in private/incognito mode.

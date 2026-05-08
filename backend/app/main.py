@@ -2,7 +2,7 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -620,6 +620,7 @@ async def content_rewrite(request: ContentRewriteRequest) -> ContentRewriteRespo
 
 @app.post(
     "/api/jobs/run",
+    status_code=status.HTTP_202_ACCEPTED,
     response_model=JobRunStatusResponse,
     response_model_exclude_none=True,
 )
