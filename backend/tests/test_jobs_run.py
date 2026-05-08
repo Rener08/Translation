@@ -1,6 +1,8 @@
 import httpx
+import threading
 from fastapi.testclient import TestClient
 
+import app.main as app_main
 from app.main import app
 from app.services.job_run_service import (
     JobRunResult,
@@ -806,6 +808,7 @@ def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
         "provider": "deepseek",
         "model": "deepseek-chat",
         "rewritten_text": "# 测试标题\n\n这是改写后的中文正文。",
+        "quality_issues": [],
     }
 
 
@@ -963,3 +966,90 @@ def test_jobs_run_endpoint_forwards_source_mode(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["source_type"] == "audio"
+
+
+def test_jobs_run_endpoint_rejects_when_capacity_is_full(monkeypatch) -> None:
+    app_main.shutdown_job_executor()
+    monkeypatch.setattr(app_main, "_JOB_RUN_MAX_PENDING", 1, raising=False)
+    monkeypatch.setattr(app_main, "_JOB_RUN_ACTIVE", 0, raising=False)
+    monkeypatch.setattr(app_main, "_JOB_RUN_EXECUTOR", None, raising=False)
+
+    started = threading.Event()
+    release = threading.Event()
+    first_response: dict[str, object] = {}
+
+    def fake_run(
+        url: str,
+        source_mode: str = "subtitle_first",
+        translation_config: dict[str, object] | None = None,
+    ) -> JobRunResult:
+        started.set()
+        assert release.wait(timeout=5)
+        return JobRunResult(
+            video=VideoMetadata(
+                video_id="abc123xyz",
+                title="Test video",
+                duration_sec=10,
+                uploader="Uploader",
+                thumbnail="https://example.com/thumb.jpg",
+                subtitles=["en"],
+                automatic_captions=[],
+            ),
+            source_type="captions",
+            transcript_en=TranscriptionResult(
+                language="en",
+                text="Hello everyone.",
+                segments=[
+                    TranscriptSegment(
+                        index=0,
+                        start=0.0,
+                        end=0.0,
+                        text="Hello everyone.",
+                        speaker="Felix LeClair",
+                    )
+                ],
+            ),
+            translation_zh_segments=[
+                TranslationSegment(
+                    index=0,
+                    start=0.0,
+                    end=0.0,
+                    source_text="Hello everyone.",
+                    translated_text="大家好。",
+                )
+            ],
+            content_context_id="ctx_demo",
+        )
+
+    monkeypatch.setattr("app.main.run_video_job_with_translation_config", fake_run)
+
+    def issue_first_request() -> None:
+        first_response["response"] = client.post(
+            "/api/jobs/run",
+            json={"url": "https://www.youtube.com/watch?v=abc123xyz"},
+        )
+
+    worker = threading.Thread(target=issue_first_request)
+    worker.start()
+    assert started.wait(timeout=5)
+
+    response = client.post(
+        "/api/jobs/run",
+        json={"url": "https://www.youtube.com/watch?v=def456xyz"},
+    )
+
+    assert response.status_code == 429
+    assert response.json() == {"detail": "Job queue is full. Try again later."}
+
+    release.set()
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert first_response["response"].status_code == 200
+
+    third_response = client.post(
+        "/api/jobs/run",
+        json={"url": "https://www.youtube.com/watch?v=ghi789xyz"},
+    )
+
+    assert third_response.status_code == 200
+    app_main.shutdown_job_executor()

@@ -70,7 +70,7 @@ Rewrite precedence is explicit:
 - Backend: FastAPI
 - Runtime: Node.js 20+, Python 3.11
 
-## Installed On This Machine
+## Local Prerequisites
 
 - Python 3.11.9
 - Node.js 20.19.4
@@ -385,7 +385,7 @@ Job orchestration notes:
 - Metadata and source selection share the same `yt-dlp` inspection payload, so the job does not inspect the same video twice.
 - The pipeline prefers English captions. If captions are unavailable, it downloads audio to `tmp/`, transcribes in English, then translates to Simplified Chinese.
 - The job request can include `translation_config` so the UI can switch between OpenAI and DeepSeek without editing backend files.
-- The full job runs synchronously in one request. No database, queue, or background worker is used.
+- The full job runs synchronously in one request in a single-process local development setup. A bounded in-memory executor is used for local concurrency, but there is no database-backed queue or background worker, so restarting the backend loses any in-flight job state.
 
 Run tests:
 
@@ -567,7 +567,7 @@ Web frontend loop for component development:
 - Includes frontend to backend full-job flow
 - Includes frontend to backend content-rewrite flow (reference-driven rewriting prompt)
 - Includes backend CORS for local development
-- Does not include auth, database-backed runs, queue, or deployment
+- Does not include auth, database-backed runs, persistent queue, or deployment
 
 ## Verification Notes
 

@@ -113,7 +113,13 @@ def resolve_backend_base_url(force_probe=False):
     for base_url in _candidate_backend_urls():
         try:
             response = requests.get(f"{base_url}{BACKEND_HEALTH_PATH}", timeout=2)
-            if response.status_code == 200:
+            if response.status_code != 200:
+                continue
+            try:
+                payload = response.json()
+            except Exception:
+                continue
+            if isinstance(payload, dict) and str(payload.get("status", "")).strip().lower() == "ok":
                 _RESOLVED_BACKEND_URL = base_url
                 return base_url
         except Exception:

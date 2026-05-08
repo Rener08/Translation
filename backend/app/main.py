@@ -1,4 +1,10 @@
+import asyncio
 import logging
+import os
+from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from threading import Lock
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -102,7 +108,73 @@ from app.youtube import (
 
 
 logger = logging.getLogger(__name__)
-app = FastAPI(title="YouTube Translator MVP API")
+_JOB_RUN_MAX_PENDING_DEFAULT = 20
+_JOB_RUN_MAX_PENDING_MIN = 1
+_JOB_RUN_MAX_PENDING_MAX = 100
+_JOB_RUN_MAX_PENDING = _JOB_RUN_MAX_PENDING_DEFAULT
+_JOB_RUN_LOCK = Lock()
+_JOB_RUN_ACTIVE = 0
+_JOB_RUN_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _parse_job_run_max_pending() -> int:
+    raw_value = str(os.getenv("JOB_RUN_MAX_PENDING", "") or "").strip()
+    try:
+        value = int(raw_value) if raw_value else _JOB_RUN_MAX_PENDING_DEFAULT
+    except ValueError:
+        value = _JOB_RUN_MAX_PENDING_DEFAULT
+    return max(_JOB_RUN_MAX_PENDING_MIN, min(_JOB_RUN_MAX_PENDING_MAX, value))
+
+
+_JOB_RUN_MAX_PENDING = _parse_job_run_max_pending()
+
+
+def _get_job_run_executor() -> ThreadPoolExecutor:
+    global _JOB_RUN_EXECUTOR
+    if _JOB_RUN_EXECUTOR is None:
+        _JOB_RUN_EXECUTOR = ThreadPoolExecutor(
+            max_workers=_JOB_RUN_MAX_PENDING,
+            thread_name_prefix="job-run",
+        )
+    return _JOB_RUN_EXECUTOR
+
+
+def _acquire_job_run_slot() -> None:
+    global _JOB_RUN_ACTIVE
+    with _JOB_RUN_LOCK:
+        if _JOB_RUN_ACTIVE >= _JOB_RUN_MAX_PENDING:
+            raise HTTPException(
+                status_code=429,
+                detail="Job queue is full. Try again later.",
+            )
+        _JOB_RUN_ACTIVE += 1
+
+
+def _release_job_run_slot() -> None:
+    global _JOB_RUN_ACTIVE
+    with _JOB_RUN_LOCK:
+        _JOB_RUN_ACTIVE = max(0, _JOB_RUN_ACTIVE - 1)
+
+
+def shutdown_job_executor() -> None:
+    global _JOB_RUN_EXECUTOR, _JOB_RUN_ACTIVE
+    with _JOB_RUN_LOCK:
+        executor = _JOB_RUN_EXECUTOR
+        _JOB_RUN_EXECUTOR = None
+        _JOB_RUN_ACTIVE = 0
+    if executor is not None:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    try:
+        yield
+    finally:
+        shutdown_job_executor()
+
+
+app = FastAPI(title="YouTube Translator MVP API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -581,12 +653,20 @@ async def run_job(request: JobRunRequest) -> JobRunResponse:
             if request.translation_config
             else None
         )
-        result = await run_in_threadpool(
-            run_video_job_with_translation_config,
-            parsed.normalized_url,
-            source_mode=request.source_mode,
-            translation_config=translation_config,
-        )
+        _acquire_job_run_slot()
+        try:
+            loop = asyncio.get_running_loop()
+            result = await loop.run_in_executor(
+                _get_job_run_executor(),
+                partial(
+                    run_video_job_with_translation_config,
+                    parsed.normalized_url,
+                    source_mode=request.source_mode,
+                    translation_config=translation_config,
+                ),
+            )
+        finally:
+            _release_job_run_slot()
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except AudioFileNotFoundError as error:
