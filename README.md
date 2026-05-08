@@ -12,7 +12,7 @@ The current product direction is:
 
 Documentation map:
 
-- [`docs/README.md`](/Users/jack/Documents/coding/Translation/docs/README.md)
+- [`docs/README.md`](docs/README.md)
 
 Rewrite precedence is explicit:
 
@@ -92,6 +92,7 @@ Current local setup uses:
 - `WHISPER_COMPUTE_TYPE`: local Whisper compute type, default `int8`
 - `YTDLP_COOKIES_FROM_BROWSER`: optional browser cookies source for yt-dlp, for example `edge` or `chrome`
 - `YTDLP_COOKIES_FILE`: optional cookies.txt path for yt-dlp
+- `YTDLP_REMOTE_COMPONENTS`: optional `yt-dlp` remote components flag, for example `ejs:github`
 
 ## Local Whisper And Translation Keys
 
@@ -130,12 +131,14 @@ WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
 YTDLP_COOKIES_FROM_BROWSER=
 YTDLP_COOKIES_FILE=
+YTDLP_REMOTE_COMPONENTS=
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
 ## yt-dlp Installation
 
 The backend uses `yt-dlp` for video inspection and audio download.
+Remote components are opt-in through `YTDLP_REMOTE_COMPONENTS`; leave it empty unless you explicitly need them.
 
 Install backend dependencies inside the project virtual environment:
 
@@ -468,7 +471,7 @@ Writing styles are local prompt files in `skills/`.
 - If a prompt contains `{{transcript}}`, backend treats it as a full prompt and injects the source text there
 - If a prompt does not contain `{{transcript}}`, backend uses it as a style hint and falls back to managed rewrite references and routing
 
-See [docs/writing_style_prompt_format.md](/Users/jack/Documents/coding/Translation/docs/writing_style_prompt_format.md) for the current format contract.
+See [docs/writing_style_prompt_format.md](docs/writing_style_prompt_format.md) for the current format contract.
 
 ### Phase 8 UI
 

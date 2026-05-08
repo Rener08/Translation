@@ -119,8 +119,7 @@ def test_download_audio_returns_downloaded_file_path(
     result = download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
 
     assert "--cookies-from-browser" not in captured_command
-    assert "--remote-components" in captured_command
-    assert "ejs:github" in captured_command
+    assert "--remote-components" not in captured_command
     assert "--concurrent-fragments" in captured_command
     assert captured_command[captured_command.index("--concurrent-fragments") + 1] == "3"
     assert "--extract-audio" not in captured_command

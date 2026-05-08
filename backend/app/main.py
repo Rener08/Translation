@@ -140,13 +140,24 @@ class ProviderModelsResponse(BaseModel):
 async def provider_models(
     request: ProviderModelsRequest,
 ) -> ProviderModelsResponse:
-    models = await run_in_threadpool(
-        discover_provider_models,
-        provider=request.provider,
-        base_url=request.base_url or "",
-        api_key=request.api_key or "",
-        extra_headers=request.extra_headers,
-    )
+    try:
+        models = await run_in_threadpool(
+            discover_provider_models,
+            provider=request.provider,
+            base_url=request.base_url or "",
+            api_key=request.api_key or "",
+            extra_headers=request.extra_headers,
+        )
+    except TranslationConfigurationError as error:
+        raise HTTPException(status_code=500, detail=str(error)) from error
+    except TranslationProviderError as error:
+        raise HTTPException(status_code=502, detail=str(error)) from error
+    except Exception as error:
+        logger.exception("Failed to discover provider models for %s", request.provider)
+        raise HTTPException(
+            status_code=502,
+            detail="Failed to discover provider models.",
+        ) from error
     return ProviderModelsResponse(ok=True, provider=request.provider, models=models)
 
 
@@ -168,7 +179,7 @@ async def parse_youtube(request: ParseYouTubeRequest) -> ParseYouTubeResponse:
 async def inspect_video(request: VideoInspectRequest) -> VideoInspectResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
-        metadata = inspect_video_metadata(parsed.normalized_url)
+        metadata = await run_in_threadpool(inspect_video_metadata, parsed.normalized_url)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except YtDlpNotInstalledError as error:
@@ -211,7 +222,7 @@ async def video_participants(
 ) -> VideoParticipantsResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
-        metadata = inspect_video_metadata(parsed.normalized_url)
+        metadata = await run_in_threadpool(inspect_video_metadata, parsed.normalized_url)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except YtDlpNotInstalledError as error:
@@ -245,16 +256,25 @@ async def resolve_video_speakers(
 ) -> ResolveSpeakersResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
-        metadata = inspect_video_metadata(parsed.normalized_url)
-        source = fetch_video_source(
+        metadata = await run_in_threadpool(
+            inspect_video_metadata, parsed.normalized_url
+        )
+        source = await run_in_threadpool(
+            fetch_video_source,
             parsed.normalized_url,
             source_mode="force_audio",
         )
         if source.source_type != "audio" or not source.audio_file_path:
             raise VideoInspectError("Speaker resolution requires an audio source.")
-        transcript = transcribe_audio_file(source.audio_file_path)
-        diarization = diarize_audio_file(source.audio_file_path)
-        diarized_transcript = assign_speakers_to_transcript(transcript, diarization)
+        transcript = await run_in_threadpool(
+            transcribe_audio_file, source.audio_file_path
+        )
+        diarization = await run_in_threadpool(
+            diarize_audio_file, source.audio_file_path
+        )
+        diarized_transcript = await run_in_threadpool(
+            assign_speakers_to_transcript, transcript, diarization
+        )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except AudioFileNotFoundError as error:
@@ -325,7 +345,8 @@ async def resolve_video_speakers(
 async def fetch_source(request: VideoFetchSourceRequest) -> VideoFetchSourceResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
-        source = fetch_video_source(
+        source = await run_in_threadpool(
+            fetch_video_source,
             parsed.normalized_url,
             source_mode=request.source_mode,
         )
@@ -356,7 +377,9 @@ async def fetch_source(request: VideoFetchSourceRequest) -> VideoFetchSourceResp
 )
 async def transcribe_audio(request: TranscribeRequest) -> TranscribeResponse:
     try:
-        result = transcribe_audio_file(request.audio_file_path)
+        result = await run_in_threadpool(
+            transcribe_audio_file, request.audio_file_path
+        )
     except AudioFileNotFoundError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except TranscriptionConfigurationError as error:
@@ -384,9 +407,15 @@ async def transcribe_audio(request: TranscribeRequest) -> TranscribeResponse:
 @app.post("/api/diarize", response_model=DiarizeResponse)
 async def diarize_audio(request: DiarizeRequest) -> DiarizeResponse:
     try:
-        transcript = transcribe_audio_file(request.audio_file_path)
-        diarization = diarize_audio_file(request.audio_file_path)
-        aligned_transcript = assign_speakers_to_transcript(transcript, diarization)
+        transcript = await run_in_threadpool(
+            transcribe_audio_file, request.audio_file_path
+        )
+        diarization = await run_in_threadpool(
+            diarize_audio_file, request.audio_file_path
+        )
+        aligned_transcript = await run_in_threadpool(
+            assign_speakers_to_transcript, transcript, diarization
+        )
     except AudioFileNotFoundError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
     except (
@@ -426,7 +455,8 @@ async def diarize_audio(request: DiarizeRequest) -> DiarizeResponse:
 @app.post("/api/translate", response_model=TranslateResponse)
 async def translate_segments(request: TranslateRequest) -> TranslateResponse:
     try:
-        translations = translate_segments_to_chinese(
+        translations = await run_in_threadpool(
+            translate_segments_to_chinese,
             [segment.model_dump() for segment in request.segments],
             translation_config=(
                 request.translation_config.model_dump()
@@ -457,7 +487,8 @@ async def translate_segments(request: TranslateRequest) -> TranslateResponse:
 @app.post("/api/content-chat", response_model=ContentChatResponse)
 async def content_chat(request: ContentChatRequest) -> ContentChatResponse:
     try:
-        result = answer_content_question(
+        result = await run_in_threadpool(
+            answer_content_question,
             content_context_id=request.content_context_id,
             video_title=request.video_title,
             transcript_en=request.transcript_en,
@@ -475,7 +506,8 @@ async def content_chat(request: ContentChatRequest) -> ContentChatResponse:
 
     if request.content_context_id:
         try:
-            append_chat_exchange(
+            await run_in_threadpool(
+                append_chat_exchange,
                 content_context_id=request.content_context_id,
                 question=request.question,
                 answer=result.answer,
@@ -546,7 +578,8 @@ async def content_rewrite(request: ContentRewriteRequest) -> ContentRewriteRespo
     if request.content_context_id:
         try:
             quality_issues = list(getattr(result, "quality_issues", ()) or [])
-            record_rewrite_result(
+            await run_in_threadpool(
+                record_rewrite_result,
                 content_context_id=request.content_context_id,
                 rewrite_focus=request.rewrite_focus,
                 rewrite_source_text=request.source_text,
@@ -607,7 +640,8 @@ async def run_job(request: JobRunRequest) -> JobRunResponse:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
     try:
-        upsert_job_session(
+        await run_in_threadpool(
+            upsert_job_session,
             content_context_id=result.content_context_id,
             video_id=result.video.video_id,
             video_url=parsed.normalized_url,

@@ -24,7 +24,7 @@ else
   echo "⚠️ node@22 is unavailable (missing dylib or broken link), falling back to current PATH node."
 fi
 
-if [ ! -d "$FRONTEND_DIR/node_modules/@next/swc-darwin-arm64" ]; then
+if [ ! -f "$FRONTEND_DIR/node_modules/next/dist/bin/next" ]; then
   npm install
 fi
 

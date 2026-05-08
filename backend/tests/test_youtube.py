@@ -13,6 +13,30 @@ def test_parse_youtu_be_url() -> None:
     assert parsed.normalized_url == "https://www.youtube.com/watch?v=abc123xyz"
 
 
+def test_parse_youtube_shorts_url() -> None:
+    parsed = parse_youtube_url("https://www.youtube.com/shorts/abc123xyz")
+    assert parsed.video_id == "abc123xyz"
+    assert parsed.normalized_url == "https://www.youtube.com/watch?v=abc123xyz"
+
+
+def test_parse_youtube_embed_url() -> None:
+    parsed = parse_youtube_url("https://www.youtube.com/embed/abc123xyz")
+    assert parsed.video_id == "abc123xyz"
+    assert parsed.normalized_url == "https://www.youtube.com/watch?v=abc123xyz"
+
+
+def test_parse_youtube_live_url() -> None:
+    parsed = parse_youtube_url("https://www.youtube.com/live/abc123xyz")
+    assert parsed.video_id == "abc123xyz"
+    assert parsed.normalized_url == "https://www.youtube.com/watch?v=abc123xyz"
+
+
+def test_parse_youtube_music_url() -> None:
+    parsed = parse_youtube_url("https://music.youtube.com/watch?v=abc123xyz")
+    assert parsed.video_id == "abc123xyz"
+    assert parsed.normalized_url == "https://www.youtube.com/watch?v=abc123xyz"
+
+
 def test_parse_youtube_endpoint_returns_video_id() -> None:
     response = client.post(
         "/api/parse-youtube",

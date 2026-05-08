@@ -10,6 +10,7 @@ from app.config import (
     get_env_str,
     get_yt_dlp_auth_args,
     get_yt_dlp_proxy_args,
+    get_yt_dlp_remote_components,
 )
 from app.services.yt_dlp_service import (
     YtDlpNotInstalledError,
@@ -19,7 +20,6 @@ from app.services.yt_dlp_service import (
 
 logger = logging.getLogger(__name__)
 TMP_DIR = ROOT_DIR / "tmp"
-REMOTE_COMPONENTS = "ejs:github"
 FORMAT_FALLBACKS = [
     "140/bestaudio[ext=m4a]/bestaudio",
     "bestaudio[ext=m4a]/bestaudio/best",
@@ -71,8 +71,7 @@ def download_audio(url: str, target_dir: Path | None = None) -> AudioDownloadRes
             "yt_dlp",
             "--ignore-config",
             "--no-playlist",
-            "--remote-components",
-            REMOTE_COMPONENTS,
+            *get_yt_dlp_remote_components(),
             "--concurrent-fragments",
             str(concurrent_fragments),
             *get_yt_dlp_auth_args(),

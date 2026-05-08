@@ -1,7 +1,10 @@
 from pathlib import Path
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
+from app.config import ROOT_DIR
 from app.main import app
 from app.services.transcription_service import (
     AudioFileNotFoundError,
@@ -14,6 +17,8 @@ from app.services.transcription_service import (
 
 
 client = TestClient(app)
+TMP_ROOT = ROOT_DIR / "tmp"
+TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class FakeSegment:
@@ -29,7 +34,7 @@ class FakeInfo:
 
 
 def test_transcribe_audio_file_returns_transcript(monkeypatch, tmp_path: Path) -> None:
-    audio_file = tmp_path / "sample.webm"
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
     audio_file.write_bytes(b"audio")
 
     class FakeModel:
@@ -63,7 +68,7 @@ def test_transcribe_audio_file_returns_transcript(monkeypatch, tmp_path: Path) -
 def test_transcribe_audio_file_uses_persistent_cache(
     monkeypatch, tmp_path: Path
 ) -> None:
-    audio_file = tmp_path / "sample.webm"
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
     audio_file.write_bytes(b"audio")
     call_count = 0
 
@@ -99,10 +104,19 @@ def test_transcribe_audio_file_requires_existing_file(monkeypatch) -> None:
         raise AssertionError("Expected AudioFileNotFoundError")
 
 
+def test_transcribe_audio_file_rejects_absolute_paths_outside_tmp() -> None:
+    try:
+        transcribe_audio_file("C:/Users/Administrator/Desktop/sample.webm")
+    except AudioFileNotFoundError as error:
+        assert "Absolute audio paths are not allowed" in str(error)
+    else:
+        raise AssertionError("Expected AudioFileNotFoundError")
+
+
 def test_transcribe_audio_file_surfaces_model_configuration_errors(
     monkeypatch, tmp_path: Path
 ) -> None:
-    audio_file = tmp_path / "sample.webm"
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
     audio_file.write_bytes(b"audio")
 
     def fail_load_model():
@@ -124,7 +138,7 @@ def test_transcribe_audio_file_surfaces_model_configuration_errors(
 def test_transcribe_audio_file_surfaces_runtime_errors(
     monkeypatch, tmp_path: Path
 ) -> None:
-    audio_file = tmp_path / "sample.webm"
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
     audio_file.write_bytes(b"audio")
 
     class FakeModel:
@@ -147,7 +161,7 @@ def test_transcribe_audio_file_surfaces_runtime_errors(
 def test_transcribe_audio_file_rejects_empty_transcript(
     monkeypatch, tmp_path: Path
 ) -> None:
-    audio_file = tmp_path / "sample.webm"
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
     audio_file.write_bytes(b"audio")
 
     class FakeModel:

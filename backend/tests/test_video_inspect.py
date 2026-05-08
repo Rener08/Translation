@@ -3,7 +3,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.config import get_yt_dlp_auth_args
+from app.config import get_yt_dlp_auth_args, get_yt_dlp_remote_components
 from app.main import app
 from app.services.yt_dlp_service import (
     _video_info_cache_path,
@@ -12,6 +12,10 @@ from app.services.yt_dlp_service import (
     VideoMetadata,
     YtDlpNotInstalledError,
     inspect_video_metadata,
+)
+from app.services.translation_service import (
+    TranslationConfigurationError,
+    TranslationProviderError,
 )
 
 
@@ -157,6 +161,21 @@ def test_get_yt_dlp_auth_args_supports_browser_cookies(monkeypatch) -> None:
     assert get_yt_dlp_auth_args() == ["--cookies-from-browser", "edge"]
 
 
+def test_get_yt_dlp_remote_components_is_opt_in(monkeypatch) -> None:
+    monkeypatch.delenv("YTDLP_REMOTE_COMPONENTS", raising=False)
+
+    assert get_yt_dlp_remote_components() == []
+
+
+def test_get_yt_dlp_remote_components_uses_env_value(monkeypatch) -> None:
+    monkeypatch.setenv("YTDLP_REMOTE_COMPONENTS", "ejs:github")
+
+    assert get_yt_dlp_remote_components() == [
+        "--remote-components",
+        "ejs:github",
+    ]
+
+
 def test_inspect_video_endpoint_returns_metadata(monkeypatch) -> None:
     def fake_inspect(url: str) -> VideoMetadata:
         assert url == "https://www.youtube.com/watch?v=abc123xyz"
@@ -244,3 +263,33 @@ def test_inspect_video_endpoint_returns_yt_dlp_failure(monkeypatch) -> None:
     assert response.json() == {
         "detail": "Failed to inspect video metadata: Video unavailable",
     }
+
+
+def test_provider_models_returns_configuration_error(monkeypatch) -> None:
+    def fail_discover(**kwargs):
+        raise TranslationConfigurationError("Missing provider config")
+
+    monkeypatch.setattr("app.main.discover_provider_models", fail_discover)
+
+    response = client.post(
+        "/api/provider-models",
+        json={"provider": "openai"},
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Missing provider config"}
+
+
+def test_provider_models_returns_provider_error(monkeypatch) -> None:
+    def fail_discover(**kwargs):
+        raise TranslationProviderError("Upstream provider failed")
+
+    monkeypatch.setattr("app.main.discover_provider_models", fail_discover)
+
+    response = client.post(
+        "/api/provider-models",
+        json={"provider": "openai"},
+    )
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Upstream provider failed"}

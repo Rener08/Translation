@@ -311,6 +311,19 @@ def test_validate_rewrite_prompt_classifies_modes() -> None:
 
 
 def test_rewrite_content_attaches_quality_issues(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.content_rewrite_service.load_rewrite_references",
+        lambda: RewriteReferences(
+            article_template="文章模板片段",
+            content_methodology="内容方法论片段",
+            style_examples="风格示例片段",
+            skill_guide="写作规则片段",
+            quality_pipeline="质量流程片段",
+            category_templates={"01_big_company_war": "场景模板片段"},
+            section_title_rules="标题规则片段",
+        ),
+    )
+
     def fake_post(*args, **kwargs):
         return httpx.Response(
             200,

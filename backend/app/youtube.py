@@ -386,10 +386,17 @@ def parse_youtube_url(raw_url: str) -> ParsedYouTubeUrl:
         "youtube.com",
         "www.youtube.com",
         "m.youtube.com",
+        "music.youtube.com",
+        "youtube-nocookie.com",
+        "www.youtube-nocookie.com",
     }:
-        if path != "/watch":
+        if path == "/watch":
+            video_id = parse_qs(parsed_url.query).get("v", [""])[0]
+        elif path.startswith("/shorts/") or path.startswith("/live/") or path.startswith("/embed/"):
+            parts = [part for part in path.split("/") if part]
+            video_id = parts[1] if len(parts) >= 2 else ""
+        else:
             raise ValueError("Unsupported YouTube URL format.")
-        video_id = parse_qs(parsed_url.query).get("v", [""])[0]
     else:
         raise ValueError("URL must be a valid YouTube link.")
 

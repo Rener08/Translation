@@ -36,6 +36,13 @@ def get_yt_dlp_proxy_args() -> list[str]:
     return []
 
 
+def get_yt_dlp_remote_components() -> list[str]:
+    remote_components = get_env_str("YTDLP_REMOTE_COMPONENTS")
+    if remote_components:
+        return ["--remote-components", remote_components]
+    return []
+
+
 def get_http_proxy_from_env() -> str:
     return (
         get_env_str("HTTP_PROXY")

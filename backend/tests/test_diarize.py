@@ -1,7 +1,10 @@
 from pathlib import Path
 
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
+from app.config import ROOT_DIR
 from app.main import app
 from app.services.speaker_diarization_service import (
     SpeakerDiarizationConfigurationError,
@@ -14,6 +17,8 @@ from app.services.transcription_service import TranscriptionResult, TranscriptSe
 
 
 client = TestClient(app)
+TMP_ROOT = ROOT_DIR / "tmp"
+TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class FakeTurn:
@@ -25,7 +30,7 @@ class FakeTurn:
 def test_diarize_audio_file_returns_normalized_turns(
     monkeypatch, tmp_path: Path
 ) -> None:
-    audio_file = tmp_path / "sample.webm"
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
     audio_file.write_bytes(b"audio")
 
     class FakeAnnotation:
@@ -64,7 +69,7 @@ def test_diarize_audio_file_returns_normalized_turns(
 def test_diarize_audio_file_collapses_fragmented_speakers(
     monkeypatch, tmp_path: Path
 ) -> None:
-    audio_file = tmp_path / "sample.webm"
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
     audio_file.write_bytes(b"audio")
 
     class FakeAnnotation:

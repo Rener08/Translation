@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QMessageBox, QFrame, QFileDialog, QScrollArea,
     QStackedWidget, QSizePolicy, QListWidget, QListWidgetItem, QAbstractItemView
 )
-from PyQt6.QtWidgets import QDialog, QPlainTextEdit
+from PyQt6.QtWidgets import QCheckBox, QDialog, QPlainTextEdit
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QSettings
 from PyQt6.QtGui import (
     QFont,
@@ -132,23 +132,56 @@ def bootstrap_local_backend_daemon() -> tuple[bool, str, str]:
         return False, "", f"未找到后端启动脚本: {script_path}"
 
     try:
-        result = subprocess.run(
-            ["/bin/bash", script_path, "--daemon"],
-            cwd=root_dir,
-            capture_output=True,
-            text=True,
-            timeout=45,
-        )
+        if platform.system().lower().startswith("win"):
+            backend_dir = os.path.join(root_dir, "backend")
+            backend_python = os.path.join(backend_dir, ".venv", "Scripts", "python.exe")
+            if not os.path.isfile(backend_python):
+                backend_python = sys.executable
+            log_file = os.path.join(root_dir, "backend_run.log")
+            pid_file = os.path.join(root_dir, "tmp", "backend.pid")
+            os.makedirs(os.path.join(root_dir, "tmp"), exist_ok=True)
+            with open(log_file, "w", encoding="utf-8") as log_handle:
+                proc = subprocess.Popen(
+                    [
+                        backend_python,
+                        "-m",
+                        "uvicorn",
+                        "app.main:app",
+                        "--app-dir",
+                        backend_dir,
+                        "--host",
+                        "127.0.0.1",
+                        "--port",
+                        "8000",
+                    ],
+                    cwd=root_dir,
+                    stdout=log_handle,
+                    stderr=log_handle,
+                    creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+                )
+            with open(pid_file, "w", encoding="utf-8") as pid_handle:
+                pid_handle.write(str(proc.pid))
+            output = "已在 Windows 上启动后端进程。"
+            result = None
+        else:
+            result = subprocess.run(
+                ["/bin/bash", script_path, "--daemon"],
+                cwd=root_dir,
+                capture_output=True,
+                text=True,
+                timeout=45,
+            )
     except Exception as exc:
         return False, "", f"自动启动后端失败: {exc}"
 
-    output = "\n".join(
-        part.strip()
-        for part in [result.stdout, result.stderr]
-        if part and part.strip()
-    ).strip()
-    if result.returncode != 0:
-        return False, "", output or "start-backend.sh --daemon 执行失败"
+    if result is not None:
+        output = "\n".join(
+            part.strip()
+            for part in [result.stdout, result.stderr]
+            if part and part.strip()
+        ).strip()
+        if result.returncode != 0:
+            return False, "", output or "start-backend.sh --daemon 执行失败"
 
     for _ in range(20):
         try:
@@ -580,14 +613,20 @@ class YouTubeTranslatorApp(QMainWindow):
         provider = str(self._settings.value("provider", "deepseek") or "deepseek").strip()
         model = str(self._settings.value("model", "deepseek-chat") or "deepseek-chat").strip()
         style_key = str(self._settings.value("style_key", BUILTIN_STYLE_KEY) or BUILTIN_STYLE_KEY).strip()
+        source_mode = str(self._settings.value("source_mode", "subtitle_first") or "subtitle_first").strip()
+        remember_api_key = str(self._settings.value("remember_api_key", False) or "").strip().lower() in {"1", "true", "yes", "on"}
         api_key = str(self._settings.value("api_key", "") or "").strip()
 
         if provider:
             self.provider_combo.setCurrentText(provider)
         if model:
             self.model_input.setText(model)
-        if api_key:
+        self._select_source_mode_by_key(source_mode)
+        if remember_api_key and api_key:
+            self.remember_api_key_checkbox.setChecked(True)
             self.api_key_input.setText(api_key)
+        else:
+            self.remember_api_key_checkbox.setChecked(False)
         self._select_skill_by_key(style_key)
 
     def _persist_settings(self):
@@ -596,7 +635,12 @@ class YouTubeTranslatorApp(QMainWindow):
         self._settings.setValue("provider", self.provider_combo.currentText())
         self._settings.setValue("model", self.model_input.text().strip())
         self._settings.setValue("style_key", self.skill_combo.currentData() or BUILTIN_STYLE_KEY)
-        self._settings.setValue("api_key", self.api_key_input.text().strip())
+        self._settings.setValue("source_mode", self.source_mode_combo.currentData() or "subtitle_first")
+        self._settings.setValue("remember_api_key", self.remember_api_key_checkbox.isChecked())
+        if self.remember_api_key_checkbox.isChecked():
+            self._settings.setValue("api_key", self.api_key_input.text().strip())
+        else:
+            self._settings.remove("api_key")
 
     def _select_skill_by_key(self, skill_key: str):
         normalized_key = str(skill_key or "").strip() or BUILTIN_STYLE_KEY
@@ -605,6 +649,14 @@ class YouTubeTranslatorApp(QMainWindow):
                 self.skill_combo.setCurrentIndex(index)
                 return
         self.skill_combo.setCurrentIndex(0)
+
+    def _select_source_mode_by_key(self, source_mode: str):
+        normalized_mode = str(source_mode or "").strip() or "subtitle_first"
+        for index in range(self.source_mode_combo.count()):
+            if str(self.source_mode_combo.itemData(index) or "").strip() == normalized_mode:
+                self.source_mode_combo.setCurrentIndex(index)
+                return
+        self.source_mode_combo.setCurrentIndex(0)
 
     def _install_keyboard_shortcuts(self):
         self.run_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -1544,6 +1596,19 @@ class YouTubeTranslatorApp(QMainWindow):
         )
         card_layout.addWidget(skill_hint)
 
+        source_row = QHBoxLayout()
+        source_row.setSpacing(8)
+        source_label = QLabel("内容来源")
+        source_label.setStyleSheet("color: #86868B; font-size: 13px; background: transparent;")
+        source_label.setFixedWidth(70)
+        self.source_mode_combo = QComboBox()
+        self.source_mode_combo.addItem("字幕优先", "subtitle_first")
+        self.source_mode_combo.addItem("强制音频", "force_audio")
+        self.source_mode_combo.currentIndexChanged.connect(lambda _index: self._persist_settings())
+        source_row.addWidget(source_label)
+        source_row.addWidget(self.source_mode_combo, 1)
+        card_layout.addLayout(source_row)
+
         api_row = QHBoxLayout()
         api_row.setSpacing(8)
         api_label = QLabel("API Key")
@@ -1556,6 +1621,13 @@ class YouTubeTranslatorApp(QMainWindow):
         api_row.addWidget(api_label)
         api_row.addWidget(self.api_key_input, 1)
         card_layout.addLayout(api_row)
+
+        self.remember_api_key_checkbox = QCheckBox("记住 API Key")
+        self.remember_api_key_checkbox.setStyleSheet(
+            "color: #475569; font-size: 12px; background: transparent;"
+        )
+        self.remember_api_key_checkbox.toggled.connect(lambda _checked: self._persist_settings())
+        card_layout.addWidget(self.remember_api_key_checkbox)
 
         model_row = QHBoxLayout()
         model_row.setSpacing(8)
@@ -1818,15 +1890,19 @@ class YouTubeTranslatorApp(QMainWindow):
             try:
                 resp = requests.get(f"{self.backend_url}{BACKEND_HEALTH_PATH}", timeout=2)
                 if resp.status_code == 200:
+                    self._backend_online = True
                     return True
             except Exception:
-                pass
+                self._backend_online = False
+                return False
 
         try:
             self.backend_url = resolve_backend_base_url(force_probe=True)
+            self._backend_online = True
             return True
         except Exception as exc:
             self._backend_bootstrap_error = str(exc)
+            self._backend_online = False
             return False
 
     def _is_valid_youtube_url(self, url: str) -> bool:
@@ -2190,7 +2266,7 @@ class YouTubeTranslatorApp(QMainWindow):
             backend_url=self.backend_url,
             url=url,
             provider=self.provider_combo.currentText(),
-            source_mode="subtitle_first",
+            source_mode=str(self.source_mode_combo.currentData() or "subtitle_first").strip(),
             api_key=self.api_key_input.text().strip(),
             model=self.model_input.text().strip(),
             skill_prompt=skill_prompt,

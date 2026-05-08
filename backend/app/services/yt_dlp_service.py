@@ -7,10 +7,14 @@ from dataclasses import dataclass, field
 from hashlib import sha1
 from pathlib import Path
 
-from app.config import ROOT_DIR, get_yt_dlp_auth_args, get_yt_dlp_proxy_args
+from app.config import (
+    ROOT_DIR,
+    get_yt_dlp_auth_args,
+    get_yt_dlp_proxy_args,
+    get_yt_dlp_remote_components,
+)
 
 logger = logging.getLogger(__name__)
-REMOTE_COMPONENTS = "ejs:github"
 VIDEO_INFO_CACHE_DIR = ROOT_DIR / "tmp" / "video_info_cache"
 VIDEO_INFO_CACHE_TTL_SEC = 6 * 60 * 60
 
@@ -102,8 +106,7 @@ def extract_video_info(url: str) -> dict[str, object]:
         "--ignore-no-formats-error",
         "--no-warnings",
         "--no-playlist",
-        "--remote-components",
-        REMOTE_COMPONENTS,
+        *get_yt_dlp_remote_components(),
         *get_yt_dlp_auth_args(),
         *get_yt_dlp_proxy_args(),
         url,

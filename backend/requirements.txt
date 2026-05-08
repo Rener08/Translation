@@ -3,5 +3,5 @@ uvicorn[standard]==0.35.0
 pytest==8.4.1
 httpx==0.28.1
 python-dotenv==1.2.2
-yt-dlp
+yt-dlp==2026.03.03
 faster-whisper==1.2.1

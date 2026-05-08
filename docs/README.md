@@ -6,9 +6,9 @@ This project keeps docs in a few clear buckets so the active workflow is easy to
 
 These files define the current product and should stay current with the code:
 
-- [`README.md`](/Users/jack/Documents/coding/Translation/README.md) - product overview, setup, workflow, and current scope
-- [`TODO.md`](/Users/jack/Documents/coding/Translation/TODO.md) - active backlog and prioritized follow-up work
-- [`docs/writing_style_prompt_format.md`](/Users/jack/Documents/coding/Translation/docs/writing_style_prompt_format.md) - format rules for imported writing prompts and styles
+- [`README.md`](../README.md) - product overview, setup, workflow, and current scope
+- [`TODO.md`](../TODO.md) - active backlog and prioritized follow-up work
+- [`docs/writing_style_prompt_format.md`](writing_style_prompt_format.md) - format rules for imported writing prompts and styles
 
 Current source-of-truth notes:
 
@@ -25,18 +25,18 @@ Current source-of-truth notes:
 
 These files are not onboarding docs. They are assets the app can load or reference at runtime:
 
-- [`references/content_methodology.md`](/Users/jack/Documents/coding/Translation/references/content_methodology.md)
-- [`references/style_examples.md`](/Users/jack/Documents/coding/Translation/references/style_examples.md)
-- [`references/article_template.md`](/Users/jack/Documents/coding/Translation/references/article_template.md)
-- [`references/SKILL.md`](/Users/jack/Documents/coding/Translation/references/SKILL.md)
-- [`skills/科技博主深度文.md`](/Users/jack/Documents/coding/Translation/skills/%E7%A7%91%E6%8A%80%E5%8D%9A%E4%B8%BB%E6%B7%B1%E5%BA%A6%E6%96%87.md)
-- [`skills/小红书短平快.md`](/Users/jack/Documents/coding/Translation/skills/%E5%B0%8F%E7%BA%A2%E4%B9%A6%E7%9F%AD%E5%B9%B3%E5%BF%AB.md)
+- [`references/content_methodology.md`](../references/content_methodology.md)
+- [`references/style_examples.md`](../references/style_examples.md)
+- [`references/article_template.md`](../references/article_template.md)
+- [`references/SKILL.md`](../references/SKILL.md)
+- [`skills/科技博主深度文.md`](../skills/%E7%A7%91%E6%8A%80%E5%8D%9A%E4%B8%BB%E6%B7%B1%E5%BA%A6%E6%96%87.md)
+- [`skills/小红书短平快.md`](../skills/%E5%B0%8F%E7%BA%A2%E4%B9%A6%E7%9F%AD%E5%B9%B3%E5%BF%AB.md)
 
 ## 3. Design And Historical Notes
 
 These documents capture design direction or historical specs. Keep them if they still explain an implementation choice:
 
-- [`docs/superpowers/specs/2026-04-18-youtube-translator-gui-design.md`](/Users/jack/Documents/coding/Translation/docs/superpowers/specs/2026-04-18-youtube-translator-gui-design.md)
+- [`docs/superpowers/specs/2026-04-18-youtube-translator-gui-design.md`](superpowers/specs/2026-04-18-youtube-translator-gui-design.md)
 
 ## 4. Not Active Project Docs
 

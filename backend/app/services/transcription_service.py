@@ -100,8 +100,20 @@ def transcribe_audio_file(audio_file_path: str) -> TranscriptionResult:
 def _resolve_audio_file_path(audio_file_path: str) -> Path:
     raw_path = Path(audio_file_path)
     if raw_path.is_absolute():
-        return raw_path.resolve()
-    return (ROOT_DIR / raw_path).resolve()
+        allowed_root = (ROOT_DIR / "tmp").resolve()
+        resolved = raw_path.resolve()
+        if not resolved.is_relative_to(allowed_root):
+            raise AudioFileNotFoundError(
+                "Absolute audio paths are not allowed. Use a file under tmp/."
+            )
+        return resolved
+    resolved = (ROOT_DIR / raw_path).resolve()
+    allowed_root = (ROOT_DIR / "tmp").resolve()
+    if not resolved.is_relative_to(allowed_root):
+        raise AudioFileNotFoundError(
+            "Audio file path must stay under tmp/."
+        )
+    return resolved
 
 
 @lru_cache(maxsize=1)
