@@ -12,7 +12,9 @@ from app.services.translation_service import (
     _build_translation_chunks,
     clean_translated_chinese_text,
     _segment_to_chunk_item,
+    _translation_output_token_budget,
     TranslationSegment,
+    TranslationChunkItem,
     TranslationConfigurationError,
     TranslationProviderError,
     translate_segments_to_chinese,
@@ -68,6 +70,20 @@ def test_clean_translated_chinese_text_removes_inline_pause_tokens() -> None:
         clean_translated_chinese_text(value)
         == "甲：我们今天开始。乙：那就继续。其实已经很清楚了。"
     )
+
+
+def test_translation_output_token_budget_scales_and_clamps() -> None:
+    small_chunk = [
+        TranslationChunkItem(index=0, start=0.0, end=1.0, source_text="one two three"),
+        TranslationChunkItem(index=1, start=1.0, end=2.0, source_text="four five"),
+    ]
+    huge_chunk = [
+        TranslationChunkItem(index=i, start=float(i), end=float(i + 1), source_text="word " * 200)
+        for i in range(20)
+    ]
+
+    assert _translation_output_token_budget(small_chunk) == 500
+    assert _translation_output_token_budget(huge_chunk) == 1800
 
 
 def test_translate_segments_to_chinese_translates_each_segment(monkeypatch) -> None:

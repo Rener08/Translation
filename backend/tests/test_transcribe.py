@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from app.config import ROOT_DIR

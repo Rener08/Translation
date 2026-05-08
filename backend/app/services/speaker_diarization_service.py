@@ -337,9 +337,21 @@ def _pick_replacement_label(
 
 def _resolve_audio_file_path(audio_file_path: str) -> Path:
     raw_path = Path(audio_file_path)
+    allowed_root = (ROOT_DIR / "tmp").resolve()
     if raw_path.is_absolute():
-        return raw_path.resolve()
-    return (ROOT_DIR / raw_path).resolve()
+        resolved = raw_path.resolve()
+        if not resolved.is_relative_to(allowed_root):
+            raise SpeakerDiarizationRuntimeError(
+                "Absolute audio paths are not allowed. Use a file under tmp/."
+            )
+        return resolved
+
+    resolved = (ROOT_DIR / raw_path).resolve()
+    if not resolved.is_relative_to(allowed_root):
+        raise SpeakerDiarizationRuntimeError(
+            "Audio file path must stay under tmp/."
+        )
+    return resolved
 
 
 def _prepare_audio_for_diarization(file_path: Path) -> Path:

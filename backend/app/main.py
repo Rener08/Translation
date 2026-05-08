@@ -32,6 +32,7 @@ from app.services.session_history_service import (
     record_rewrite_result,
     upsert_job_session,
 )
+from app.services.tmp_artifact_cleanup_service import cleanup_stale_tmp_artifacts
 from app.services.speaker_diarization_service import (
     SpeakerDiarizationConfigurationError,
     SpeakerDiarizationRuntimeError,
@@ -116,6 +117,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.on_event("startup")
+async def cleanup_tmp_artifacts_on_startup() -> None:
+    await run_in_threadpool(cleanup_stale_tmp_artifacts)
 
 
 @app.get("/health")

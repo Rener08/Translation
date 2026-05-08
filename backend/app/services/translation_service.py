@@ -1392,8 +1392,8 @@ def _ends_sentence(value: str) -> bool:
 
 def _translation_output_token_budget(chunk: list[TranslationChunkItem]) -> int:
     word_count = sum(_word_count(item.source_text) for item in chunk)
-    estimated_tokens = 160 + (word_count * 3)
-    return max(400, min(1200, estimated_tokens))
+    estimated_tokens = 200 + (word_count * 4)
+    return max(500, min(1800, estimated_tokens))
 
 
 def _resolve_translation_chunk_concurrency(

@@ -1,7 +1,5 @@
 from pathlib import Path
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
 from app.config import ROOT_DIR
@@ -9,6 +7,7 @@ from app.main import app
 from app.services.speaker_diarization_service import (
     SpeakerDiarizationConfigurationError,
     SpeakerDiarizationResult,
+    SpeakerDiarizationRuntimeError,
     SpeakerTurn,
     assign_speakers_to_transcript,
     diarize_audio_file,
@@ -105,6 +104,15 @@ def test_diarize_audio_file_collapses_fragmented_speakers(
         ]
     )
     assert result.speaker_count == 2
+
+
+def test_diarize_audio_file_rejects_absolute_paths_outside_tmp() -> None:
+    try:
+        diarize_audio_file("C:/Users/Administrator/Desktop/sample.webm")
+    except SpeakerDiarizationRuntimeError as error:
+        assert "Absolute audio paths are not allowed" in str(error)
+    else:
+        raise AssertionError("Expected SpeakerDiarizationRuntimeError")
 
 
 def test_assign_speakers_to_transcript_picks_best_overlap() -> None:

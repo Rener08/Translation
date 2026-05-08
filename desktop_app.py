@@ -11,6 +11,11 @@ import traceback
 import faulthandler
 import html
 from datetime import datetime
+
+try:
+    import keyring
+except Exception:
+    keyring = None
 BACKEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "backend")
 if BACKEND_DIR not in sys.path:
     sys.path.insert(0, BACKEND_DIR)
@@ -52,6 +57,8 @@ _RESOLVED_BACKEND_URL = None
 CRASH_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "desktop_crash.log")
 _CRASH_FILE_HANDLE = None
 BUILTIN_STYLE_KEY = "__builtin_default__"
+KEYRING_SERVICE_NAME = "TranslationWritingWorkbench"
+KEYRING_USERNAME = "api_key"
 
 
 def _append_crash_log(title: str, detail: str) -> None:
@@ -123,6 +130,51 @@ def resolve_backend_base_url(force_probe=False):
         "Cannot connect to backend API. Start backend on port 8000 or 8002, "
         "or set DESKTOP_BACKEND_URL."
     )
+
+
+def _resolve_backend_url_for_retry(current_backend_url: str) -> str | None:
+    try:
+        resolved = resolve_backend_base_url(force_probe=True)
+    except Exception:
+        return None
+
+    normalized_current = str(current_backend_url or "").strip().rstrip("/")
+    normalized_resolved = str(resolved or "").strip().rstrip("/")
+    if not normalized_resolved:
+        return None
+    if normalized_resolved == normalized_current:
+        return normalized_resolved
+    return normalized_resolved
+
+
+def _post_json_with_backend_retry(
+    backend_url: str,
+    path: str,
+    payload: dict[str, object],
+    timeout: float,
+) -> tuple[requests.Response, str]:
+    normalized_backend_url = str(backend_url or "").strip().rstrip("/")
+    if not normalized_backend_url:
+        raise requests.exceptions.ConnectionError("backend_url is empty")
+
+    try:
+        response = requests.post(
+            f"{normalized_backend_url}{path}",
+            json=payload,
+            timeout=timeout,
+        )
+        return response, normalized_backend_url
+    except requests.exceptions.ConnectionError:
+        fallback_backend_url = _resolve_backend_url_for_retry(normalized_backend_url)
+        if not fallback_backend_url or fallback_backend_url == normalized_backend_url:
+            raise
+
+        response = requests.post(
+            f"{fallback_backend_url}{path}",
+            json=payload,
+            timeout=timeout,
+        )
+        return response, fallback_backend_url
 
 
 def bootstrap_local_backend_daemon() -> tuple[bool, str, str]:
@@ -197,6 +249,7 @@ class WorkerThread(QThread):
     progress = pyqtSignal(int, str)
     result = pyqtSignal(dict)
     error = pyqtSignal(str)
+    backend_url_resolved = pyqtSignal(str)
 
     def __init__(
         self,
@@ -230,15 +283,19 @@ class WorkerThread(QThread):
             if self.model:
                 translation_config["model"] = self.model
 
-            resp = requests.post(
-                f"{self.backend_url}/api/jobs/run",
-                json={
+            resp, resolved_backend_url = _post_json_with_backend_retry(
+                self.backend_url,
+                "/api/jobs/run",
+                {
                     "url": self.url,
                     "source_mode": self.source_mode,
-                    "translation_config": translation_config
+                    "translation_config": translation_config,
                 },
-                timeout=600
+                600,
             )
+            if resolved_backend_url != self.backend_url:
+                self.backend_url = resolved_backend_url
+                self.backend_url_resolved.emit(resolved_backend_url)
 
             if resp.status_code >= 400:
                 try:
@@ -277,11 +334,15 @@ class WorkerThread(QThread):
                 content_context_id = str(data.get("content_context_id", "")).strip()
                 if content_context_id:
                     rewrite_payload["content_context_id"] = content_context_id
-                rewrite_resp = requests.post(
-                    f"{self.backend_url}/api/content-rewrite",
-                    json=rewrite_payload,
-                    timeout=600,
+                rewrite_resp, resolved_backend_url = _post_json_with_backend_retry(
+                    self.backend_url,
+                    "/api/content-rewrite",
+                    rewrite_payload,
+                    600,
                 )
+                if resolved_backend_url != self.backend_url:
+                    self.backend_url = resolved_backend_url
+                    self.backend_url_resolved.emit(resolved_backend_url)
                 if rewrite_resp.status_code >= 400:
                     try:
                         detail = rewrite_resp.json().get("detail", rewrite_resp.text)
@@ -311,9 +372,9 @@ class WorkerThread(QThread):
             msg = str(e or "")
             lowered = msg.lower()
             if "remotedisconnected" in lowered or "connection aborted" in lowered:
-                self.error.emit("上游模型连接被中断（RemoteDisconnected），请重试；若反复出现，请检查 API Key / base_url / 模型可用性。")
+                self.error.emit("__BACKEND_URL_ERROR__:上游模型连接被中断（RemoteDisconnected），请重试；若反复出现，请检查 API Key / base_url / 模型可用性。")
             else:
-                self.error.emit(msg or "连接失败，请检查网络或后端状态")
+                self.error.emit(f"__BACKEND_URL_ERROR__:{msg or '连接失败，请检查网络或后端状态'}")
         except Exception as e:
             self.error.emit(str(e))
 
@@ -322,6 +383,7 @@ class RewriteWorker(QThread):
     progress = pyqtSignal(int, str)
     result = pyqtSignal(dict)
     error = pyqtSignal(str)
+    backend_url_resolved = pyqtSignal(str)
 
     def __init__(
         self,
@@ -348,11 +410,15 @@ class RewriteWorker(QThread):
             }
             if self.content_context_id:
                 payload["content_context_id"] = self.content_context_id
-            resp = requests.post(
-                f"{self.backend_url}/api/content-rewrite",
-                json=payload,
-                timeout=600,
+            resp, resolved_backend_url = _post_json_with_backend_retry(
+                self.backend_url,
+                "/api/content-rewrite",
+                payload,
+                600,
             )
+            if resolved_backend_url != self.backend_url:
+                self.backend_url = resolved_backend_url
+                self.backend_url_resolved.emit(resolved_backend_url)
             if resp.status_code >= 400:
                 try:
                     detail = resp.json().get("detail", resp.text)
@@ -382,16 +448,20 @@ class RewriteWorker(QThread):
             msg = str(e or "")
             lowered = msg.lower()
             if "remotedisconnected" in lowered or "connection aborted" in lowered:
-                self.error.emit("上游模型连接被中断（RemoteDisconnected），请重试；若反复出现，请检查 API Key / base_url / 模型可用性。")
+                self.error.emit("__BACKEND_URL_ERROR__:上游模型连接被中断（RemoteDisconnected），请重试；若反复出现，请检查 API Key / base_url / 模型可用性。")
             else:
-                self.error.emit(msg or "重新改写连接失败")
+                self.error.emit(f"__BACKEND_URL_ERROR__:{msg or '重新改写连接失败'}")
         except Exception as e:
-            self.error.emit(str(e))
+            if isinstance(e, requests.exceptions.ConnectionError):
+                self.error.emit(f"__BACKEND_URL_ERROR__:{str(e or '连接失败，请检查网络或后端状态')}")
+            else:
+                self.error.emit(str(e))
 
 
 class ChatWorker(QThread):
     response = pyqtSignal(str)
     error = pyqtSignal(str)
+    backend_url_resolved = pyqtSignal(str)
 
     def __init__(
         self,
@@ -421,11 +491,15 @@ class ChatWorker(QThread):
             if self.chat_config:
                 payload["chat_config"] = self.chat_config
 
-            resp = requests.post(
-                f"{self.backend_url}/api/content-chat",
-                json=payload,
-                timeout=60
+            resp, resolved_backend_url = _post_json_with_backend_retry(
+                self.backend_url,
+                "/api/content-chat",
+                payload,
+                60,
             )
+            if resolved_backend_url != self.backend_url:
+                self.backend_url = resolved_backend_url
+                self.backend_url_resolved.emit(resolved_backend_url)
             if resp.status_code >= 400:
                 try:
                     detail = resp.json().get("detail", resp.text)
@@ -538,6 +612,8 @@ class YouTubeTranslatorApp(QMainWindow):
         self._backend_online = False
         self._backend_bootstrap_error = ""
         self._settings = None
+        self._restoring_settings = False
+        self._api_key_storage_warning_shown = False
         self.current_rewrite_raw_text = ""
         self.current_rewrite_source_text = ""
         self.current_rewrite_focus = ""
@@ -549,6 +625,7 @@ class YouTubeTranslatorApp(QMainWindow):
         self.history_worker = None
         self.history_detail_worker = None
         self.backend_bootstrap_worker = None
+        self.settings_dialog = None
         self.skills_dict = {}
         self.skill_prompt_validation = {}
         self.history_items = []
@@ -587,6 +664,7 @@ class YouTubeTranslatorApp(QMainWindow):
             self._populate_skill_combo()
 
     def _populate_skill_combo(self):
+        self.skill_combo.blockSignals(True)
         self.skill_combo.clear()
         builtin_validation = validate_rewrite_prompt(BUILTIN_DEFAULT_REWRITE_PROMPT)
         self.skill_combo.addItem("默认内置风格（晚点通用）", BUILTIN_STYLE_KEY)
@@ -605,50 +683,80 @@ class YouTubeTranslatorApp(QMainWindow):
             self.skill_combo.addItem(label, name)
         if self.skill_combo.count() == 1:
             self.skill_combo.setCurrentIndex(0)
+        self.skill_combo.blockSignals(False)
+        self._populate_result_skill_combo()
+
+    def _populate_result_skill_combo(self):
+        if not hasattr(self, "result_skill_combo"):
+            return
+        current_key = str(self.result_skill_combo.currentData() or BUILTIN_STYLE_KEY).strip()
+        self.result_skill_combo.blockSignals(True)
+        self.result_skill_combo.clear()
+        for index in range(self.skill_combo.count()):
+            self.result_skill_combo.addItem(
+                self.skill_combo.itemText(index),
+                self.skill_combo.itemData(index),
+            )
+        self._select_combo_by_key(self.result_skill_combo, current_key)
+        self.result_skill_combo.blockSignals(False)
 
     def _load_persisted_settings(self):
         if self._settings is None:
             return
+        self._restoring_settings = True
 
-        provider = str(self._settings.value("provider", "deepseek") or "deepseek").strip()
-        model = str(self._settings.value("model", "deepseek-chat") or "deepseek-chat").strip()
-        style_key = str(self._settings.value("style_key", BUILTIN_STYLE_KEY) or BUILTIN_STYLE_KEY).strip()
-        source_mode = str(self._settings.value("source_mode", "subtitle_first") or "subtitle_first").strip()
-        remember_api_key = str(self._settings.value("remember_api_key", False) or "").strip().lower() in {"1", "true", "yes", "on"}
-        api_key = str(self._settings.value("api_key", "") or "").strip()
+        try:
+            provider = str(self._settings.value("provider", "deepseek") or "deepseek").strip()
+            model = str(self._settings.value("model", "deepseek-chat") or "deepseek-chat").strip()
+            style_key = str(self._settings.value("style_key", BUILTIN_STYLE_KEY) or BUILTIN_STYLE_KEY).strip()
+            source_mode = str(self._settings.value("source_mode", "subtitle_first") or "subtitle_first").strip()
+            remember_api_key = str(self._settings.value("remember_api_key", False) or "").strip().lower() in {"1", "true", "yes", "on"}
+            legacy_api_key = str(self._settings.value("api_key", "") or "").strip()
 
-        if provider:
-            self.provider_combo.setCurrentText(provider)
-        if model:
-            self.model_input.setText(model)
-        self._select_source_mode_by_key(source_mode)
-        if remember_api_key and api_key:
-            self.remember_api_key_checkbox.setChecked(True)
-            self.api_key_input.setText(api_key)
-        else:
-            self.remember_api_key_checkbox.setChecked(False)
-        self._select_skill_by_key(style_key)
+            if provider:
+                self.provider_combo.setCurrentText(provider)
+            if model:
+                self.model_input.setText(model)
+            self._select_source_mode_by_key(source_mode)
+            api_key = ""
+            if remember_api_key:
+                api_key = self._load_stored_api_key() or legacy_api_key
+                if api_key:
+                    self._store_api_key_securely(api_key, suppress_warning=True)
+            if api_key:
+                self.remember_api_key_checkbox.setChecked(True)
+                self.api_key_input.setText(api_key)
+            else:
+                self.remember_api_key_checkbox.setChecked(False)
+            if legacy_api_key:
+                self._settings.remove("api_key")
+            self._select_skill_by_key(style_key)
+            self._sync_result_skill_combo_from_main()
+        finally:
+            self._restoring_settings = False
 
     def _persist_settings(self):
-        if self._settings is None:
+        if self._settings is None or self._restoring_settings:
             return
         self._settings.setValue("provider", self.provider_combo.currentText())
         self._settings.setValue("model", self.model_input.text().strip())
         self._settings.setValue("style_key", self.skill_combo.currentData() or BUILTIN_STYLE_KEY)
         self._settings.setValue("source_mode", self.source_mode_combo.currentData() or "subtitle_first")
         self._settings.setValue("remember_api_key", self.remember_api_key_checkbox.isChecked())
+        self._settings.remove("api_key")
+        api_key = self.api_key_input.text().strip()
         if self.remember_api_key_checkbox.isChecked():
-            self._settings.setValue("api_key", self.api_key_input.text().strip())
+            if api_key:
+                self._store_api_key_securely(api_key)
+            else:
+                self._clear_stored_api_key()
         else:
-            self._settings.remove("api_key")
+            self._clear_stored_api_key()
 
     def _select_skill_by_key(self, skill_key: str):
         normalized_key = str(skill_key or "").strip() or BUILTIN_STYLE_KEY
-        for index in range(self.skill_combo.count()):
-            if str(self.skill_combo.itemData(index) or "").strip() == normalized_key:
-                self.skill_combo.setCurrentIndex(index)
-                return
-        self.skill_combo.setCurrentIndex(0)
+        self._select_combo_by_key(self.skill_combo, normalized_key)
+        self._select_combo_by_key(self.result_skill_combo, normalized_key)
 
     def _select_source_mode_by_key(self, source_mode: str):
         normalized_mode = str(source_mode or "").strip() or "subtitle_first"
@@ -657,6 +765,80 @@ class YouTubeTranslatorApp(QMainWindow):
                 self.source_mode_combo.setCurrentIndex(index)
                 return
         self.source_mode_combo.setCurrentIndex(0)
+
+    def _select_combo_by_key(self, combo: QComboBox | None, key: str) -> None:
+        if combo is None:
+            return
+        normalized_key = str(key or "").strip() or BUILTIN_STYLE_KEY
+        for index in range(combo.count()):
+            if str(combo.itemData(index) or "").strip() == normalized_key:
+                combo.blockSignals(True)
+                combo.setCurrentIndex(index)
+                combo.blockSignals(False)
+                return
+        if combo.count():
+            combo.blockSignals(True)
+            combo.setCurrentIndex(0)
+            combo.blockSignals(False)
+
+    def _sync_result_skill_combo_from_main(self) -> None:
+        self._sync_combo_pair(self.skill_combo, self.result_skill_combo)
+
+    def _sync_main_skill_combo_from_result(self) -> None:
+        self._sync_combo_pair(self.result_skill_combo, self.skill_combo)
+
+    def _sync_combo_pair(self, source: QComboBox | None, target: QComboBox | None) -> None:
+        if source is None or target is None:
+            return
+        index = source.currentIndex()
+        if index < 0:
+            return
+        if target.currentIndex() == index:
+            return
+        target.blockSignals(True)
+        target.setCurrentIndex(index)
+        target.blockSignals(False)
+
+    def _load_stored_api_key(self) -> str:
+        if keyring is None:
+            return ""
+        try:
+            return str(keyring.get_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME) or "").strip()
+        except Exception:
+            return ""
+
+    def _store_api_key_securely(self, api_key: str, suppress_warning: bool = False) -> bool:
+        self._settings.remove("api_key")
+        if not api_key:
+            self._clear_stored_api_key()
+            return True
+        if keyring is None:
+            self._clear_stored_api_key()
+            self._warn_api_key_storage_failed("未安装 keyring，API Key 将仅保留在当前会话中。", suppress_warning)
+            return False
+        try:
+            keyring.set_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME, api_key)
+            return True
+        except Exception:
+            self._clear_stored_api_key()
+            self._warn_api_key_storage_failed("无法将 API Key 安全写入系统钥匙串，已仅保留当前会话中的内容。", suppress_warning)
+            return False
+
+    def _clear_stored_api_key(self) -> None:
+        if keyring is None:
+            self._settings.remove("api_key")
+            return
+        try:
+            keyring.delete_password(KEYRING_SERVICE_NAME, KEYRING_USERNAME)
+        except Exception:
+            pass
+        self._settings.remove("api_key")
+
+    def _warn_api_key_storage_failed(self, message: str, suppress_warning: bool = False) -> None:
+        if suppress_warning or self._api_key_storage_warning_shown:
+            return
+        self._api_key_storage_warning_shown = True
+        QMessageBox.warning(self, "API Key 存储", message)
 
     def _install_keyboard_shortcuts(self):
         self.run_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
@@ -1012,6 +1194,7 @@ class YouTubeTranslatorApp(QMainWindow):
         self.chat_button.setEnabled(True)
         self.current_history_id = content_context_id
         self._set_status_text("已加载历史会话")
+        self._sync_result_skill_combo_from_main()
         self.stack.setCurrentIndex(1)
         self.refresh_history_sidebar()
 
@@ -1024,13 +1207,6 @@ class YouTubeTranslatorApp(QMainWindow):
         self.history_refresh_button.setEnabled(True)
         self.history_list_widget.setEnabled(True)
         self.history_detail_worker = None
-
-    def _start_local_backend_daemon(self) -> tuple[bool, str]:
-        started, backend_url, info = bootstrap_local_backend_daemon()
-        if started:
-            self.backend_url = backend_url
-            return True, info
-        return False, info
 
     def _set_backend_online_ui(self):
         self._backend_online = True
@@ -1365,8 +1541,8 @@ class YouTubeTranslatorApp(QMainWindow):
         
         # Bottom left gear & Settings
         self.settings_panel = self._create_settings_card()
-        self.settings_panel.setVisible(False)
-        self.settings_panel.setMaximumWidth(400)
+        self.settings_panel.setMaximumWidth(420)
+        self.settings_dialog = self._create_settings_dialog(self.settings_panel)
         
         self.gear_btn = QPushButton("⚙️")
         self.gear_btn.setFixedSize(44, 44)
@@ -1384,11 +1560,10 @@ class YouTubeTranslatorApp(QMainWindow):
             }
         """)
         self.gear_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.gear_btn.clicked.connect(lambda: self.settings_panel.setVisible(not self.settings_panel.isVisible()))
+        self.gear_btn.clicked.connect(self._show_settings_dialog)
         
         bottom_layout = QHBoxLayout()
         bottom_left = QVBoxLayout()
-        bottom_left.addWidget(self.settings_panel)
         bottom_left.addWidget(self.gear_btn, 0, Qt.AlignmentFlag.AlignBottom | Qt.AlignmentFlag.AlignLeft)
         
         bottom_layout.addLayout(bottom_left)
@@ -1454,6 +1629,14 @@ class YouTubeTranslatorApp(QMainWindow):
         self.rewrite_again_button.setEnabled(False)
         self.rewrite_again_button.clicked.connect(self.rewrite_current_result)
         header_layout.addWidget(self.rewrite_again_button)
+
+        self.result_skill_combo = QComboBox()
+        self.result_skill_combo.setFixedWidth(180)
+        self.result_skill_combo.setStyleSheet(
+            "QComboBox { background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 14px; padding: 6px 10px; min-height: 30px; }"
+        )
+        self.result_skill_combo.currentIndexChanged.connect(self._on_result_skill_combo_changed)
+        header_layout.addWidget(self.result_skill_combo)
 
         self.open_export_button = QPushButton("打开位置")
         self.open_export_button.setObjectName("rewrite_action_btn")
@@ -1581,7 +1764,7 @@ class YouTubeTranslatorApp(QMainWindow):
             "优先级：如果所选风格文件包含 {{transcript}}，将作为完整写作 Prompt 直接执行；"
             "否则回退到后端内置的改写参考与题材路由。"
         )
-        self.skill_combo.currentIndexChanged.connect(lambda _index: self._persist_settings())
+        self.skill_combo.currentIndexChanged.connect(self._on_main_skill_combo_changed)
         skill_row.addWidget(skill_label)
         skill_row.addWidget(self.skill_combo, 1)
         card_layout.addLayout(skill_row)
@@ -1648,6 +1831,45 @@ class YouTubeTranslatorApp(QMainWindow):
         card_layout.addWidget(log_button)
 
         return card
+
+    def _create_settings_dialog(self, settings_card: QFrame) -> QDialog:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("翻译设置")
+        dialog.setModal(False)
+        dialog.setMinimumWidth(460)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(16, 16, 16, 16)
+        dialog_layout.addWidget(settings_card)
+        return dialog
+
+    def _show_settings_dialog(self) -> None:
+        if self.settings_dialog is None:
+            return
+        self.settings_dialog.show()
+        self.settings_dialog.raise_()
+        self.settings_dialog.activateWindow()
+
+    def _on_main_skill_combo_changed(self, _index: int) -> None:
+        self._sync_result_skill_combo_from_main()
+        if self.current_content is not None:
+            selected_key = str(self.skill_combo.currentData() or BUILTIN_STYLE_KEY).strip()
+            if selected_key == BUILTIN_STYLE_KEY:
+                self.current_rewrite_focus = BUILTIN_DEFAULT_REWRITE_PROMPT
+            else:
+                self.current_rewrite_focus = str(self.skills_dict.get(selected_key, "")).strip()
+            self.current_content["rewrite_focus"] = self.current_rewrite_focus
+        self._persist_settings()
+
+    def _on_result_skill_combo_changed(self, _index: int) -> None:
+        self._sync_main_skill_combo_from_result()
+        selected_key = str(self.result_skill_combo.currentData() or BUILTIN_STYLE_KEY).strip()
+        if selected_key == BUILTIN_STYLE_KEY:
+            self.current_rewrite_focus = BUILTIN_DEFAULT_REWRITE_PROMPT
+        else:
+            self.current_rewrite_focus = str(self.skills_dict.get(selected_key, "")).strip()
+        if self.current_content is not None:
+            self.current_content["rewrite_focus"] = self.current_rewrite_focus
+        self._persist_settings()
 
     def _create_translation_card(self):
         card = QFrame()
@@ -1730,6 +1952,22 @@ class YouTubeTranslatorApp(QMainWindow):
 
         self.chat_messages_scroll.setWidget(self.chat_messages_widget)
         card_layout.addWidget(self.chat_messages_scroll, 1)
+
+        shortcut_row = QHBoxLayout()
+        shortcut_row.setSpacing(8)
+        for label, prompt in (
+            ("总结", "请总结以上内容的核心要点，保持简洁清晰。"),
+            ("解释", "请用通俗易懂的中文解释以上内容。"),
+            ("润色", "请在不改变原意的前提下，帮我润色并优化以上内容。"),
+            ("重构", "请以更清晰的结构重构以上内容，保留关键事实。"),
+        ):
+            button = QPushButton(label)
+            button.setObjectName("rewrite_action_btn")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(lambda _checked=False, text=prompt: self.send_chat_with_prompt(text))
+            shortcut_row.addWidget(button)
+        shortcut_row.addStretch(1)
+        card_layout.addLayout(shortcut_row)
 
         composer_frame = QFrame()
         composer_frame.setObjectName("chat_composer")
@@ -1887,23 +2125,14 @@ class YouTubeTranslatorApp(QMainWindow):
 
     def _ensure_backend_available(self) -> bool:
         if self.backend_url:
-            try:
-                resp = requests.get(f"{self.backend_url}{BACKEND_HEALTH_PATH}", timeout=2)
-                if resp.status_code == 200:
-                    self._backend_online = True
-                    return True
-            except Exception:
-                self._backend_online = False
-                return False
-
-        try:
-            self.backend_url = resolve_backend_base_url(force_probe=True)
             self._backend_online = True
             return True
-        except Exception as exc:
-            self._backend_bootstrap_error = str(exc)
-            self._backend_online = False
+
+        if self.backend_bootstrap_worker and self.backend_bootstrap_worker.isRunning():
             return False
+
+        self.check_backend()
+        return False
 
     def _is_valid_youtube_url(self, url: str) -> bool:
         normalized = str(url or "").strip()
@@ -2159,7 +2388,7 @@ class YouTubeTranslatorApp(QMainWindow):
         def flush_buffer():
             if not buffer:
                 return
-            paragraph_text = " ".join(
+            paragraph_text = "\n".join(
                 part.strip() for part in buffer if part.strip()
             ).strip()
             buffer.clear()
@@ -2226,6 +2455,24 @@ class YouTubeTranslatorApp(QMainWindow):
     def _on_backend_bootstrap_finished(self):
         self.backend_bootstrap_worker = None
 
+    def _on_backend_url_resolved(self, backend_url: str) -> None:
+        normalized = str(backend_url or "").strip().rstrip("/")
+        if not normalized:
+            return
+        self.backend_url = normalized
+        self._backend_online = True
+
+    def _handle_backend_url_error_prefix(self, message: str) -> str:
+        text = str(message or "")
+        prefix = "__BACKEND_URL_ERROR__:"
+        if not text.startswith(prefix):
+            return text
+        self.backend_url = None
+        self._set_backend_offline_ui()
+        if self.backend_bootstrap_worker is None or not self.backend_bootstrap_worker.isRunning():
+            self.check_backend()
+        return text[len(prefix):].strip() or "连接失败，请检查网络或后端状态"
+
     def start_processing(self):
         if not self._ensure_backend_available():
             extra = (
@@ -2271,6 +2518,7 @@ class YouTubeTranslatorApp(QMainWindow):
             model=self.model_input.text().strip(),
             skill_prompt=skill_prompt,
         )
+        self.worker.backend_url_resolved.connect(self._on_backend_url_resolved)
         self.worker.progress.connect(self.update_progress)
         self.worker.result.connect(self.display_results)
         self.worker.error.connect(self.show_error)
@@ -2315,8 +2563,13 @@ class YouTubeTranslatorApp(QMainWindow):
         self.chat_button.setEnabled(True)
         self.rewrite_again_button.setEnabled(bool(rewritten_text or self.current_rewrite_source_text))
         self.current_history_id = str(data.get("content_context_id", "")).strip()
+        self._sync_result_skill_combo_from_main()
         self.stack.setCurrentIndex(1)
         self.refresh_history_sidebar()
+
+    def send_chat_with_prompt(self, prompt: str) -> None:
+        self.chat_input.setPlainText(str(prompt or "").strip())
+        self.send_chat()
 
     def send_chat(self):
         if not self._ensure_backend_available():
@@ -2365,6 +2618,7 @@ class YouTubeTranslatorApp(QMainWindow):
             translation_zh,
             chat_config,
         )
+        self.chat_worker.backend_url_resolved.connect(self._on_backend_url_resolved)
         self.chat_worker.response.connect(self.on_chat_response)
         self.chat_worker.error.connect(self.on_chat_error)
         self.chat_worker.finished.connect(self._on_chat_finished)
@@ -2410,6 +2664,7 @@ class YouTubeTranslatorApp(QMainWindow):
             translation_config,
             content_context_id,
         )
+        self.rewrite_worker.backend_url_resolved.connect(self._on_backend_url_resolved)
         self.rewrite_worker.progress.connect(self.update_progress)
         self.rewrite_worker.result.connect(self.on_rewrite_again_result)
         self.rewrite_worker.error.connect(self.on_rewrite_again_error)
@@ -2441,7 +2696,7 @@ class YouTubeTranslatorApp(QMainWindow):
             QMessageBox.warning(self, "重新改写", "没有返回可展示的改写结果。")
 
     def on_rewrite_again_error(self, error):
-        friendly = self._friendly_error_text(error)
+        friendly = self._friendly_error_text(self._handle_backend_url_error_prefix(error))
         QMessageBox.warning(self, "重新改写失败", friendly)
 
     def _on_rewrite_again_finished(self):
@@ -2458,7 +2713,7 @@ class YouTubeTranslatorApp(QMainWindow):
             self._append_chat_message("assistant", message)
 
     def on_chat_error(self, error):
-        friendly = self._friendly_error_text(error)
+        friendly = self._friendly_error_text(self._handle_backend_url_error_prefix(error))
         lowered = friendly.lower()
         if "authentication fails" in lowered or "invalid api key" in lowered or "incorrect api key" in lowered:
             friendly = "鉴权失败：当前 API Key 无效，请检查左侧 API Key 与 provider 是否匹配。"
@@ -2476,6 +2731,7 @@ class YouTubeTranslatorApp(QMainWindow):
         self.refresh_history_sidebar()
 
     def show_error(self, message):
+        message = self._handle_backend_url_error_prefix(message)
         self._set_backend_offline_ui()
         friendly = self._friendly_error_text(message)
         self._set_status_text(f"错误: {friendly[:50]}")
