@@ -111,7 +111,6 @@ logger = logging.getLogger(__name__)
 _JOB_RUN_MAX_PENDING_DEFAULT = 20
 _JOB_RUN_MAX_PENDING_MIN = 1
 _JOB_RUN_MAX_PENDING_MAX = 100
-_JOB_RUN_MAX_PENDING = _JOB_RUN_MAX_PENDING_DEFAULT
 _JOB_RUN_LOCK = Lock()
 _JOB_RUN_ACTIVE = 0
 _JOB_RUN_EXECUTOR: ThreadPoolExecutor | None = None
@@ -131,12 +130,13 @@ _JOB_RUN_MAX_PENDING = _parse_job_run_max_pending()
 
 def _get_job_run_executor() -> ThreadPoolExecutor:
     global _JOB_RUN_EXECUTOR
-    if _JOB_RUN_EXECUTOR is None:
-        _JOB_RUN_EXECUTOR = ThreadPoolExecutor(
-            max_workers=_JOB_RUN_MAX_PENDING,
-            thread_name_prefix="job-run",
-        )
-    return _JOB_RUN_EXECUTOR
+    with _JOB_RUN_LOCK:
+        if _JOB_RUN_EXECUTOR is None:
+            _JOB_RUN_EXECUTOR = ThreadPoolExecutor(
+                max_workers=_JOB_RUN_MAX_PENDING,
+                thread_name_prefix="job-run",
+            )
+        return _JOB_RUN_EXECUTOR
 
 
 def _acquire_job_run_slot() -> None:

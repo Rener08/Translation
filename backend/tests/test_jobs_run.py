@@ -1053,3 +1053,35 @@ def test_jobs_run_endpoint_rejects_when_capacity_is_full(monkeypatch) -> None:
 
     assert third_response.status_code == 200
     app_main.shutdown_job_executor()
+
+
+def test_job_run_executor_is_created_once_under_concurrency(monkeypatch) -> None:
+    app_main.shutdown_job_executor()
+    monkeypatch.setattr(app_main, "_JOB_RUN_EXECUTOR", None, raising=False)
+
+    created_executors: list[object] = []
+    real_thread_pool_executor = app_main.ThreadPoolExecutor
+    start_barrier = threading.Barrier(8)
+
+    class CountingExecutor(real_thread_pool_executor):  # type: ignore[misc,valid-type]
+        def __init__(self, *args, **kwargs):
+            created_executors.append(self)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(app_main, "ThreadPoolExecutor", CountingExecutor)
+
+    def get_executor() -> None:
+        start_barrier.wait()
+        app_main._get_job_run_executor()
+
+    threads = [threading.Thread(target=get_executor) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+
+    assert all(not thread.is_alive() for thread in threads)
+    assert len(created_executors) == 1
+    assert app_main._JOB_RUN_EXECUTOR is created_executors[0]
+
+    app_main.shutdown_job_executor()
