@@ -2812,6 +2812,20 @@ body {
   position: relative;
 }
 
+.landing-shell-history-open {
+  grid-template-columns: 420px minmax(0, 1fr);
+  align-items: stretch;
+  justify-items: stretch;
+  gap: 24px;
+  padding: 20px;
+}
+
+.landing-shell-history-open .landing-stage {
+  grid-column: 1 / -1;
+  width: min(100%, 1060px);
+  justify-items: center;
+}
+
 .landing-stage {
   width: min(100%, 1060px);
   min-height: calc(100vh - 80px);
@@ -2828,7 +2842,7 @@ body {
 
 .landing-title {
   margin: 0;
-  font-size: clamp(42px, 4vw, 64px);
+  font-size: 48px;
   line-height: 1.08;
   letter-spacing: -0.04em;
   color: #0f172a;
@@ -2840,7 +2854,8 @@ body {
   display: flex;
   align-items: center;
   gap: 14px;
-  padding: 14px 16px 14px 24px;
+  height: 50px;
+  padding: 0 8px 0 20px;
   border-radius: 999px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
@@ -2849,29 +2864,31 @@ body {
 
 .landing-url-input {
   flex: 1;
-  min-height: 56px;
+  min-height: 50px;
   resize: none;
   border: 0;
   outline: none;
   background: transparent;
   color: #0f172a;
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 28px;
+  line-height: 50px;
+  padding: 0;
 }
 
 .landing-url-input::placeholder {
   color: #94a3b8;
+  font-size: 28px;
 }
 
 .landing-run-button {
-  width: 56px;
-  height: 56px;
+  width: 50px;
+  height: 50px;
   flex: 0 0 auto;
   border: 0;
   border-radius: 999px;
   background: #0f172a;
   color: #ffffff;
-  font-size: 18px;
+  font-size: 16px;
   cursor: pointer;
 }
 
@@ -2912,13 +2929,33 @@ body {
   position: fixed;
   left: 28px;
   bottom: 104px;
-  width: min(400px, calc(100vw - 56px));
+  width: min(360px, calc(100vw - 56px));
   z-index: 20;
 }
 
 .landing-settings-panel {
+  height: auto;
   max-height: calc(100vh - 152px);
   overflow: auto;
+  padding: 20px 20px 18px;
+}
+
+.landing-settings-panel .settings-header {
+  margin-bottom: 12px;
+}
+
+.landing-settings-panel .settings-heading {
+  font-size: 20px;
+}
+
+.landing-settings-panel .settings-grid {
+  gap: 12px;
+}
+
+.landing-settings-panel .settings-field input,
+.landing-settings-panel .settings-field select {
+  padding: 10px 12px;
+  font-size: 13px;
 }
 
 .taskbar-rail {
@@ -2949,26 +2986,28 @@ body {
 
 .history-popover {
   position: fixed;
-  top: 78px;
-  left: 28px;
+  top: 20px;
+  left: 20px;
+  bottom: 20px;
   z-index: 35;
-  width: min(320px, calc(100vw - 56px));
+  width: min(420px, calc(100vw - 40px));
 }
 
 .history-popover-result {
-  top: 78px;
+  top: 20px;
 }
 
 .history-popover-panel {
+  height: 100%;
   border: 1px solid #dbe4f0;
-  border-radius: 24px;
+  border-radius: 30px;
   background: #ffffff;
   box-shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
-  padding: 16px;
+  padding: 18px;
   display: grid;
-  gap: 12px;
-  max-height: min(60vh, 520px);
-  overflow: auto;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  gap: 14px;
+  overflow: hidden;
 }
 
 .history-popover-header {
@@ -2980,30 +3019,72 @@ body {
 
 .history-popover-title {
   margin: 0;
-  font-size: 15px;
+  font-size: 18px;
   color: #0f172a;
+  line-height: 1.15;
 }
 
 .history-popover-close {
   border: 0;
   background: #f1f5f9;
   color: #334155;
-  width: 28px;
-  height: 28px;
+  width: 40px;
+  height: 40px;
   border-radius: 999px;
   cursor: pointer;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.history-popover-search {
+  width: 100%;
+  min-height: 46px;
+  border-radius: 18px;
+  border: 1px solid #dbe4f0;
+  padding: 0 16px;
+  font-size: 14px;
+  color: #0f172a;
+  background: #fff;
+}
+
+.history-popover-search::placeholder {
+  color: #94a3b8;
+}
+
+.history-popover-section {
+  display: grid;
+  gap: 10px;
+  min-height: 0;
+}
+
+.history-popover-section-header {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.history-popover-section-count {
+  font-size: 13px;
+  font-weight: 500;
+  color: #64748b;
 }
 
 .history-popover-list {
+  min-height: 0;
   display: grid;
   gap: 8px;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .history-popover-item {
   width: 100%;
   text-align: left;
   border: 1px solid #e2e8f0;
-  border-radius: 16px;
+  border-radius: 18px;
   background: #ffffff;
   padding: 12px 14px;
   display: grid;
@@ -3012,8 +3093,10 @@ body {
 }
 
 .history-popover-item-title {
-  font-size: 14px;
+  font-size: 15px;
+  font-weight: 600;
   color: #0f172a;
+  line-height: 1.35;
 }
 
 .history-popover-item-meta,
@@ -3021,8 +3104,113 @@ body {
 .history-popover-error {
   font-size: 12px;
   color: #64748b;
+  line-height: 1.35;
 }
 
 .history-popover-error {
   color: #b45309;
+}
+
+.settings-panel {
+  border-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+.settings-header {
+  border-top: 0 !important;
+}
+
+.settings-model-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.settings-model-pill {
+  border: 1px solid #dbe4f0;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #334155;
+  padding: 6px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.settings-model-pill-active {
+  background: #0f172a;
+  border-color: #0f172a;
+  color: #ffffff;
+}
+
+.settings-model-note,
+.settings-model-error {
+  margin: 0;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.35;
+}
+
+.settings-model-error {
+  color: #b45309;
+}
+
+.landing-run-button {
+  width: 32px;
+  height: 32px;
+  font-size: 14px;
+}
+
+.landing-composer {
+  height: 50px;
+}
+
+.landing-url-input {
+  min-height: 50px;
+  line-height: 50px;
+}
+
+.research-shell .taskbar-rail-shell {
+  display: flex;
+  gap: 10px;
+}
+
+.research-shell {
+  align-items: start;
+  position: relative;
+}
+
+.landing-shell {
+  align-items: start;
+  justify-items: center;
+}
+
+.research-shell .composer-panel {
+  padding-top: 78px;
+}
+
+.research-shell .taskbar-rail {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  z-index: 30;
+}
+
+.research-shell .taskbar-rail-result {
+  top: 20px;
+}
+
+.research-shell .control-column {
+  min-height: 0;
+}
+
+.settings-panel {
+  border-top: 0 !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+.settings-header {
+  border-top: 0 !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
 }

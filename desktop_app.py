@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+import atexit
 import sys
 import json
 import os
 import re
+import platform
 import subprocess
 import time
 import traceback
@@ -48,6 +50,8 @@ DEFAULT_BACKEND_CANDIDATES = [
 ]
 _RESOLVED_BACKEND_URL = None
 CRASH_LOG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "desktop_crash.log")
+_CRASH_FILE_HANDLE = None
+BUILTIN_STYLE_KEY = "__builtin_default__"
 
 
 def _append_crash_log(title: str, detail: str) -> None:
@@ -79,9 +83,12 @@ def _install_global_exception_hook() -> None:
 
 
 def _install_fault_handler() -> None:
+    global _CRASH_FILE_HANDLE
     try:
-        crash_file = open(CRASH_LOG_PATH, "a", encoding="utf-8")
-        faulthandler.enable(file=crash_file, all_threads=True)
+        if _CRASH_FILE_HANDLE is None:
+            _CRASH_FILE_HANDLE = open(CRASH_LOG_PATH, "a", encoding="utf-8")
+            atexit.register(_CRASH_FILE_HANDLE.close)
+        faulthandler.enable(file=_CRASH_FILE_HANDLE, all_threads=True)
     except Exception:
         pass
 
@@ -116,6 +123,41 @@ def resolve_backend_base_url(force_probe=False):
         "Cannot connect to backend API. Start backend on port 8000 or 8002, "
         "or set DESKTOP_BACKEND_URL."
     )
+
+
+def bootstrap_local_backend_daemon() -> tuple[bool, str, str]:
+    root_dir = os.path.dirname(os.path.abspath(__file__))
+    script_path = os.path.join(root_dir, "start-backend.sh")
+    if not os.path.isfile(script_path):
+        return False, "", f"未找到后端启动脚本: {script_path}"
+
+    try:
+        result = subprocess.run(
+            ["/bin/bash", script_path, "--daemon"],
+            cwd=root_dir,
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except Exception as exc:
+        return False, "", f"自动启动后端失败: {exc}"
+
+    output = "\n".join(
+        part.strip()
+        for part in [result.stdout, result.stderr]
+        if part and part.strip()
+    ).strip()
+    if result.returncode != 0:
+        return False, "", output or "start-backend.sh --daemon 执行失败"
+
+    for _ in range(20):
+        try:
+            backend_url = resolve_backend_base_url(force_probe=True)
+            return True, backend_url, output
+        except Exception:
+            time.sleep(0.5)
+
+    return False, "", output or "后端启动后仍未通过健康检查"
 
 
 class WorkerThread(QThread):
@@ -426,6 +468,17 @@ class HistoryDetailWorker(QThread):
             self.error.emit(str(e))
 
 
+class BackendBootstrapWorker(QThread):
+    result = pyqtSignal(bool, str, str)
+
+    def run(self):
+        try:
+            success, backend_url, info = bootstrap_local_backend_daemon()
+            self.result.emit(success, backend_url, info)
+        except Exception as exc:
+            self.result.emit(False, "", str(exc))
+
+
 class ChatTextEdit(QTextEdit):
     returnPressed = pyqtSignal()
 
@@ -462,11 +515,15 @@ class YouTubeTranslatorApp(QMainWindow):
         self.chat_worker = None
         self.history_worker = None
         self.history_detail_worker = None
+        self.backend_bootstrap_worker = None
         self.skills_dict = {}
         self.skill_prompt_validation = {}
         self.history_items = []
         self.history_search_text = ""
         self.current_history_id = ""
+        self.chat_message_widgets = []
+        self.chat_pending_message_widget = None
+        self.chat_pending_message_label = None
         self.setup_ui()
         self.apply_light_theme()
         self._settings = QSettings("TranslationWritingWorkbench", "Desktop")
@@ -476,7 +533,6 @@ class YouTubeTranslatorApp(QMainWindow):
         self.check_backend()
 
     def load_skills(self):
-        import os
         skills_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "skills")
         self.skills_dict = {}
         if not os.path.exists(skills_dir):
@@ -500,11 +556,11 @@ class YouTubeTranslatorApp(QMainWindow):
     def _populate_skill_combo(self):
         self.skill_combo.clear()
         builtin_validation = validate_rewrite_prompt(BUILTIN_DEFAULT_REWRITE_PROMPT)
-        self.skill_combo.addItem("默认内置风格（晚点通用）", "__builtin_default__")
-        self.skill_prompt_validation["__builtin_default__"] = builtin_validation
-        self.skills_dict["__builtin_default__"] = BUILTIN_DEFAULT_REWRITE_PROMPT
+        self.skill_combo.addItem("默认内置风格（晚点通用）", BUILTIN_STYLE_KEY)
+        self.skill_prompt_validation[BUILTIN_STYLE_KEY] = builtin_validation
+        self.skills_dict[BUILTIN_STYLE_KEY] = BUILTIN_DEFAULT_REWRITE_PROMPT
         for name, prompt_text in self.skills_dict.items():
-            if name == "__builtin_default__":
+            if name == BUILTIN_STYLE_KEY:
                 continue
             validation = self.skill_prompt_validation.get(name) or validate_rewrite_prompt(prompt_text)
             if validation.errors:
@@ -523,16 +579,13 @@ class YouTubeTranslatorApp(QMainWindow):
 
         provider = str(self._settings.value("provider", "deepseek") or "deepseek").strip()
         model = str(self._settings.value("model", "deepseek-chat") or "deepseek-chat").strip()
-        style_key = str(self._settings.value("style_key", "__builtin_default__") or "__builtin_default__").strip()
-        source_mode = str(self._settings.value("source_mode", "字幕优先") or "字幕优先").strip()
+        style_key = str(self._settings.value("style_key", BUILTIN_STYLE_KEY) or BUILTIN_STYLE_KEY).strip()
         api_key = str(self._settings.value("api_key", "") or "").strip()
 
         if provider:
             self.provider_combo.setCurrentText(provider)
         if model:
             self.model_input.setText(model)
-        if source_mode:
-            self.source_combo.setCurrentText(source_mode)
         if api_key:
             self.api_key_input.setText(api_key)
         self._select_skill_by_key(style_key)
@@ -542,12 +595,11 @@ class YouTubeTranslatorApp(QMainWindow):
             return
         self._settings.setValue("provider", self.provider_combo.currentText())
         self._settings.setValue("model", self.model_input.text().strip())
-        self._settings.setValue("source_mode", self.source_combo.currentText())
-        self._settings.setValue("style_key", self.skill_combo.currentData() or "__builtin_default__")
+        self._settings.setValue("style_key", self.skill_combo.currentData() or BUILTIN_STYLE_KEY)
         self._settings.setValue("api_key", self.api_key_input.text().strip())
 
     def _select_skill_by_key(self, skill_key: str):
-        normalized_key = str(skill_key or "").strip() or "__builtin_default__"
+        normalized_key = str(skill_key or "").strip() or BUILTIN_STYLE_KEY
         for index in range(self.skill_combo.count()):
             if str(self.skill_combo.itemData(index) or "").strip() == normalized_key:
                 self.skill_combo.setCurrentIndex(index)
@@ -594,7 +646,7 @@ class YouTubeTranslatorApp(QMainWindow):
         key = str(current_data).strip()
         if key in self.skills_dict:
             return str(self.skills_dict.get(key, "")).strip()
-        if key == "__builtin_default__":
+        if key == BUILTIN_STYLE_KEY:
             return BUILTIN_DEFAULT_REWRITE_PROMPT
         return ""
 
@@ -609,6 +661,13 @@ class YouTubeTranslatorApp(QMainWindow):
         suffix = "…" if len(issue_list) > 3 else ""
         self.rewrite_issue_label.setText(f"改写提示：{preview}{suffix}")
         self.rewrite_issue_label.setVisible(True)
+
+    def _set_status_text(self, text: str) -> None:
+        message = str(text or "").strip()
+        if hasattr(self, "progress_label"):
+            self.progress_label.setText(message)
+        if hasattr(self, "result_status_label"):
+            self.result_status_label.setText(message)
 
     def _friendly_error_text(self, message: str) -> str:
         text = str(message or "").strip()
@@ -630,10 +689,11 @@ class YouTubeTranslatorApp(QMainWindow):
             return ""
 
         video = self.current_content.get("video")
+        title = ""
         if isinstance(video, dict):
             title = str(video.get("title") or "").strip()
-            if title:
-                return title
+        if title:
+            return title
 
         return str(self.current_content.get("video_title") or "").strip()
 
@@ -899,13 +959,13 @@ class YouTubeTranslatorApp(QMainWindow):
         self.chat_input.setEnabled(True)
         self.chat_button.setEnabled(True)
         self.current_history_id = content_context_id
-        self.progress_label.setText("已加载历史会话")
+        self._set_status_text("已加载历史会话")
         self.stack.setCurrentIndex(1)
         self.refresh_history_sidebar()
 
     def on_history_detail_error(self, message):
         friendly = self._friendly_error_text(message)
-        self.progress_label.setText(f"历史打开失败: {friendly[:50]}")
+        self._set_status_text(f"历史打开失败: {friendly[:50]}")
         QMessageBox.warning(self, "历史会话", friendly)
 
     def _on_history_detail_finished(self):
@@ -914,38 +974,11 @@ class YouTubeTranslatorApp(QMainWindow):
         self.history_detail_worker = None
 
     def _start_local_backend_daemon(self) -> tuple[bool, str]:
-        root_dir = os.path.dirname(os.path.abspath(__file__))
-        script_path = os.path.join(root_dir, "start-backend.sh")
-        if not os.path.isfile(script_path):
-            return False, f"未找到后端启动脚本: {script_path}"
-
-        try:
-            result = subprocess.run(
-                ["/bin/bash", script_path, "--daemon"],
-                cwd=root_dir,
-                capture_output=True,
-                text=True,
-                timeout=45,
-            )
-        except Exception as exc:
-            return False, f"自动启动后端失败: {exc}"
-
-        output = "\n".join(
-            part.strip()
-            for part in [result.stdout, result.stderr]
-            if part and part.strip()
-        ).strip()
-        if result.returncode != 0:
-            return False, output or "start-backend.sh --daemon 执行失败"
-
-        for _ in range(20):
-            try:
-                self.backend_url = resolve_backend_base_url(force_probe=True)
-                return True, output
-            except Exception:
-                time.sleep(0.5)
-
-        return False, output or "后端启动后仍未通过健康检查"
+        started, backend_url, info = bootstrap_local_backend_daemon()
+        if started:
+            self.backend_url = backend_url
+            return True, info
+        return False, info
 
     def _set_backend_online_ui(self):
         self._backend_online = True
@@ -1224,7 +1257,6 @@ class YouTubeTranslatorApp(QMainWindow):
         
         self.url_input = QLineEdit()
         self.url_input.setPlaceholderText("粘贴 YouTube 链接...")
-        self.url_input.setText("https://www.youtube.com/watch?v=Mjc7vwys1vY")
         self.url_input.setStyleSheet("border: none; background: transparent; font-size: 16px;")
         self.url_input.returnPressed.connect(self.start_processing)
         
@@ -1380,6 +1412,13 @@ class YouTubeTranslatorApp(QMainWindow):
 
         main_layout.addLayout(header_layout)
 
+        self.result_status_label = QLabel("")
+        self.result_status_label.setWordWrap(True)
+        self.result_status_label.setStyleSheet(
+            "color: #64748B; font-size: 14px; background: transparent; line-height: 1.5;"
+        )
+        main_layout.addWidget(self.result_status_label)
+
         trans_card = self._create_translation_card()
         main_layout.addWidget(trans_card, 3)
 
@@ -1485,7 +1524,7 @@ class YouTubeTranslatorApp(QMainWindow):
         if hasattr(self, "skills_dict") and self.skills_dict:
             self._populate_skill_combo()
         else:
-            self.skill_combo.addItem("默认内置风格（晚点通用）", "__builtin_default__")
+            self.skill_combo.addItem("默认内置风格（晚点通用）", BUILTIN_STYLE_KEY)
         self.skill_combo.setToolTip(
             "优先级：如果所选风格文件包含 {{transcript}}，将作为完整写作 Prompt 直接执行；"
             "否则回退到后端内置的改写参考与题材路由。"
@@ -1504,18 +1543,6 @@ class YouTubeTranslatorApp(QMainWindow):
             "color: #64748B; font-size: 12px; line-height: 1.4; background: transparent;"
         )
         card_layout.addWidget(skill_hint)
-
-        source_row = QHBoxLayout()
-        source_row.setSpacing(8)
-        source_label = QLabel("内容来源")
-        source_label.setStyleSheet("color: #86868B; font-size: 13px; background: transparent;")
-        source_label.setFixedWidth(70)
-        self.source_combo = QComboBox()
-        self.source_combo.addItems(["字幕优先", "强制音频"])
-        self.source_combo.currentTextChanged.connect(lambda _text: self._persist_settings())
-        source_row.addWidget(source_label)
-        source_row.addWidget(self.source_combo, 1)
-        card_layout.addLayout(source_row)
 
         api_row = QHBoxLayout()
         api_row.setSpacing(8)
@@ -1597,32 +1624,46 @@ class YouTubeTranslatorApp(QMainWindow):
         card = QFrame()
         card.setObjectName("chat_card")
         card_layout = QVBoxLayout(card)
-        card_layout.setSpacing(0)
+        card_layout.setSpacing(12)
         card_layout.setContentsMargins(12, 12, 12, 12)
+
+        self.chat_messages_scroll = QScrollArea()
+        self.chat_messages_scroll.setWidgetResizable(True)
+        self.chat_messages_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.chat_messages_scroll.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
+        self.chat_messages_scroll.setStyleSheet(
+            "QScrollArea { background: transparent; border: none; }"
+        )
+
+        self.chat_messages_widget = QWidget()
+        self.chat_messages_layout = QVBoxLayout(self.chat_messages_widget)
+        self.chat_messages_layout.setContentsMargins(0, 0, 0, 0)
+        self.chat_messages_layout.setSpacing(12)
+
+        self.chat_empty_state = QFrame()
+        self.chat_empty_state.setObjectName("chat_empty_state")
+        empty_layout = QVBoxLayout(self.chat_empty_state)
+        empty_layout.setContentsMargins(20, 24, 20, 24)
+        empty_layout.setSpacing(8)
+        empty_label = QLabel("先运行一次转写和翻译，然后在这里继续追问。")
+        empty_label.setWordWrap(True)
+        empty_label.setStyleSheet(
+            "color: #64748B; font-size: 13px; background: transparent;"
+        )
+        empty_layout.addWidget(empty_label)
+        self.chat_messages_layout.addWidget(self.chat_empty_state)
+        self.chat_messages_layout.addStretch(1)
+
+        self.chat_messages_scroll.setWidget(self.chat_messages_widget)
+        card_layout.addWidget(self.chat_messages_scroll, 1)
 
         composer_frame = QFrame()
         composer_frame.setObjectName("chat_composer")
         composer_layout = QHBoxLayout(composer_frame)
         composer_layout.setContentsMargins(20, 10, 10, 10)
         composer_layout.setSpacing(12)
-
-        shortcut_row = QHBoxLayout()
-        shortcut_row.setSpacing(8)
-        shortcut_row.setContentsMargins(0, 0, 0, 0)
-
-        for label, prompt in (
-            ("总结", "请总结这段内容的核心观点和结论。"),
-            ("解释", "请解释这段内容里最重要的概念、背景和含义。"),
-            ("润色", "请把当前内容润色得更顺畅、更适合中文阅读。"),
-            ("重构", "请把当前内容重新组织成更清晰的中文文章结构。"),
-        ):
-            button = QPushButton(label)
-            button.setObjectName("rewrite_action_btn")
-            button.setCursor(Qt.CursorShape.PointingHandCursor)
-            button.clicked.connect(lambda _, p=prompt: self.send_chat_with_prompt(p))
-            shortcut_row.addWidget(button)
-
-        card_layout.addLayout(shortcut_row)
 
         self.chat_input = ChatTextEdit()
         self.chat_input.setPlaceholderText("输入问题，回车发送，Shift+Enter 换行。")
@@ -1642,7 +1683,163 @@ class YouTubeTranslatorApp(QMainWindow):
 
         return card
 
+    def _clear_chat_messages(self):
+        if not hasattr(self, "chat_messages_layout"):
+            return
 
+        for widget in list(self.chat_message_widgets):
+            try:
+                self.chat_messages_layout.removeWidget(widget)
+                widget.setParent(None)
+                widget.deleteLater()
+            except Exception:
+                pass
+
+        self.chat_message_widgets = []
+        self.chat_pending_message_widget = None
+        self.chat_pending_message_label = None
+        if hasattr(self, "chat_empty_state"):
+            self.chat_empty_state.setVisible(True)
+        if hasattr(self, "chat_messages_widget"):
+            self.chat_messages_widget.adjustSize()
+        self._scroll_chat_to_bottom()
+
+    def _scroll_chat_to_bottom(self):
+        if not hasattr(self, "chat_messages_scroll"):
+            return
+        scroll_bar = self.chat_messages_scroll.verticalScrollBar()
+        scroll_bar.setValue(scroll_bar.maximum())
+
+    def _chat_bubble_style(self, role: str, pending: bool = False, is_error: bool = False) -> str:
+        if is_error:
+            return (
+                "QFrame { background-color: #FEF2F2; border: 1px solid #FCA5A5; "
+                "border-radius: 16px; }"
+            )
+        if role == "user":
+            return (
+                "QFrame { background-color: #DBEAFE; border: 1px solid #93C5FD; "
+                "border-radius: 16px; }"
+            )
+        if pending:
+            return (
+                "QFrame { background-color: #F8FAFC; border: 1px solid #E2E8F0; "
+                "border-radius: 16px; }"
+            )
+        return (
+            "QFrame { background-color: #FFFFFF; border: 1px solid #E2E8F0; "
+            "border-radius: 16px; }"
+        )
+
+    def _create_chat_message_widget(
+        self,
+        role: str,
+        text: str,
+        pending: bool = False,
+        is_error: bool = False,
+    ):
+        widget = QFrame()
+        widget.setStyleSheet(self._chat_bubble_style(role, pending=pending, is_error=is_error))
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
+
+        header = QLabel("我" if role == "user" else "内容助手")
+        header.setStyleSheet("color: #64748B; font-size: 12px; background: transparent;")
+
+        content = QLabel(text)
+        content.setWordWrap(True)
+        content.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        if is_error:
+            content.setStyleSheet(
+                "color: #B91C1C; font-size: 14px; line-height: 1.5; background: transparent;"
+            )
+        elif pending:
+            content.setStyleSheet(
+                "color: #64748B; font-size: 14px; line-height: 1.5; font-style: italic; background: transparent;"
+            )
+        else:
+            content.setStyleSheet(
+                "color: #0F172A; font-size: 14px; line-height: 1.5; background: transparent;"
+            )
+
+        layout.addWidget(header)
+        layout.addWidget(content)
+        widget._chat_content_label = content
+        widget._chat_role = role
+        widget._chat_pending = pending
+        widget._chat_error = is_error
+        return widget
+
+    def _append_chat_message(self, role: str, text: str, pending: bool = False, is_error: bool = False):
+        if hasattr(self, "chat_empty_state"):
+            self.chat_empty_state.setVisible(False)
+
+        widget = self._create_chat_message_widget(role, text, pending=pending, is_error=is_error)
+        insert_index = max(0, self.chat_messages_layout.count() - 1)
+        self.chat_messages_layout.insertWidget(insert_index, widget)
+        self.chat_message_widgets.append(widget)
+        self._scroll_chat_to_bottom()
+        return widget
+
+    def _set_pending_chat_message(self, text: str, is_error: bool = False):
+        widget = self.chat_pending_message_widget
+        if widget is None:
+            self._append_chat_message(
+                "assistant",
+                text,
+                pending=not is_error,
+                is_error=is_error,
+            )
+            self.chat_pending_message_widget = None
+            self.chat_pending_message_label = None
+            return
+
+        widget.setStyleSheet(self._chat_bubble_style("assistant", pending=False, is_error=is_error))
+        label = getattr(widget, "_chat_content_label", None)
+        if label is not None:
+            label.setText(text)
+            if is_error:
+                label.setStyleSheet(
+                    "color: #B91C1C; font-size: 14px; line-height: 1.5; background: transparent;"
+                )
+            else:
+                label.setStyleSheet(
+                    "color: #0F172A; font-size: 14px; line-height: 1.5; background: transparent;"
+                )
+        widget._chat_pending = False
+        widget._chat_error = is_error
+        self.chat_pending_message_widget = None
+        self.chat_pending_message_label = None
+        self._scroll_chat_to_bottom()
+
+    def _ensure_backend_available(self) -> bool:
+        if self.backend_url:
+            try:
+                resp = requests.get(f"{self.backend_url}{BACKEND_HEALTH_PATH}", timeout=2)
+                if resp.status_code == 200:
+                    return True
+            except Exception:
+                pass
+
+        try:
+            self.backend_url = resolve_backend_base_url(force_probe=True)
+            return True
+        except Exception as exc:
+            self._backend_bootstrap_error = str(exc)
+            return False
+
+    def _is_valid_youtube_url(self, url: str) -> bool:
+        normalized = str(url or "").strip()
+        if not normalized:
+            return False
+        return bool(
+            re.search(
+                r"(youtube\.com/watch\?v=|youtu\.be/|youtube\.com/shorts/)",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+        )
 
     def copy_rewrite_text(self):
         text = self._current_rewrite_text()
@@ -1650,7 +1847,7 @@ class YouTubeTranslatorApp(QMainWindow):
             QMessageBox.information(self, "复制", "当前没有可复制的改写内容。")
             return
         QApplication.clipboard().setText(text)
-        self.progress_label.setText("已复制到剪贴板")
+        self._set_status_text("已复制到剪贴板")
 
     def _extract_export_basename(self, text: str) -> str:
         title = self._current_video_title()
@@ -1742,7 +1939,7 @@ class YouTubeTranslatorApp(QMainWindow):
 
         self.last_exported_file_path = file_path
         self.open_export_button.setEnabled(True)
-        self.progress_label.setText(f"已导出: {os.path.basename(file_path)}")
+        self._set_status_text(f"已导出: {os.path.basename(file_path)}")
 
     def open_export_location(self):
         file_path = str(self.last_exported_file_path or "").strip()
@@ -1750,7 +1947,13 @@ class YouTubeTranslatorApp(QMainWindow):
             QMessageBox.information(self, "打开位置", "还没有可打开的导出文件。")
             return
         try:
-            subprocess.run(["open", "-R", file_path], check=False)
+            system = platform.system()
+            if system == "Darwin":
+                subprocess.run(["open", "-R", file_path], check=False)
+            elif system == "Windows":
+                subprocess.run(["explorer", "/select,", file_path], check=False)
+            else:
+                subprocess.run(["xdg-open", os.path.dirname(file_path)], check=False)
         except Exception as exc:
             QMessageBox.warning(self, "打开位置失败", str(exc))
 
@@ -1920,32 +2123,40 @@ class YouTubeTranslatorApp(QMainWindow):
         flush_buffer()
 
     def check_backend(self):
-        try:
-            self.backend_url = resolve_backend_base_url(force_probe=True)
-            resp = requests.get(f"{self.backend_url}{BACKEND_HEALTH_PATH}", timeout=5)
-            if resp.status_code == 200:
-                self._set_backend_online_ui()
-                self._backend_bootstrap_error = ""
-                self.refresh_history_sidebar()
-                return
-        except Exception:
-            pass
+        if self.backend_bootstrap_worker and self.backend_bootstrap_worker.isRunning():
+            return
 
-        started, info = self._start_local_backend_daemon()
-        if started:
+        self._set_status_text("正在检查后端...")
+        self.backend_bootstrap_worker = BackendBootstrapWorker(self)
+        self.backend_bootstrap_worker.result.connect(self.on_backend_bootstrap_result)
+        self.backend_bootstrap_worker.finished.connect(self._on_backend_bootstrap_finished)
+        self.backend_bootstrap_worker.finished.connect(self.backend_bootstrap_worker.deleteLater)
+        self.backend_bootstrap_worker.start()
+
+    def on_backend_bootstrap_result(self, success: bool, backend_url: str, info: str):
+        self._backend_bootstrap_error = str(info or "")
+        if success and backend_url:
+            self.backend_url = backend_url
             self._set_backend_online_ui()
             self._backend_bootstrap_error = ""
             self.refresh_history_sidebar()
+            self._set_status_text("后端已连接")
             return
 
         self.backend_url = None
-        self._backend_bootstrap_error = info
         self._set_backend_offline_ui()
+        self._set_status_text(self._backend_bootstrap_error or "后端未连接")
+
+    def _on_backend_bootstrap_finished(self):
+        self.backend_bootstrap_worker = None
 
     def start_processing(self):
-        self.check_backend()
-        if not self.backend_url:
-            extra = f"\n\n自动启动信息：{self._backend_bootstrap_error}" if self._backend_bootstrap_error else ""
+        if not self._ensure_backend_available():
+            extra = (
+                f"\n\n自动启动信息：{self._backend_bootstrap_error}"
+                if self._backend_bootstrap_error
+                else ""
+            )
             QMessageBox.critical(self, "错误", f"后端未连接，且自动拉起失败。{extra}")
             return
 
@@ -1953,29 +2164,33 @@ class YouTubeTranslatorApp(QMainWindow):
         if not url:
             QMessageBox.critical(self, "错误", "请输入 YouTube 链接")
             return
+        if not self._is_valid_youtube_url(url):
+            QMessageBox.critical(self, "错误", "请输入有效的 YouTube 链接")
+            return
 
         self.run_button.setEnabled(False)
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
-        self.progress_label.setText("处理中...")
+        self._set_status_text("处理中...")
         self.clear_results()
+        self._clear_chat_messages()
 
-        selected_skill_key = str(self.skill_combo.currentData() or "__default__").strip()
+        selected_skill_key = str(self.skill_combo.currentData() or BUILTIN_STYLE_KEY).strip()
         skill_prompt = self.skills_dict.get(selected_skill_key, "")
-        if selected_skill_key and selected_skill_key != "__default__":
+        if selected_skill_key and selected_skill_key != BUILTIN_STYLE_KEY:
             validation = self.skill_prompt_validation.get(selected_skill_key) or validate_rewrite_prompt(skill_prompt)
             if not validation.is_valid:
                 QMessageBox.warning(self, "写作风格无效", "\n".join(validation.errors))
                 self.run_button.setEnabled(True)
                 self.progress_bar.setVisible(False)
-                self.progress_label.setText("")
+                self._set_status_text("")
                 return
         
         self.worker = WorkerThread(
             backend_url=self.backend_url,
             url=url,
             provider=self.provider_combo.currentText(),
-            source_mode="subtitle_first" if self.source_combo.currentText() == "字幕优先" else "force_audio",
+            source_mode="subtitle_first",
             api_key=self.api_key_input.text().strip(),
             model=self.model_input.text().strip(),
             skill_prompt=skill_prompt,
@@ -1989,7 +2204,7 @@ class YouTubeTranslatorApp(QMainWindow):
 
     def update_progress(self, value, text):
         self.progress_bar.setValue(value)
-        self.progress_label.setText(text)
+        self._set_status_text(text)
 
     def display_results(self, data):
         rewritten_text = str(data.get("rewrite_zh", "")).strip()
@@ -1999,6 +2214,7 @@ class YouTubeTranslatorApp(QMainWindow):
         self._update_rewrite_quality_banner(data.get("rewrite_quality_issues", []))
         self.last_exported_file_path = ""
         self.open_export_button.setEnabled(False)
+        self._clear_chat_messages()
         if rewritten_text:
             self.trans_text.setMarkdown(rewritten_text)
         else:
@@ -2027,9 +2243,7 @@ class YouTubeTranslatorApp(QMainWindow):
         self.refresh_history_sidebar()
 
     def send_chat(self):
-        if not self.backend_url:
-            self.check_backend()
-        if not self.backend_url:
+        if not self._ensure_backend_available():
             QMessageBox.warning(self, "提示", "后端未连接，无法发送提问")
             return
 
@@ -2042,6 +2256,10 @@ class YouTubeTranslatorApp(QMainWindow):
             return
 
         self.chat_input.clear()
+        self._append_chat_message("user", question)
+        pending_widget = self._append_chat_message("assistant", "思考中...", pending=True)
+        self.chat_pending_message_widget = pending_widget
+        self.chat_pending_message_label = getattr(pending_widget, "_chat_content_label", None)
 
         content_context_id = self.current_content.get("content_context_id", "")
         transcript_en = self.current_content.get("transcript_en", {}).get("text", "")
@@ -2077,17 +2295,8 @@ class YouTubeTranslatorApp(QMainWindow):
         self.chat_worker.finished.connect(self.chat_worker.deleteLater)
         self.chat_worker.start()
 
-    def send_chat_with_prompt(self, prompt_text: str):
-        prompt = str(prompt_text or "").strip()
-        if not prompt:
-            return
-        self.chat_input.setPlainText(prompt)
-        self.send_chat()
-
     def rewrite_current_result(self):
-        if not self.backend_url:
-            self.check_backend()
-        if not self.backend_url:
+        if not self._ensure_backend_available():
             QMessageBox.warning(self, "提示", "后端未连接，无法重新改写")
             return
 
@@ -2113,7 +2322,7 @@ class YouTubeTranslatorApp(QMainWindow):
 
         self.rewrite_again_button.setEnabled(False)
         self.rewrite_again_button.setText("改写中…")
-        self.progress_label.setText("正在重新改写...")
+        self._set_status_text("正在重新改写...")
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(35)
 
@@ -2150,7 +2359,7 @@ class YouTubeTranslatorApp(QMainWindow):
             self.copy_button.setEnabled(True)
             self.export_button.setEnabled(True)
             self.rewrite_again_button.setEnabled(True)
-            self.progress_label.setText("重新改写完成")
+            self._set_status_text("重新改写完成")
             self.refresh_history_sidebar()
         else:
             QMessageBox.warning(self, "重新改写", "没有返回可展示的改写结果。")
@@ -2166,15 +2375,23 @@ class YouTubeTranslatorApp(QMainWindow):
         self.rewrite_worker = None
 
     def on_chat_response(self, answer):
-        QMessageBox.information(self, "内容问答", answer)
+        message = str(answer or "").strip() or "没有返回可展示的回答。"
+        if self.chat_pending_message_widget is not None:
+            self._set_pending_chat_message(message)
+        else:
+            self._append_chat_message("assistant", message)
 
     def on_chat_error(self, error):
         friendly = self._friendly_error_text(error)
         lowered = friendly.lower()
         if "authentication fails" in lowered or "invalid api key" in lowered or "incorrect api key" in lowered:
-            QMessageBox.warning(self, "内容问答", "鉴权失败：当前 API Key 无效，请检查左侧 API Key 与 provider 是否匹配。")
-            return
-        QMessageBox.warning(self, "内容问答", f"对话失败：{friendly}")
+            friendly = "鉴权失败：当前 API Key 无效，请检查左侧 API Key 与 provider 是否匹配。"
+        else:
+            friendly = f"对话失败：{friendly}"
+        if self.chat_pending_message_widget is not None:
+            self._set_pending_chat_message(friendly, is_error=True)
+        else:
+            self._append_chat_message("assistant", friendly, is_error=True)
 
     def _on_chat_finished(self):
         self.chat_button.setEnabled(True)
@@ -2185,13 +2402,13 @@ class YouTubeTranslatorApp(QMainWindow):
     def show_error(self, message):
         self._set_backend_offline_ui()
         friendly = self._friendly_error_text(message)
-        self.progress_label.setText(f"错误: {friendly[:50]}")
+        self._set_status_text(f"错误: {friendly[:50]}")
         QMessageBox.critical(self, "处理错误", friendly)
 
     def reset_ui(self):
         self.run_button.setEnabled(True)
         self.progress_bar.setVisible(False)
-        self.progress_label.setText("")
+        self._set_status_text("")
         self.worker = None
 
     def clear_results(self):
@@ -2212,10 +2429,17 @@ class YouTubeTranslatorApp(QMainWindow):
         self.copy_button.setEnabled(False)
         self.export_button.setEnabled(False)
         self.open_export_button.setEnabled(False)
+        self._clear_chat_messages()
 
     def closeEvent(self, event: QCloseEvent):
         still_running = False
-        for thread_name in ("worker", "chat_worker"):
+        for thread_name in (
+            "worker",
+            "chat_worker",
+            "rewrite_worker",
+            "history_worker",
+            "history_detail_worker",
+        ):
             thread = getattr(self, thread_name, None)
             if thread is None:
                 continue

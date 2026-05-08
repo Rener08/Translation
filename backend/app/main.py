@@ -1,8 +1,10 @@
 import logging
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 from app.services.content_chat_service import (
     ContentChatConfigurationError,
@@ -49,6 +51,7 @@ from app.services.transcription_service import (
 from app.services.translation_service import (
     TranslationConfigurationError,
     TranslationProviderError,
+    discover_provider_models,
     translate_segments_to_chinese,
 )
 from app.services.video_source_service import fetch_video_source
@@ -118,6 +121,33 @@ app.add_middleware(
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+class ProviderModelsRequest(BaseModel):
+    provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
+    base_url: str | None = None
+    api_key: str | None = None
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+
+class ProviderModelsResponse(BaseModel):
+    ok: bool
+    provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
+    models: list[str]
+
+
+@app.post("/api/provider-models", response_model=ProviderModelsResponse)
+async def provider_models(
+    request: ProviderModelsRequest,
+) -> ProviderModelsResponse:
+    models = await run_in_threadpool(
+        discover_provider_models,
+        provider=request.provider,
+        base_url=request.base_url or "",
+        api_key=request.api_key or "",
+        extra_headers=request.extra_headers,
+    )
+    return ProviderModelsResponse(ok=True, provider=request.provider, models=models)
 
 
 @app.post("/api/parse-youtube", response_model=ParseYouTubeResponse)

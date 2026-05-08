@@ -156,11 +156,6 @@ export function ContentRewritePanel({
     const rewriteKey = [
       normalizedSource,
       rewriteFocus.trim(),
-      settings.provider,
-      settings.baseUrl,
-      settings.model,
-      settings.apiKey,
-      settings.headersJson,
       contentContextId,
     ].join("::");
 
@@ -174,11 +169,6 @@ export function ContentRewritePanel({
   }, [
     initialSourceText,
     resultOnly,
-    settings.apiKey,
-    settings.baseUrl,
-    settings.headersJson,
-    settings.model,
-    settings.provider,
     rewriteFocus,
     contentContextId,
   ]);

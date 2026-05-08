@@ -3,11 +3,13 @@
 import { FormEvent, useEffect, useState } from "react";
 
 import { ContentChatPanel } from "./components/content-chat-panel";
+import { HistoryPopover } from "./components/history-popover";
 import { JobResultPanel } from "./components/job-result-panel";
 import { TranslationSettingsPanel } from "./components/translation-settings-panel";
 import {
   JobResult,
   TranslationConfigPayload,
+  normalizeTranslationModel,
   TranslationSettings,
   apiFetch,
   buildTranslationConfig,
@@ -17,6 +19,18 @@ import {
 
 const DEFAULT_REWRITE_FOCUS =
   "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。";
+
+const TRANSLATION_SETTINGS_STORAGE_KEY = "translation-settings";
+const REWRITE_FOCUS_STORAGE_KEY = "translation-rewrite-focus";
+
+const TRANSLATION_PROVIDER_VALUES = new Set([
+  "deepseek",
+  "openai",
+  "ollama",
+  "lmstudio",
+]);
+
+const SOURCE_MODE_VALUES = new Set(["subtitle_first", "force_audio"]);
 
 type SessionHistorySummary = {
   content_context_id: string;
@@ -67,6 +81,7 @@ export default function HomePage() {
   const [isRunning, setIsRunning] = useState(false);
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
   const [rewriteFocus, setRewriteFocus] = useState(DEFAULT_REWRITE_FOCUS);
+  const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [searchHistoryItems, setSearchHistoryItems] = useState<SearchHistoryItem[]>(
@@ -82,6 +97,16 @@ export default function HomePage() {
     : jobResult
       ? "已完成"
       : "待运行";
+
+  const visibleSearchHistoryItems = searchHistoryItems.filter((item) => {
+    const query = historyQuery.trim().toLowerCase();
+    if (!query) {
+      return true;
+    }
+    return (
+      item.title.toLowerCase().includes(query) || item.url.toLowerCase().includes(query)
+    );
+  });
 
   useEffect(() => {
     if (!showHistory) {
@@ -125,6 +150,53 @@ export default function HomePage() {
   }, [showHistory]);
 
   useEffect(() => {
+    setSettings((current) => {
+      const nextModel = normalizeTranslationModel(
+        current.provider,
+        current.model,
+      );
+      if (nextModel === current.model.trim()) {
+        return current;
+      }
+      return { ...current, model: nextModel };
+    });
+  }, [settings.model, settings.provider]);
+
+  useEffect(() => {
+    try {
+      const rawSettings = window.localStorage.getItem(
+        TRANSLATION_SETTINGS_STORAGE_KEY,
+      );
+      if (rawSettings) {
+        const parsed = JSON.parse(rawSettings) as Partial<TranslationSettings>;
+        setSettings((current) => ({
+          ...current,
+          provider: TRANSLATION_PROVIDER_VALUES.has(parsed.provider ?? "")
+            ? (parsed.provider as TranslationSettings["provider"])
+            : current.provider,
+          sourceMode: SOURCE_MODE_VALUES.has(parsed.sourceMode ?? "")
+            ? (parsed.sourceMode as TranslationSettings["sourceMode"])
+            : current.sourceMode,
+          apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : current.apiKey,
+          baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : current.baseUrl,
+          model: typeof parsed.model === "string" ? parsed.model : current.model,
+          headersJson:
+            typeof parsed.headersJson === "string" ? parsed.headersJson : current.headersJson,
+        }));
+      }
+
+      const rawRewriteFocus = window.localStorage.getItem(REWRITE_FOCUS_STORAGE_KEY);
+      if (rawRewriteFocus) {
+        setRewriteFocus(rawRewriteFocus);
+      }
+    } catch {
+      // Ignore malformed local storage and fall back to defaults.
+    }
+
+    setHasLoadedPreferences(true);
+  }, []);
+
+  useEffect(() => {
     try {
       const raw = window.localStorage.getItem("translation-search-history");
       if (!raw) {
@@ -142,6 +214,31 @@ export default function HomePage() {
       setSearchHistoryItems([]);
     }
   }, []);
+
+  useEffect(() => {
+    if (!hasLoadedPreferences) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(
+        TRANSLATION_SETTINGS_STORAGE_KEY,
+        JSON.stringify(settings),
+      );
+    } catch {
+      // Ignore storage failures in private/incognito mode.
+    }
+  }, [hasLoadedPreferences, settings]);
+
+  useEffect(() => {
+    if (!hasLoadedPreferences) {
+      return;
+    }
+    try {
+      window.localStorage.setItem(REWRITE_FOCUS_STORAGE_KEY, rewriteFocus);
+    } catch {
+      // Ignore storage failures in private/incognito mode.
+    }
+  }, [hasLoadedPreferences, rewriteFocus]);
 
   function recordSearchHistory(url: string, title: string) {
     const normalizedUrl = url.trim();
@@ -258,8 +355,8 @@ export default function HomePage() {
   }
 
   if (!jobResult) {
-    return (
-      <main className="landing-shell">
+      return (
+      <main className={`landing-shell ${showHistory ? "landing-shell-history-open" : ""}`}>
         <div className="taskbar-rail" aria-label="任务栏">
           <div className="taskbar-rail-shell">
             <button
@@ -340,118 +437,56 @@ export default function HomePage() {
         ) : null}
 
         {showHistory ? (
-          <aside className="history-popover">
-            <div className="history-popover-panel">
-              <div className="history-popover-header">
-                <h2 className="history-popover-title">历史对话</h2>
-                <button
-                  className="history-popover-close"
-                  type="button"
-                  onClick={() => setShowHistory(false)}
-                >
-                  ×
-                </button>
-              </div>
-              <input
-                className="history-popover-search"
-                type="search"
-                placeholder="搜索历史..."
-                value={historyQuery}
-                onChange={(event) => setHistoryQuery(event.target.value)}
-              />
-              <div className="history-popover-section">
-                <div className="history-popover-section-header">搜索历史</div>
-                <div className="history-popover-list">
-                  {searchHistoryItems
-                    .filter((item) => {
-                      const query = historyQuery.trim().toLowerCase();
-                      if (!query) {
-                        return true;
-                      }
-                      return (
-                        item.title.toLowerCase().includes(query) ||
-                        item.url.toLowerCase().includes(query)
-                      );
-                    })
-                    .map((item) => (
-                      <button
-                        key={item.url}
-                        className="history-popover-item"
-                        type="button"
-                        onClick={() => {
-                          setYoutubeUrl(item.url);
-                          setShowHistory(false);
-                        }}
-                      >
-                        <span className="history-popover-item-title">{item.title}</span>
-                        <span className="history-popover-item-meta">{item.url}</span>
-                      </button>
-                    ))}
-                </div>
-              </div>
-              <div className="history-popover-section">
-                <div className="history-popover-section-header">对话历史</div>
-                <div className="history-popover-list">
-                  {historyItems.map((item) => (
-                    <button
-                      key={item.content_context_id}
-                      className="history-popover-item"
-                      type="button"
-                      onClick={() => void openHistorySession(item.content_context_id)}
-                    >
-                      <span className="history-popover-item-title">
-                        {item.video_title || "未命名视频"}
-                      </span>
-                      <span className="history-popover-item-meta">
-                        {item.updated_at ? item.updated_at.replace("T", " ").slice(0, 16) : ""}
-                      </span>
-                    </button>
-                  ))}
-                  {!historyLoading && historyItems.length === 0 ? (
-                    <p className="history-popover-note">暂无对话历史。</p>
-                  ) : null}
-                </div>
-              </div>
-              {historyLoading ? <p className="history-popover-note">加载中...</p> : null}
-              {historyError ? <p className="history-popover-error">{historyError}</p> : null}
-            </div>
-          </aside>
+          <HistoryPopover
+            historyQuery={historyQuery}
+            visibleSearchHistoryItems={visibleSearchHistoryItems}
+            historyItems={historyItems}
+            historyLoading={historyLoading}
+            historyError={historyError}
+            onClose={() => setShowHistory(false)}
+            onQueryChange={setHistoryQuery}
+            onSelectUrl={(url) => {
+              setYoutubeUrl(url);
+              setShowHistory(false);
+            }}
+            onSelectSession={(contentContextId) => void openHistorySession(contentContextId)}
+          />
         ) : null}
       </main>
     );
   }
 
   return (
-    <main className="research-shell">
-        <div className="taskbar-rail taskbar-rail-result" aria-label="任务栏">
-        <div className="taskbar-rail-shell">
-          <button
-            className="taskbar-icon-button"
-            type="button"
-            aria-label="历史对话"
-            onClick={() => setShowHistory((current) => !current)}
-          >
-            ⟲
-          </button>
-          <button
-            className="taskbar-icon-button"
-            type="button"
-            aria-label="新建对话"
-            onClick={() => {
-              setJobResult(null);
-              setYoutubeUrl("");
-              setErrorMessage("");
-              setShowHistory(false);
-              setShowSettings(false);
-              setHistoryQuery("");
-            }}
-          >
-            ＋
-          </button>
-        </div>
-      </div>
+    <main className={`research-shell ${showHistory ? "research-shell-history-open" : ""}`}>
       <aside className="control-column">
         <section className="composer-panel">
+          <div className="taskbar-rail taskbar-rail-result" aria-label="任务栏">
+            <div className="taskbar-rail-shell">
+              <button
+                className="taskbar-icon-button"
+                type="button"
+                aria-label="历史对话"
+                onClick={() => setShowHistory((current) => !current)}
+              >
+                ⟲
+              </button>
+              <button
+                className="taskbar-icon-button"
+                type="button"
+                aria-label="新建对话"
+                onClick={() => {
+                  setJobResult(null);
+                  setYoutubeUrl("");
+                  setErrorMessage("");
+                  setShowHistory(false);
+                  setShowSettings(false);
+                  setHistoryQuery("");
+                }}
+              >
+                ＋
+              </button>
+            </div>
+          </div>
           <form className="composer-form" onSubmit={handleRunJob}>
             <div className="composer-section">
               <div className="control-section-header">
@@ -517,82 +552,21 @@ export default function HomePage() {
       </section>
 
       {showHistory ? (
-        <aside className="history-popover history-popover-result">
-          <div className="history-popover-panel">
-            <div className="history-popover-header">
-              <h2 className="history-popover-title">历史对话</h2>
-              <button
-                className="history-popover-close"
-                type="button"
-                onClick={() => setShowHistory(false)}
-                >
-                  ×
-                </button>
-              </div>
-              <input
-                className="history-popover-search"
-                type="search"
-                placeholder="搜索历史..."
-                value={historyQuery}
-                onChange={(event) => setHistoryQuery(event.target.value)}
-              />
-              <div className="history-popover-section">
-                <div className="history-popover-section-header">搜索历史</div>
-                <div className="history-popover-list">
-                  {searchHistoryItems
-                    .filter((item) => {
-                      const query = historyQuery.trim().toLowerCase();
-                      if (!query) {
-                        return true;
-                      }
-                      return (
-                        item.title.toLowerCase().includes(query) ||
-                        item.url.toLowerCase().includes(query)
-                      );
-                    })
-                    .map((item) => (
-                      <button
-                        key={item.url}
-                        className="history-popover-item"
-                        type="button"
-                        onClick={() => {
-                          setYoutubeUrl(item.url);
-                          setShowHistory(false);
-                        }}
-                      >
-                        <span className="history-popover-item-title">{item.title}</span>
-                        <span className="history-popover-item-meta">{item.url}</span>
-                      </button>
-                    ))}
-                </div>
-              </div>
-              <div className="history-popover-section">
-                <div className="history-popover-section-header">对话历史</div>
-                <div className="history-popover-list">
-                  {historyItems.map((item) => (
-                    <button
-                      key={item.content_context_id}
-                      className="history-popover-item"
-                      type="button"
-                      onClick={() => void openHistorySession(item.content_context_id)}
-                    >
-                      <span className="history-popover-item-title">
-                        {item.video_title || "未命名视频"}
-                      </span>
-                      <span className="history-popover-item-meta">
-                        {item.updated_at ? item.updated_at.replace("T", " ").slice(0, 16) : ""}
-                      </span>
-                    </button>
-                  ))}
-                  {!historyLoading && historyItems.length === 0 ? (
-                    <p className="history-popover-note">暂无对话历史。</p>
-                  ) : null}
-                </div>
-              </div>
-              {historyLoading ? <p className="history-popover-note">加载中...</p> : null}
-              {historyError ? <p className="history-popover-error">{historyError}</p> : null}
-          </div>
-        </aside>
+        <HistoryPopover
+          variant="result"
+          historyQuery={historyQuery}
+          visibleSearchHistoryItems={visibleSearchHistoryItems}
+          historyItems={historyItems}
+          historyLoading={historyLoading}
+          historyError={historyError}
+          onClose={() => setShowHistory(false)}
+          onQueryChange={setHistoryQuery}
+          onSelectUrl={(url) => {
+            setYoutubeUrl(url);
+            setShowHistory(false);
+          }}
+          onSelectSession={(contentContextId) => void openHistorySession(contentContextId)}
+        />
       ) : null}
     </main>
   );

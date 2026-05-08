@@ -6,6 +6,7 @@ import {
   ContentChatMessage,
   ContentChatResponse,
   JobResult,
+  normalizeTranslationModel,
   TranslationSettings,
   apiFetch,
   buildTranslationText,
@@ -80,7 +81,7 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
             provider: settings.provider,
             api_key: settings.apiKey.trim() || undefined,
             base_url: settings.baseUrl.trim() || undefined,
-            model: settings.model.trim() || undefined,
+            model: normalizeTranslationModel(settings.provider, settings.model),
           },
         }),
       });
@@ -122,19 +123,11 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
       <div className="chat-thread compact-chat-thread">
         {!jobResult ? (
           <div className="chat-empty-state compact-chat-empty-state">
-            <p>先运行一次转写和翻译。</p>
-            <ul>
-              <li>右侧聊天会自动使用当前视频内容。</li>
-              <li>支持继续追问、总结、解释和提炼观点。</li>
-            </ul>
+            <p>先运行一次转写和翻译，然后在这里继续追问。</p>
           </div>
         ) : messages.length === 0 ? (
           <div className="chat-empty-state compact-chat-empty-state">
-            <p>你可以直接从这里开始：</p>
-            <ul>
-              <li>右侧聊天会自动使用当前视频内容。</li>
-              <li>支持继续追问、总结、解释和提炼观点。</li>
-            </ul>
+            <p>你可以直接从这里开始提问。</p>
           </div>
         ) : (
           messages.map((message, index) => (
@@ -163,6 +156,12 @@ export function ContentChatPanel({ jobResult, settings }: ContentChatPanelProps)
           value={question}
           disabled={!jobResult}
           onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              void event.currentTarget.form?.requestSubmit();
+            }
+          }}
         />
         <div className="chat-form-footer">
           <button

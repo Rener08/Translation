@@ -1523,6 +1523,82 @@ def _discover_openai_compatible_model(
     )
 
 
+def discover_provider_models(
+    *,
+    provider: str,
+    base_url: str,
+    api_key: str,
+    extra_headers: dict[str, str],
+) -> list[str]:
+    fallback_models = _provider_fallback_models(provider)
+    discovered_models: list[str] = []
+
+    def add_model(candidate: object) -> None:
+        model_id = str(candidate).strip()
+        if model_id and model_id not in discovered_models:
+            discovered_models.append(model_id)
+
+    if provider == "ollama":
+        models_url = _build_endpoint_url(
+            _normalize_ollama_base_url(base_url or _provider_default_base_url(provider)),
+            "/api/tags",
+        )
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        headers.update(extra_headers)
+
+        try:
+            response = httpx.get(models_url, headers=headers, timeout=30.0)
+            response.raise_for_status()
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return fallback_models
+
+        if isinstance(payload, dict):
+            models = payload.get("models")
+            if isinstance(models, list):
+                for item in models:
+                    if not isinstance(item, dict):
+                        continue
+                    add_model(item.get("model") or item.get("name"))
+
+        return discovered_models or fallback_models
+
+    models_url = _build_endpoint_url(
+        base_url or _provider_default_base_url(provider),
+        "/models",
+    )
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    headers.update(extra_headers)
+
+    try:
+        response = httpx.get(models_url, headers=headers, timeout=30.0)
+        response.raise_for_status()
+        payload = response.json()
+    except (httpx.HTTPError, ValueError):
+        return fallback_models
+
+    if isinstance(payload, dict):
+        data = payload.get("data")
+        if isinstance(data, list):
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                add_model(item.get("id"))
+
+        models = payload.get("models")
+        if isinstance(models, list):
+            for item in models:
+                if not isinstance(item, dict):
+                    continue
+                add_model(item.get("model") or item.get("name"))
+
+    return discovered_models or fallback_models
+
+
 def _provider_env_prefix(provider: str) -> str:
     if provider == "openai":
         return "OPENAI"
@@ -1549,6 +1625,22 @@ def _provider_default_model(provider: str) -> str:
     if provider == "deepseek":
         return DEEPSEEK_DEFAULT_MODEL
     return ""
+
+
+def _provider_fallback_models(provider: str) -> list[str]:
+    if provider == "openai":
+        return [
+            OPENAI_DEFAULT_MODEL,
+            "gpt-4.1",
+            "gpt-4o-mini",
+            "gpt-4o",
+        ]
+    if provider == "deepseek":
+        return [
+            DEEPSEEK_DEFAULT_MODEL,
+            "deepseek-reasoner",
+        ]
+    return []
 
 
 def _discover_ollama_model(

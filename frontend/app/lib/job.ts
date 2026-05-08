@@ -158,12 +158,65 @@ export const defaultContentChatProvider = resolveProvider(
   "ollama",
 );
 
+const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
+const DEEPSEEK_DEFAULT_MODEL = "deepseek-chat";
+const KNOWN_REMOTE_DEFAULT_MODELS = new Set([
+  OPENAI_DEFAULT_MODEL,
+  DEEPSEEK_DEFAULT_MODEL,
+]);
+
+export function getProviderDefaultModel(provider: TranslationProvider): string {
+  if (provider === "openai") {
+    return OPENAI_DEFAULT_MODEL;
+  }
+  if (provider === "deepseek") {
+    return DEEPSEEK_DEFAULT_MODEL;
+  }
+  return "";
+}
+
+export function getProviderModelPlaceholder(provider: TranslationProvider): string {
+  const defaultModel = getProviderDefaultModel(provider);
+  if (defaultModel) {
+    return defaultModel;
+  }
+  return "留空，后端自动探测";
+}
+
+export function normalizeTranslationModel(
+  provider: TranslationProvider,
+  model: string,
+): string {
+  const trimmedModel = model.trim();
+  const providerDefaultModel = getProviderDefaultModel(provider);
+  if (providerDefaultModel) {
+    if (!trimmedModel) {
+      return providerDefaultModel;
+    }
+    if (trimmedModel === providerDefaultModel) {
+      return trimmedModel;
+    }
+    if (KNOWN_REMOTE_DEFAULT_MODELS.has(trimmedModel)) {
+      return providerDefaultModel;
+    }
+    return trimmedModel;
+  }
+
+  if (!trimmedModel) {
+    return "";
+  }
+  if (KNOWN_REMOTE_DEFAULT_MODELS.has(trimmedModel)) {
+    return "";
+  }
+  return trimmedModel;
+}
+
 export const defaultSettings: TranslationSettings = {
   provider: defaultTranslationProvider,
   sourceMode: SOURCE_MODE.SUBTITLE_FIRST,
   apiKey: "",
   baseUrl: "",
-  model: "",
+  model: getProviderDefaultModel(defaultTranslationProvider),
   headersJson: "",
 };
 
@@ -301,6 +354,7 @@ export function buildTranslationConfig(
   settings: TranslationSettings,
 ): TranslationConfigPayload {
   const extraHeaders = parseHeadersJson(settings.headersJson);
+  const model = normalizeTranslationModel(settings.provider, settings.model);
 
   const payload: TranslationConfigPayload = {
     provider: settings.provider,
@@ -314,8 +368,8 @@ export function buildTranslationConfig(
     payload.base_url = settings.baseUrl.trim();
   }
 
-  if (settings.model.trim()) {
-    payload.model = settings.model.trim();
+  if (model) {
+    payload.model = model;
   }
 
   if (Object.keys(extraHeaders).length > 0) {
@@ -329,6 +383,7 @@ export function buildContentChatConfig(
   settings: ContentChatSettings,
 ): ContentChatConfigPayload {
   const extraHeaders = parseHeadersJson(settings.headersJson);
+  const model = normalizeTranslationModel(settings.provider, settings.model);
 
   const payload: ContentChatConfigPayload = {
     provider: settings.provider,
@@ -342,8 +397,8 @@ export function buildContentChatConfig(
     payload.base_url = settings.baseUrl.trim();
   }
 
-  if (settings.model.trim()) {
-    payload.model = settings.model.trim();
+  if (model) {
+    payload.model = model;
   }
 
   if (settings.customPrompt.trim()) {
@@ -501,6 +556,20 @@ export function normalizeApiErrorMessage(message: string): string {
       "YTDLP_COOKIES_FILE with an exported cookies.txt file, or try " +
       "YTDLP_COOKIES_FROM_BROWSER after fully closing the browser."
     );
+  }
+
+  if (lowered.includes("remotedisconnected") || lowered.includes("connection aborted")) {
+    return (
+      "上游服务连接被中断（RemoteDisconnected），请重试；如果反复出现，请检查 " +
+      "API Key、base_url 和模型可用性。"
+    );
+  }
+
+  if (
+    lowered.includes("whisper") &&
+    (lowered.includes("failed") || lowered.includes("error") || lowered.includes("runtime"))
+  ) {
+    return "Whisper 处理失败，请检查本地模型、音频文件或设备配置。";
   }
 
   return normalized;

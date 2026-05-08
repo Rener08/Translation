@@ -1,6 +1,11 @@
+import { useEffect, useState } from "react";
+
 import {
-  SOURCE_MODE,
-  type SourceMode,
+  apiFetch,
+  extractApiErrorMessage,
+  getProviderModelPlaceholder,
+  normalizeTranslationModel,
+  parseHeadersJson,
   type TranslationProvider,
   type TranslationSettings,
 } from "../lib/job";
@@ -18,12 +23,75 @@ export function TranslationSettingsPanel({
   onChange,
   onRewriteFocusChange,
 }: TranslationSettingsPanelProps) {
+  const modelPlaceholder = getProviderModelPlaceholder(settings.provider);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
+  const [modelOptionsError, setModelOptionsError] = useState("");
   const apiKeyPlaceholder =
     settings.provider === "deepseek"
       ? "粘贴 DeepSeek API Key"
       : settings.provider === "openai"
         ? "粘贴 OpenAI API Key"
         : "本地模型通常不需要 API Key";
+
+  useEffect(() => {
+    let cancelled = false;
+    const debounceId = window.setTimeout(() => {
+      async function loadModelOptions() {
+        setModelOptionsLoading(true);
+        setModelOptionsError("");
+
+        try {
+          const response = await apiFetch("/api/provider-models", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              provider: settings.provider,
+              base_url: settings.baseUrl.trim() || undefined,
+              api_key: settings.apiKey.trim() || undefined,
+              extra_headers: parseHeadersJson(settings.headersJson),
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(await extractApiErrorMessage(response));
+          }
+
+          const data = (await response.json()) as { models?: string[] };
+          if (cancelled) {
+            return;
+          }
+
+          const models = Array.isArray(data.models)
+            ? data.models
+                .map((value) => value.trim())
+                .filter((value, index, array) => value && array.indexOf(value) === index)
+            : [];
+          setModelOptions(models);
+        } catch (error) {
+          if (!cancelled) {
+            setModelOptions([]);
+            setModelOptionsError(
+              error instanceof Error ? error.message : "Failed to load model options.",
+            );
+          }
+        } finally {
+          if (!cancelled) {
+            setModelOptionsLoading(false);
+          }
+        }
+      }
+
+      void loadModelOptions();
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(debounceId);
+    };
+  }, [settings.apiKey, settings.baseUrl, settings.headersJson, settings.provider]);
 
   return (
     <section className="settings-panel">
@@ -36,33 +104,24 @@ export function TranslationSettingsPanel({
           <span>翻译服务</span>
           <select
             value={settings.provider}
-            onChange={(event) =>
+            onChange={(event) => {
+              const nextProvider = event.target.value as TranslationProvider;
+              const nextModel = normalizeTranslationModel(
+                nextProvider,
+                settings.model,
+              );
+
               onChange({
                 ...settings,
-                provider: event.target.value as TranslationProvider,
-              })
-            }
+                provider: nextProvider,
+                model: nextModel,
+              });
+            }}
           >
             <option value="deepseek">DeepSeek</option>
             <option value="openai">OpenAI</option>
             <option value="ollama">Ollama</option>
             <option value="lmstudio">LM Studio</option>
-          </select>
-        </label>
-
-        <label className="settings-field">
-          <span>内容来源</span>
-          <select
-            value={settings.sourceMode}
-            onChange={(event) =>
-              onChange({
-                ...settings,
-                sourceMode: event.target.value as SourceMode,
-              })
-            }
-          >
-            <option value={SOURCE_MODE.SUBTITLE_FIRST}>字幕优先</option>
-            <option value={SOURCE_MODE.FORCE_AUDIO}>强制下载音频</option>
           </select>
         </label>
 
@@ -85,7 +144,7 @@ export function TranslationSettingsPanel({
           <span>模型</span>
           <input
             type="text"
-            placeholder="deepseek-chat"
+            placeholder={modelPlaceholder}
             value={settings.model}
             onChange={(event) =>
               onChange({
@@ -94,6 +153,33 @@ export function TranslationSettingsPanel({
               })
             }
           />
+          {modelOptionsLoading ? (
+            <p className="settings-model-note">正在加载可选模型...</p>
+          ) : null}
+          {!modelOptionsLoading && modelOptions.length > 0 ? (
+            <div className="settings-model-pills" aria-label="可选模型">
+              {modelOptions.map((modelOption) => (
+                <button
+                  key={modelOption}
+                  className={`settings-model-pill${
+                    settings.model.trim() === modelOption ? " settings-model-pill-active" : ""
+                  }`}
+                  type="button"
+                  onClick={() =>
+                    onChange({
+                      ...settings,
+                      model: modelOption,
+                    })
+                  }
+                >
+                  {modelOption}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {!modelOptionsLoading && modelOptionsError ? (
+            <p className="settings-model-note settings-model-error">{modelOptionsError}</p>
+          ) : null}
         </label>
 
         <label className="settings-field">
