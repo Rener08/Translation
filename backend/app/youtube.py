@@ -242,8 +242,27 @@ class JobRunStatusResponse(BaseModel):
     status: Literal["queued", "running", "done", "failed"]
     progress_value: int = 0
     progress_text: str | None = None
+    stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None
+    started_at: str | None = None
+    updated_at: str | None = None
+    timeout_sec: int | None = None
     result: JobRunResponse | None = None
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
+
+
+class ProviderModelsRequest(BaseModel):
+    provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
+    base_url: str | None = None
+    api_key: str | None = None
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+
+class ProviderModelsResponse(BaseModel):
+    ok: bool
+    provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
+    models: list[str]
 
 
 class ContentChatMessageRequest(BaseModel):

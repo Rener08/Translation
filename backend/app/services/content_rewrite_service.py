@@ -8,17 +8,19 @@ from typing import Literal
 import httpx
 
 from app.config import get_env_str
+from app.services.llm_provider_service import (
+    build_endpoint_url,
+    clean_model_output_text,
+    discover_openai_compatible_model,
+    extract_provider_error_message,
+    normalize_ollama_base_url,
+    provider_default_base_url,
+    provider_default_model,
+    provider_env_prefix,
+)
 from app.services.rewrite_quality_service import analyze_rewrite_quality
 from app.services.translation_service import (
     RETRYABLE_STATUS_CODES,
-    _build_endpoint_url,
-    _clean_model_output_text,
-    _discover_openai_compatible_model,
-    _extract_provider_error_message,
-    _normalize_ollama_base_url,
-    _provider_default_base_url,
-    _provider_default_model,
-    _provider_env_prefix,
 )
 from app.services.prompt_validation import validate_rewrite_prompt
 
@@ -370,7 +372,7 @@ def rewrite_content(
     else:
         rewritten_text = _rewrite_with_openai_compatible(config, messages)
 
-    cleaned = _clean_model_output_text(rewritten_text).strip()
+    cleaned = clean_model_output_text(rewritten_text).strip()
     if not cleaned:
         raise ContentRewriteEmptyOutputError(
             f"内容改写失败：{config.provider} 返回了空内容。请重试，或更换模型/提示词。"
@@ -514,7 +516,7 @@ def _resolve_rewrite_config(
             f"Unsupported rewrite provider '{provider}'. Supported providers: {supported}."
         )
 
-    env_prefix = _provider_env_prefix(provider)
+    env_prefix = provider_env_prefix(provider)
     api_key = str(
         config.get("api_key")
         or get_env_str(f"{env_prefix}_API_KEY")
@@ -529,7 +531,7 @@ def _resolve_rewrite_config(
     base_url = str(
         config.get("base_url")
         or get_env_str(f"{env_prefix}_BASE_URL")
-        or _provider_default_base_url(provider)
+        or provider_default_base_url(provider)
     ).strip()
 
     model = str(
@@ -537,13 +539,13 @@ def _resolve_rewrite_config(
         or get_env_str(f"{env_prefix}_REWRITE_MODEL")
         or get_env_str(f"{env_prefix}_CHAT_MODEL")
         or get_env_str(f"{env_prefix}_TRANSLATION_MODEL")
-        or _provider_default_model(provider)
+        or provider_default_model(provider)
     ).strip()
 
     extra_headers = _coerce_headers(config.get("extra_headers"))
     if not model and provider in {"lmstudio", "ollama"}:
         try:
-            model = _discover_openai_compatible_model(
+            model = discover_openai_compatible_model(
                 base_url=base_url,
                 api_key=api_key,
                 extra_headers=extra_headers,
@@ -589,7 +591,7 @@ def _rewrite_with_openai_compatible(
     }
 
     response = _post_json(
-        url=_build_endpoint_url(config.base_url, "/chat/completions"),
+        url=build_endpoint_url(config.base_url, "/chat/completions"),
         headers=_build_headers(config),
         payload=payload,
         provider=config.provider,
@@ -649,7 +651,7 @@ def _rewrite_with_ollama(
     }
 
     response = _post_json(
-        url=_build_endpoint_url(_normalize_ollama_base_url(config.base_url), "/api/chat"),
+        url=build_endpoint_url(normalize_ollama_base_url(config.base_url), "/api/chat"),
         headers=_build_headers(config),
         payload=payload,
         provider=config.provider,
@@ -708,7 +710,7 @@ def _post_json(
         if response.status_code < 400:
             return response
 
-        message = _extract_provider_error_message(response)
+        message = extract_provider_error_message(response)
         last_error_message = message
         if (
             response.status_code in RETRYABLE_STATUS_CODES

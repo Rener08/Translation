@@ -26,8 +26,12 @@ class JobRecord:
     status: JobStatus = "queued"
     progress_value: int = 0
     progress_text: str = "已加入队列"
+    stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None
+    timeout_sec: int | None = None
     result: dict[str, Any] | None = None
     error: str | None = None
+    error_code: str | None = None
+    retryable: bool | None = None
     created_at: str = field(default_factory=_now_iso)
     updated_at: str = field(default_factory=_now_iso)
 
@@ -78,8 +82,12 @@ def update_job_progress(
     status: JobStatus | None = None,
     progress_value: int | None = None,
     progress_text: str | None = None,
+    stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None,
+    timeout_sec: int | None = None,
     result: dict[str, Any] | None = None,
     error: str | None = None,
+    error_code: str | None = None,
+    retryable: bool | None = None,
 ) -> None:
     normalized_job_id = _normalize_job_id(job_id)
     if not normalized_job_id:
@@ -96,10 +104,18 @@ def update_job_progress(
             record.progress_value = max(0, min(100, int(progress_value)))
         if progress_text is not None:
             record.progress_text = str(progress_text).strip()
+        if stage is not None:
+            record.stage = stage
+        if timeout_sec is not None:
+            record.timeout_sec = max(0, int(timeout_sec))
         if result is not None:
             record.result = dict(result)
         if error is not None:
             record.error = str(error).strip() or None
+        if error_code is not None:
+            record.error_code = str(error_code).strip() or None
+        if retryable is not None:
+            record.retryable = bool(retryable)
         record.updated_at = _now_iso()
 
 
@@ -236,8 +252,12 @@ def _copy_record(record: JobRecord) -> JobRecord:
         status=record.status,
         progress_value=record.progress_value,
         progress_text=record.progress_text,
+        stage=record.stage,
+        timeout_sec=record.timeout_sec,
         result=dict(record.result) if isinstance(record.result, dict) else None,
         error=record.error,
+        error_code=record.error_code,
+        retryable=record.retryable,
         created_at=record.created_at,
         updated_at=record.updated_at,
     )

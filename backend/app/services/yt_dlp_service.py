@@ -10,6 +10,7 @@ from pathlib import Path
 from app.config import (
     ROOT_DIR,
     get_yt_dlp_auth_args,
+    get_yt_dlp_js_runtime_args,
     get_yt_dlp_proxy_args,
     get_yt_dlp_remote_components,
 )
@@ -107,6 +108,7 @@ def extract_video_info(url: str) -> dict[str, object]:
         "--no-warnings",
         "--no-playlist",
         *get_yt_dlp_remote_components(),
+        *get_yt_dlp_js_runtime_args(),
         *get_yt_dlp_auth_args(),
         *get_yt_dlp_proxy_args(),
         url,

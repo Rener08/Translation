@@ -33,6 +33,11 @@ export function TranslationSettingsPanel({
       : settings.provider === "openai"
         ? "粘贴 OpenAI API Key"
         : "本地模型通常不需要 API Key";
+  const backendOffline =
+    modelOptionsError.length > 0 &&
+    /cannot connect to backend api|failed to fetch|network/i.test(
+      modelOptionsError.toLowerCase(),
+    );
 
   useEffect(() => {
     let cancelled = false;
@@ -100,6 +105,22 @@ export function TranslationSettingsPanel({
       </div>
 
       <div className="settings-grid compact-settings-grid">
+        <label className="settings-field">
+          <span>内容来源</span>
+          <select
+            value={settings.sourceMode}
+            onChange={(event) =>
+              onChange({
+                ...settings,
+                sourceMode: event.target.value as TranslationSettings["sourceMode"],
+              })
+            }
+          >
+            <option value="subtitle_first">字幕优先</option>
+            <option value="force_audio">强制音频</option>
+          </select>
+        </label>
+
         <label className="settings-field">
           <span>翻译服务</span>
           <select
@@ -178,7 +199,15 @@ export function TranslationSettingsPanel({
             </div>
           ) : null}
           {!modelOptionsLoading && modelOptionsError ? (
-            <p className="settings-model-note settings-model-error">{modelOptionsError}</p>
+            <p
+              className={`settings-model-note${
+                backendOffline ? "" : " settings-model-error"
+              }`}
+            >
+              {backendOffline
+                ? "后端未连接，模型列表暂不可用，可手动填写模型。"
+                : modelOptionsError}
+            </p>
           ) : null}
         </label>
 

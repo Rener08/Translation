@@ -6,16 +6,18 @@ import httpx
 
 from app.config import get_env_str
 from app.services.content_context_service import load_content_context
+from app.services.llm_provider_service import (
+    build_endpoint_url,
+    clean_model_output_text,
+    discover_openai_compatible_model,
+    extract_provider_error_message,
+    normalize_ollama_base_url,
+    provider_default_base_url,
+    provider_default_model,
+    provider_env_prefix,
+)
 from app.services.translation_service import (
     RETRYABLE_STATUS_CODES,
-    _build_endpoint_url,
-    _clean_model_output_text,
-    _discover_openai_compatible_model,
-    _extract_provider_error_message,
-    _normalize_ollama_base_url,
-    _provider_default_base_url,
-    _provider_default_model,
-    _provider_env_prefix,
 )
 
 SUPPORTED_CHAT_PROVIDERS = {"openai", "deepseek", "lmstudio", "ollama"}
@@ -116,7 +118,7 @@ def answer_content_question(
     else:
         answer = _chat_with_openai_compatible(config, payload_messages)
 
-    cleaned_answer = _clean_model_output_text(answer).strip()
+    cleaned_answer = clean_model_output_text(answer).strip()
     if not cleaned_answer:
         raise ContentChatProviderError(
             f"{config.provider} returned an empty chat response."
@@ -144,7 +146,7 @@ def _resolve_chat_config(raw_config: dict[str, object] | None) -> ChatProviderCo
             f"Unsupported chat provider '{provider}'. Supported providers: {supported}."
         )
 
-    env_prefix = _provider_env_prefix(provider)
+    env_prefix = provider_env_prefix(provider)
     api_key = str(
         config.get("api_key")
         or get_env_str(f"{env_prefix}_API_KEY")
@@ -159,20 +161,20 @@ def _resolve_chat_config(raw_config: dict[str, object] | None) -> ChatProviderCo
     base_url = str(
         config.get("base_url")
         or get_env_str(f"{env_prefix}_BASE_URL")
-        or _provider_default_base_url(provider)
+        or provider_default_base_url(provider)
     ).strip()
 
     model = str(
         config.get("model")
         or get_env_str(f"{env_prefix}_CHAT_MODEL")
         or get_env_str(f"{env_prefix}_TRANSLATION_MODEL")
-        or _provider_default_model(provider)
+        or provider_default_model(provider)
     ).strip()
 
     extra_headers = _coerce_headers(config.get("extra_headers"))
     if not model and provider in {"lmstudio", "ollama"}:
         try:
-            model = _discover_openai_compatible_model(
+            model = discover_openai_compatible_model(
                 base_url=base_url,
                 api_key=api_key,
                 extra_headers=extra_headers,
@@ -261,7 +263,7 @@ def _chat_with_openai_compatible(
     }
 
     response = _post_json(
-        url=_build_endpoint_url(config.base_url, "/chat/completions"),
+        url=build_endpoint_url(config.base_url, "/chat/completions"),
         headers=_build_headers(config),
         payload=payload,
         provider=config.provider,
@@ -321,7 +323,7 @@ def _chat_with_ollama(
     }
 
     response = _post_json(
-        url=_build_endpoint_url(_normalize_ollama_base_url(config.base_url), "/api/chat"),
+        url=build_endpoint_url(normalize_ollama_base_url(config.base_url), "/api/chat"),
         headers=_build_headers(config),
         payload=payload,
         provider=config.provider,
@@ -373,7 +375,7 @@ def _post_json(
         if response.status_code < 400:
             return response
 
-        message = _extract_provider_error_message(response)
+        message = extract_provider_error_message(response)
         last_error_message = message
         if response.status_code in RETRYABLE_STATUS_CODES and attempt < MAX_CHAT_REQUEST_ATTEMPTS:
             time.sleep(0.75 * attempt)

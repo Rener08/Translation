@@ -42,8 +42,14 @@ export type JobRunStatusResponse = {
   status: JobStatus;
   progress_value: number;
   progress_text?: string | null;
+  stage?: "inspect" | "fetch_source" | "transcribe" | "translate" | "persist" | null;
+  started_at?: string | null;
+  updated_at?: string | null;
+  timeout_sec?: number | null;
   result?: JobResult | null;
   error?: string | null;
+  error_code?: string | null;
+  retryable?: boolean | null;
 };
 
 export type TranslationProvider =
@@ -478,6 +484,7 @@ export async function waitForJobResult(
 
   const deadline = Date.now() + 30 * 60 * 1000;
   let lastMessage = "正在等待任务完成...";
+  let lastStage = "";
 
   while (Date.now() < deadline) {
     const response = await apiFetch(`/api/jobs/${encodeURIComponent(normalizedJobId)}`);
@@ -490,6 +497,9 @@ export async function waitForJobResult(
     if (data.progress_text) {
       lastMessage = data.progress_text;
     }
+    if (typeof data.stage === "string" && data.stage.trim()) {
+      lastStage = mapJobStageLabel(data.stage);
+    }
 
     if (data.status === "done") {
       if (!data.result) {
@@ -499,13 +509,41 @@ export async function waitForJobResult(
     }
 
     if (data.status === "failed") {
-      throw new Error(data.error || lastMessage || "Job failed.");
+      const detail = data.error || lastMessage || "Job failed.";
+      const errorCode = String(data.error_code || "").trim();
+      const retryableHint = data.retryable ? "（可重试）" : "";
+      if (errorCode) {
+        throw new Error(`[${errorCode}] ${detail}${retryableHint}`);
+      }
+      throw new Error(detail);
     }
 
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
   }
 
+  if (lastStage) {
+    throw new Error(`${lastMessage}（当前阶段：${lastStage}）`);
+  }
   throw new Error(lastMessage || "Job timed out while waiting for completion.");
+}
+
+export function mapJobStageLabel(stage: string): string {
+  if (stage === "inspect") {
+    return "解析视频";
+  }
+  if (stage === "fetch_source") {
+    return "提取字幕/音频";
+  }
+  if (stage === "transcribe") {
+    return "转录";
+  }
+  if (stage === "translate") {
+    return "翻译";
+  }
+  if (stage === "persist") {
+    return "保存结果";
+  }
+  return stage;
 }
 
 export function getViewState(
@@ -574,6 +612,18 @@ export function normalizeApiErrorMessage(message: string): string {
       "YouTube is asking for a signed-in browser session. Configure " +
       "YTDLP_COOKIES_FILE with an exported cookies.txt file, or try " +
       "YTDLP_COOKIES_FROM_BROWSER after fully closing the browser."
+    );
+  }
+
+  if (
+    lowered.includes("http error 429") ||
+    lowered.includes("too many requests") ||
+    lowered.includes("unable to download webpage")
+  ) {
+    return (
+      "YouTube 返回 429（访问过于频繁/风控拦截）。请稍后重试，或在后端配置可用 cookies：" +
+      "优先设置 YTDLP_COOKIES_FILE（导出的 cookies.txt）；" +
+      "也可尝试 YTDLP_COOKIES_FROM_BROWSER，并确保浏览器已完全关闭后再试。"
     );
   }
 

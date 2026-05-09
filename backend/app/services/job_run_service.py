@@ -1,6 +1,8 @@
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from typing import Callable
 from typing import Literal
 
 from app.config import get_env_str
@@ -46,8 +48,40 @@ DEFAULT_TRANSLATION_COMPACT_MAX_DURATION_SEC = 14.0
 DEFAULT_TRANSLATION_COMPACT_MAX_GAP_SEC = 1.3
 
 
+JobStage = Literal["inspect", "fetch_source", "transcribe", "translate", "persist"]
+JobProgressCallback = Callable[[JobStage, int, str], None]
+
+
+@dataclass(frozen=True)
+class JobStageTimeouts:
+    inspect: int = 45
+    fetch_source: int = 180
+    transcribe: int = 900
+    translate: int = 900
+
+    def for_stage(self, stage: JobStage) -> int:
+        if stage == "inspect":
+            return self.inspect
+        if stage == "fetch_source":
+            return self.fetch_source
+        if stage == "transcribe":
+            return self.transcribe
+        if stage == "translate":
+            return self.translate
+        return 120
+
+
 class JobRunError(Exception):
     """Raised when the end-to-end job pipeline cannot produce a valid result."""
+
+
+class JobStageTimeoutError(JobRunError):
+    """Raised when a job stage exceeds its configured timeout."""
+
+    def __init__(self, *, stage: JobStage, timeout_sec: int):
+        super().__init__(f"Job stage '{stage}' timed out after {timeout_sec}s.")
+        self.stage = stage
+        self.timeout_sec = timeout_sec
 
 
 @dataclass(frozen=True)
@@ -70,16 +104,44 @@ def run_video_job_with_translation_config(
     url: str,
     translation_config: dict[str, object] | None = None,
     source_mode: SourceMode = SOURCE_MODE_SUBTITLE_FIRST,
+    progress_callback: JobProgressCallback | None = None,
+    stage_timeout_seconds: dict[str, int] | None = None,
 ) -> JobRunResult:
     logger.info("Starting job run for %s", url)
-    video_info = extract_video_info(url)
+    timeouts = _resolve_stage_timeouts(stage_timeout_seconds)
+    emit_progress = progress_callback or _noop_progress
+
+    emit_progress("inspect", 12, "正在解析视频信息...")
+    video_info = _run_stage_with_timeout(
+        stage="inspect",
+        timeout_sec=timeouts.inspect,
+        func=extract_video_info,
+        args=[url],
+    )
     video = build_video_metadata(video_info)
     logger.info("Loaded metadata for %s (%s)", video.video_id, video.title)
 
-    source = fetch_video_source_from_info(url, video_info, source_mode=source_mode)
+    emit_progress("fetch_source", 25, "正在提取字幕或音频...")
+    source = _run_stage_with_timeout(
+        stage="fetch_source",
+        timeout_sec=timeouts.fetch_source,
+        func=fetch_video_source_from_info,
+        args=[url, video_info],
+        source_mode=source_mode,
+    )
     logger.info("Selected source type %s for %s", source.source_type, video.video_id)
 
-    transcript = _build_english_transcript(source)
+    emit_progress(
+        "transcribe",
+        45,
+        "检测到字幕，正在整理文本..." if source.source_type == "captions" else "正在进行本地转录...",
+    )
+    transcript = _run_stage_with_timeout(
+        stage="transcribe",
+        timeout_sec=timeouts.transcribe,
+        func=_build_english_transcript,
+        args=[source],
+    )
     if _job_run_should_attach_speakers():
         transcript = _maybe_attach_speakers(
             video=video, source=source, transcript=transcript
@@ -106,15 +168,21 @@ def run_video_job_with_translation_config(
         video.video_id,
     )
 
-    translations = translate_segments_to_chinese(
-        [
-            {
-                "index": segment.index,
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment.text,
-            }
-            for segment in transcript.segments
+    emit_progress("translate", 70, "正在翻译中文字幕...")
+    translations = _run_stage_with_timeout(
+        stage="translate",
+        timeout_sec=timeouts.translate,
+        func=translate_segments_to_chinese,
+        args=[
+            [
+                {
+                    "index": segment.index,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                }
+                for segment in transcript.segments
+            ]
         ],
         translation_config=translation_config,
     )
@@ -142,6 +210,56 @@ def run_video_job_with_translation_config(
         translation_zh_segments=translations,
         content_context_id=content_context_id,
     )
+
+
+def _resolve_stage_timeouts(
+    override: dict[str, int] | None,
+) -> JobStageTimeouts:
+    if not isinstance(override, dict):
+        return JobStageTimeouts()
+
+    base = JobStageTimeouts()
+    return JobStageTimeouts(
+        inspect=_normalize_positive_timeout(override.get("inspect"), base.inspect),
+        fetch_source=_normalize_positive_timeout(
+            override.get("fetch_source"), base.fetch_source
+        ),
+        transcribe=_normalize_positive_timeout(override.get("transcribe"), base.transcribe),
+        translate=_normalize_positive_timeout(override.get("translate"), base.translate),
+    )
+
+
+def _normalize_positive_timeout(value: object, fallback: int) -> int:
+    try:
+        parsed = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return fallback
+    if parsed <= 0:
+        return fallback
+    return parsed
+
+
+def _run_stage_with_timeout(
+    *,
+    stage: JobStage,
+    timeout_sec: int,
+    func,
+    args: list[object] | None = None,
+    **kwargs,
+):
+    normalized_args = args or []
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *normalized_args, **kwargs)
+        try:
+            return future.result(timeout=float(timeout_sec))
+        except FutureTimeoutError as error:
+            future.cancel()
+            raise JobStageTimeoutError(stage=stage, timeout_sec=timeout_sec) from error
+
+
+def _noop_progress(_stage: JobStage, _value: int, _text: str) -> None:
+    return
 
 
 def _build_english_transcript(source: VideoSourceResult) -> TranscriptionResult:

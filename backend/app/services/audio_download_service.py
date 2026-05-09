@@ -9,6 +9,7 @@ from app.config import (
     ROOT_DIR,
     get_env_str,
     get_yt_dlp_auth_args,
+    get_yt_dlp_js_runtime_args,
     get_yt_dlp_proxy_args,
     get_yt_dlp_remote_components,
 )
@@ -72,6 +73,7 @@ def download_audio(url: str, target_dir: Path | None = None) -> AudioDownloadRes
             "--ignore-config",
             "--no-playlist",
             *get_yt_dlp_remote_components(),
+            *get_yt_dlp_js_runtime_args(),
             "--concurrent-fragments",
             str(concurrent_fragments),
             *get_yt_dlp_auth_args(),
