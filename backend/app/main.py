@@ -1,5 +1,6 @@
 from collections import deque
 from contextlib import asynccontextmanager
+import hmac
 import logging
 import threading
 import time
@@ -59,17 +60,17 @@ async def security_and_observability_middleware(request: Request, call_next):
     request.state.request_id = request_id
     path = request.url.path
     method = request.method.upper()
-    client_ip = request.client.host if request.client else "unknown"
+    client_ip = _resolve_client_ip(request)
 
+    # Token applies to all `/api/*` routes. Liveness URLs are `/health`, `/readyz`, `/livez` (no `/api` prefix).
     if settings.api_auth_token and path.startswith("/api/"):
-        if path not in {"/api/health", "/api/readyz", "/api/livez"}:
-            token = _extract_api_token(request)
-            if token != settings.api_auth_token:
-                return JSONResponse(
-                    status_code=401,
-                    content={"detail": "Unauthorized API request."},
-                    headers={"x-request-id": request_id},
-                )
+        token = _extract_api_token(request)
+        if not _is_valid_api_token(token, settings.api_auth_token):
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Unauthorized API request."},
+                headers={"x-request-id": request_id},
+            )
 
     if path.startswith("/api/") and method in {"POST", "PUT", "PATCH", "DELETE"}:
         allowed = _consume_rate_limit_token(client_ip)
@@ -116,6 +117,25 @@ def _extract_api_token(request: Request) -> str:
     if auth_header.lower().startswith("bearer "):
         return auth_header[7:].strip()
     return request.headers.get("x-api-token", "").strip()
+
+
+def _is_valid_api_token(token: str, expected_token: str) -> bool:
+    if not expected_token:
+        return True
+    return hmac.compare_digest(token, expected_token)
+
+
+def _resolve_client_ip(request: Request) -> str:
+    if settings.trust_proxy_headers:
+        forwarded_for = request.headers.get("x-forwarded-for", "").strip()
+        if forwarded_for:
+            first_ip = forwarded_for.split(",")[0].strip()
+            if first_ip:
+                return first_ip
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
+    return request.client.host if request.client else "unknown"
 
 
 def _consume_rate_limit_token(client_ip: str) -> bool:

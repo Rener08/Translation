@@ -36,6 +36,20 @@ export type SessionHistoryDetail = {
     source_text: string;
     translated_text: string;
   }>;
+  rewritten_text?: string;
+  rewrite_provider?: string | null;
+  rewrite_model?: string | null;
+  chat_turns?: Array<{
+    role: "user" | "assistant";
+    content: string;
+    created_at?: string;
+  }>;
+};
+
+export type RestoredConversationState = {
+  rewrittenText: string;
+  rewriteProviderLabel: string;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
 };
 
 export type SearchHistoryItem = {
@@ -63,7 +77,11 @@ export type SidebarListItem =
 type UseSessionHistoryParams = {
   activeContextId: string;
   query: string;
-  onOpenSession: (payload: { youtubeUrl: string; jobResult: JobResult }) => void;
+  onOpenSession: (payload: {
+    youtubeUrl: string;
+    jobResult: JobResult;
+    restoredConversation: RestoredConversationState | null;
+  }) => void;
 };
 
 const SEARCH_HISTORY_STORAGE_KEY = "translation-search-history";
@@ -151,6 +169,24 @@ export function useSessionHistory({
         throw new Error(await extractApiErrorMessage(response));
       }
       const data = (await response.json()) as SessionHistoryDetail;
+      const rewrittenText = String(data.rewritten_text || "").trim();
+      const rewriteProvider = String(data.rewrite_provider || "").trim();
+      const rewriteModel = String(data.rewrite_model || "").trim();
+      const rewriteProviderLabel =
+        rewriteProvider && rewriteModel
+          ? `${rewriteProvider} · ${rewriteModel}`
+          : rewriteProvider || rewriteModel;
+      const restoredMessages = Array.isArray(data.chat_turns)
+        ? data.chat_turns
+            .filter(
+              (turn): turn is { role: "user" | "assistant"; content: string } =>
+                !!turn &&
+                (turn.role === "user" || turn.role === "assistant") &&
+                typeof turn.content === "string" &&
+                turn.content.trim().length > 0,
+            )
+            .map((turn) => ({ role: turn.role, content: turn.content }))
+        : [];
       onOpenSession({
         youtubeUrl: data.video_url ?? "",
         jobResult: {
@@ -172,6 +208,14 @@ export function useSessionHistory({
             segments: data.translation_zh_segments ?? [],
           },
         },
+        restoredConversation:
+          rewrittenText || restoredMessages.length > 0
+            ? {
+                rewrittenText,
+                rewriteProviderLabel,
+                messages: restoredMessages,
+              }
+            : null,
       });
     } catch (error) {
       setHistoryError(

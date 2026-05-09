@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
   ContentChatResponse,
@@ -8,10 +8,12 @@ import {
   TranslationConfigPayload,
   TranslationSettings,
   apiFetch,
+  buildRewriteExportMarkdown,
   buildTranslationConfig,
   buildTranslationText,
   extractApiErrorMessage,
   formatProviderName,
+  rewriteExportBasename,
 } from "../lib/job";
 
 
@@ -25,12 +27,18 @@ type UseRewriteChatParams = {
   jobResult: JobResult | null;
   settings: TranslationSettings;
   rewriteFocus: string;
+  restoredConversation?: {
+    rewrittenText: string;
+    rewriteProviderLabel: string;
+    messages: Array<{ role: "user" | "assistant"; content: string }>;
+  } | null;
 };
 
 export function useRewriteChat({
   jobResult,
   settings,
   rewriteFocus,
+  restoredConversation = null,
 }: UseRewriteChatParams) {
   const [rewriteText, setRewriteText] = useState("");
   const [rewriteProviderLabel, setRewriteProviderLabel] = useState("");
@@ -42,6 +50,8 @@ export function useRewriteChat({
   const [chatInput, setChatInput] = useState("");
   const [chatSubmitting, setChatSubmitting] = useState(false);
   const [chatError, setChatError] = useState("");
+  const skipAutoRewriteForContextRef = useRef("");
+  const currentContextId = jobResult?.content_context_id ?? "";
 
   const translationText = useMemo(
     () =>
@@ -50,21 +60,43 @@ export function useRewriteChat({
   );
 
   useEffect(() => {
-    setMessages([]);
     setChatInput("");
     setChatError("");
-  }, [jobResult?.content_context_id]);
-
-  useEffect(() => {
-    if (!jobResult || !translationText.trim()) {
+    setRewriteCopied(false);
+    if (!currentContextId) {
+      setMessages([]);
       setRewriteText("");
       setRewriteError("");
       setRewriteProviderLabel("");
       return;
     }
+    const hasRestoredRewrite = restoredConversation?.rewrittenText.trim().length;
+    const hasRestoredMessages = (restoredConversation?.messages.length ?? 0) > 0;
+    if (hasRestoredRewrite || hasRestoredMessages) {
+      setMessages(restoredConversation?.messages ?? []);
+      setRewriteText(restoredConversation?.rewrittenText ?? "");
+      setRewriteError("");
+      setRewriteProviderLabel(restoredConversation?.rewriteProviderLabel ?? "");
+      skipAutoRewriteForContextRef.current = currentContextId;
+      return;
+    }
+    setMessages([]);
+    setRewriteText("");
+    setRewriteError("");
+    setRewriteProviderLabel("");
+  }, [currentContextId, restoredConversation]);
+
+  useEffect(() => {
+    if (!jobResult || !translationText.trim()) {
+      return;
+    }
+    if (skipAutoRewriteForContextRef.current === currentContextId) {
+      skipAutoRewriteForContextRef.current = "";
+      return;
+    }
     void runRewrite(translationText);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [jobResult?.content_context_id, translationText, rewriteFocus]);
+  }, [currentContextId, jobResult, rewriteFocus, translationText]);
 
   async function runRewrite(sourceText: string) {
     const source = sourceText.trim();
@@ -129,16 +161,17 @@ export function useRewriteChat({
 
   function exportRewrite() {
     const text = rewriteText.trim();
-    if (!text) {
+    if (!text || !jobResult) {
       return;
     }
-    const blob = new Blob([`# 中文改写\n\n${text}\n`], {
+    const markdown = buildRewriteExportMarkdown("# 中文改写", text, jobResult);
+    const blob = new Blob([markdown], {
       type: "text/markdown;charset=utf-8",
     });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = "rewrite.md";
+    anchor.download = `${rewriteExportBasename(jobResult)}.md`;
     anchor.click();
     URL.revokeObjectURL(url);
   }

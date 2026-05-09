@@ -1,5 +1,8 @@
-import { ArrowUp, Copy, Download } from "lucide-react";
+"use client";
+
+import { ArrowUp, Copy, Download, ThumbsDown, ThumbsUp } from "lucide-react";
 import type { ComponentType } from "react";
+import { useEffect, useState } from "react";
 
 import { JobResult } from "../lib/job";
 import { ThreadMessage } from "../hooks/use-rewrite-chat";
@@ -53,11 +56,34 @@ export function ResultView({
   onSubmitChat,
   onChangeChatInput,
 }: ResultViewProps) {
+  const feedbackKey = `rewrite-feedback-${jobResult.content_context_id}`;
+  const [feedbackVote, setFeedbackVote] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      setFeedbackVote(window.localStorage.getItem(feedbackKey));
+    } catch {
+      setFeedbackVote(null);
+    }
+  }, [feedbackKey]);
+
+  function applyRewriteFeedback(next: "up" | "down") {
+    try {
+      window.localStorage.setItem(feedbackKey, next);
+      setFeedbackVote(next);
+    } catch {
+      setFeedbackVote(next);
+    }
+  }
+
   return (
     <section className="result-page">
       <div className="result-scroll">
-        <article className="result-article">
-          <h2>{jobResult.video.title || "Article Draft"}</h2>
+        <article className="result-article result-draft-primary">
+          <h2 className="result-draft-heading">
+            {jobResult.video.title || "文章草稿"}
+          </h2>
+          <p className="result-draft-badge">主结果 · 文章草稿</p>
           <p className="result-provider">文章规格：{articleProfileLabel}</p>
           {rewriteProviderLabel ? (
             <p className="result-provider">{rewriteProviderLabel}</p>
@@ -91,11 +117,37 @@ export function ResultView({
             >
               <Download size={16} />
             </button>
+            <span className="rewrite-feedback" role="group" aria-label="改写满意度（仅保存在本机浏览器）">
+              <button
+                className={`icon-ghost${feedbackVote === "up" ? " is-selected" : ""}`}
+                type="button"
+                title="有帮助"
+                aria-label="改写有帮助"
+                aria-pressed={feedbackVote === "up"}
+                disabled={!rewriteText.trim()}
+                onClick={() => applyRewriteFeedback("up")}
+              >
+                <ThumbsUp size={16} />
+              </button>
+              <button
+                className={`icon-ghost${feedbackVote === "down" ? " is-selected" : ""}`}
+                type="button"
+                title="需改进"
+                aria-label="改写需改进"
+                aria-pressed={feedbackVote === "down"}
+                disabled={!rewriteText.trim()}
+                onClick={() => applyRewriteFeedback("down")}
+              >
+                <ThumbsDown size={16} />
+              </button>
+            </span>
           </div>
         </article>
 
         <details className="material-details">
-          <summary>素材详情（转录/翻译）</summary>
+          <summary className="material-details-summary">
+            素材详情（转录与翻译，默认收起）
+          </summary>
           <div className="material-grid">
             <article className="material-card">
               <h3>英文转录</h3>

@@ -24,11 +24,23 @@ npm install
 
 ## Verification
 
-- Backend: `python -m pytest backend/tests`
+- Backend full suite: `cd backend && ./.venv/bin/python -m pytest`
+- Backend MVP regressions (queue + jobs):  
+  `./.venv/bin/python -m pytest tests/test_job_queue_service.py tests/test_jobs_run.py`
 - Frontend: `cd frontend && npm run build`
 
 If you change the desktop launcher or startup scripts, please also verify the
 local run path described in `README.md`.
+
+## MVP manual smoke checklist
+
+Before merging backend queue/routes/UI paths changes, run through:
+
+1. `GET http://localhost:8000/health` returns `{"status":"ok"}`.
+2. `GET http://localhost:8000/readyz` returns `200` with `checks.tmp_writable` and `checks.job_queue_db` equal to `ok`.
+3. Paste a **short public** YouTube URL in the web app, complete ingest → translation → article draft appears.
+4. **Export** article Markdown and confirm the file ends with source title/link attribution footer.
+5. Optional: restart backend mid-queue job once and confirm UI reports retry/interrupted messaging (`JOB_INTERRUPTED_RESTART`).
 
 ## Pull Requests
 

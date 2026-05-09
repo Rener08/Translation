@@ -10,6 +10,7 @@ import {
   buildTranslationConfig,
   extractApiErrorMessage,
   mapJobStageLabel,
+  normalizeApiErrorMessage,
   waitForJobResult,
 } from "../lib/job";
 
@@ -104,10 +105,15 @@ export function useJobRunner({
       setJobStatusMessage("");
     } catch (error) {
       const rawMessage = error instanceof Error ? error.message : "Unknown request error";
+      if (rawMessage.includes("任务已取消")) {
+        setErrorMessage("");
+        setJobStatusMessage("任务已取消");
+        return;
+      }
       if (/cannot connect to backend api|failed to fetch|network/i.test(rawMessage)) {
         setErrorMessage("无法连接本地后端（http://localhost:8000 或 8002）。请先启动 backend。");
       } else {
-        setErrorMessage(rawMessage);
+        setErrorMessage(normalizeApiErrorMessage(rawMessage));
       }
       setJobStatusMessage("");
     } finally {

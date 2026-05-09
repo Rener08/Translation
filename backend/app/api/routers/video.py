@@ -1,14 +1,17 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.error_mapping import raise_mapped_http_exception
-from app.api.runtime_deps import resolve
+from app.api.runtime_deps import (
+    get_diarize_audio_file,
+    get_fetch_video_source,
+    get_inspect_video_metadata,
+    get_transcribe_audio_file,
+)
 from app.services.participant_candidate_service import extract_candidate_people
-from app.services.speaker_diarization_service import assign_speakers_to_transcript, diarize_audio_file
+from app.services.speaker_diarization_service import assign_speakers_to_transcript
 from app.services.speaker_identity_service import apply_speaker_identities, resolve_speaker_identities
-from app.services.transcription_service import transcribe_audio_file
-from app.services.video_source_service import fetch_video_source
-from app.services.yt_dlp_service import VideoInspectError, inspect_video_metadata
+from app.services.yt_dlp_service import VideoInspectError
 from app.youtube import (
     CandidatePersonResponse,
     ParseYouTubeRequest,
@@ -46,11 +49,14 @@ async def parse_youtube(request: ParseYouTubeRequest) -> ParseYouTubeResponse:
 
 
 @router.post("/api/video/inspect", response_model=VideoInspectResponse)
-async def inspect_video(request: VideoInspectRequest) -> VideoInspectResponse:
+async def inspect_video(
+    request: VideoInspectRequest,
+    inspect_video_metadata_fn=Depends(get_inspect_video_metadata),
+) -> VideoInspectResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
         metadata = await run_in_threadpool(
-            resolve("inspect_video_metadata", inspect_video_metadata),
+            inspect_video_metadata_fn,
             parsed.normalized_url,
         )
     except VideoInspectError as error:
@@ -89,11 +95,12 @@ async def inspect_video(request: VideoInspectRequest) -> VideoInspectResponse:
 @router.post("/api/video/participants", response_model=VideoParticipantsResponse)
 async def video_participants(
     request: VideoParticipantsRequest,
+    inspect_video_metadata_fn=Depends(get_inspect_video_metadata),
 ) -> VideoParticipantsResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
         metadata = await run_in_threadpool(
-            resolve("inspect_video_metadata", inspect_video_metadata),
+            inspect_video_metadata_fn,
             parsed.normalized_url,
         )
     except VideoInspectError as error:
@@ -123,26 +130,30 @@ async def video_participants(
 @router.post("/api/video/resolve-speakers", response_model=ResolveSpeakersResponse)
 async def resolve_video_speakers(
     request: ResolveSpeakersRequest,
+    inspect_video_metadata_fn=Depends(get_inspect_video_metadata),
+    fetch_video_source_fn=Depends(get_fetch_video_source),
+    transcribe_audio_file_fn=Depends(get_transcribe_audio_file),
+    diarize_audio_file_fn=Depends(get_diarize_audio_file),
 ) -> ResolveSpeakersResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
         metadata = await run_in_threadpool(
-            resolve("inspect_video_metadata", inspect_video_metadata),
+            inspect_video_metadata_fn,
             parsed.normalized_url,
         )
         source = await run_in_threadpool(
-            resolve("fetch_video_source", fetch_video_source),
+            fetch_video_source_fn,
             parsed.normalized_url,
             source_mode="force_audio",
         )
         if source.source_type != "audio" or not source.audio_file_path:
             raise ValueError("Speaker resolution requires an audio source.")
         transcript = await run_in_threadpool(
-            resolve("transcribe_audio_file", transcribe_audio_file),
+            transcribe_audio_file_fn,
             source.audio_file_path,
         )
         diarization = await run_in_threadpool(
-            resolve("diarize_audio_file", diarize_audio_file),
+            diarize_audio_file_fn,
             source.audio_file_path,
         )
         diarized_transcript = await run_in_threadpool(
@@ -196,11 +207,14 @@ async def resolve_video_speakers(
 
 
 @router.post("/api/video/fetch-source", response_model=VideoFetchSourceResponse)
-async def fetch_source(request: VideoFetchSourceRequest) -> VideoFetchSourceResponse:
+async def fetch_source(
+    request: VideoFetchSourceRequest,
+    fetch_video_source_fn=Depends(get_fetch_video_source),
+) -> VideoFetchSourceResponse:
     try:
         parsed = parse_youtube_url(str(request.url))
         source = await run_in_threadpool(
-            resolve("fetch_video_source", fetch_video_source),
+            fetch_video_source_fn,
             parsed.normalized_url,
             source_mode=request.source_mode,
         )

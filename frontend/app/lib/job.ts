@@ -34,6 +34,44 @@ export type JobResult = {
   };
 };
 
+/** Canonical watch URL for attribution footers and exports. */
+export function youtubeWatchUrl(videoId: string): string {
+  const id = String(videoId || "").trim();
+  if (!id) {
+    return "";
+  }
+  return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
+}
+
+/** Markdown body for export/download with source attribution (not added on clipboard copy). */
+export function buildRewriteExportMarkdown(
+  headingLine: string,
+  bodyText: string,
+  jobResult: JobResult,
+): string {
+  const title = String(jobResult.video.title || "").trim() || "未命名视频";
+  const watch = youtubeWatchUrl(jobResult.video.video_id);
+  const footer = [
+    "",
+    "---",
+    "",
+    `来源标题：${title}`,
+    ...(watch ? [`来源链接：${watch}`] : []),
+    "",
+    "_本文由 Translation Writing Workbench 根据上述来源素材自动生成，请自行核对事实与版权。_",
+    "",
+  ].join("\n");
+  return `${headingLine}\n\n${bodyText.trim()}\n${footer}`;
+}
+
+/** Safe ASCII-ish filename fragment from video title. */
+export function rewriteExportBasename(jobResult: JobResult): string {
+  const raw = String(jobResult.video.title || "").trim() || "rewrite";
+  const collapsed = raw.replace(/\s+/g, "-");
+  const safe = collapsed.replace(/[^a-zA-Z0-9\u4e00-\u9fff._-]+/g, "").slice(0, 80);
+  return safe || "rewrite";
+}
+
 export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export type JobRunStatusResponse = {
@@ -82,29 +120,6 @@ export type TranslationConfigPayload = {
   extra_headers?: Record<string, string>;
 };
 
-export type ContentChatMessage = {
-  role: "user" | "assistant";
-  content: string;
-};
-
-export type ContentChatSettings = {
-  provider: TranslationProvider;
-  apiKey: string;
-  baseUrl: string;
-  model: string;
-  customPrompt: string;
-  headersJson: string;
-};
-
-export type ContentChatConfigPayload = {
-  provider: TranslationProvider;
-  api_key?: string;
-  base_url?: string;
-  model?: string;
-  custom_prompt?: string;
-  extra_headers?: Record<string, string>;
-};
-
 export type ContentChatResponse = {
   ok: boolean;
   provider: TranslationProvider;
@@ -120,12 +135,6 @@ export type ContentRewriteResponse = {
   quality_issues?: string[];
 };
 
-export type ViewState = {
-  tone: "idle" | "running" | "success" | "error";
-  label: string;
-  message: string;
-};
-
 const configuredApiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").trim();
 let resolvedApiBaseUrl: string | null = null;
 let lastKnownApiBaseUrl: string | null = null;
@@ -135,11 +144,6 @@ export const defaultApiBaseUrl = configuredApiBaseUrl || "http://localhost:8000"
 export const defaultTranslationProvider = resolveProvider(
   process.env.NEXT_PUBLIC_DEFAULT_TRANSLATION_PROVIDER,
   "deepseek",
-);
-
-export const defaultContentChatProvider = resolveProvider(
-  process.env.NEXT_PUBLIC_DEFAULT_CHAT_PROVIDER,
-  "ollama",
 );
 
 const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
@@ -201,15 +205,6 @@ export const defaultSettings: TranslationSettings = {
   apiKey: "",
   baseUrl: "",
   model: getProviderDefaultModel(defaultTranslationProvider),
-  headersJson: "",
-};
-
-export const defaultContentChatSettings: ContentChatSettings = {
-  provider: defaultContentChatProvider,
-  apiKey: "",
-  baseUrl: "",
-  model: "",
-  customPrompt: "",
   headersJson: "",
 };
 
@@ -300,15 +295,32 @@ async function resolveApiBase(): Promise<string> {
   );
 }
 
+/** Merge optional Bearer token for `/api/*` when NEXT_PUBLIC_API_AUTH_TOKEN matches backend API_AUTH_TOKEN (localhost MVP only). */
+function applyPublicApiAuth(
+  normalizedPath: string,
+  init?: RequestInit,
+): RequestInit {
+  const token = (process.env.NEXT_PUBLIC_API_AUTH_TOKEN ?? "").trim();
+  if (!token || !normalizedPath.startsWith("/api/")) {
+    return { ...(init ?? {}) };
+  }
+  const headers = new Headers(init?.headers ?? undefined);
+  if (!headers.has("Authorization") && !headers.has("x-api-token")) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return { ...(init ?? {}), headers };
+}
+
 export async function apiFetch(
   path: string,
   init?: RequestInit,
 ): Promise<Response> {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
   let base = await resolveApiBase();
+  const requestInit = applyPublicApiAuth(normalizedPath, init);
 
   try {
-    const response = await fetch(`${base}${normalizedPath}`, init);
+    const response = await fetch(`${base}${normalizedPath}`, requestInit);
     lastKnownApiBaseUrl = base;
     return response;
   } catch (error) {
@@ -319,7 +331,7 @@ export async function apiFetch(
     // before forcing a fresh /health probing flow.
     if (base) {
       try {
-        const retryResponse = await fetch(`${base}${normalizedPath}`, init);
+        const retryResponse = await fetch(`${base}${normalizedPath}`, requestInit);
         lastKnownApiBaseUrl = base;
         return retryResponse;
       } catch (retryError) {
@@ -330,7 +342,7 @@ export async function apiFetch(
     }
     resolvedApiBaseUrl = null;
     base = await resolveApiBase();
-    return fetch(`${base}${normalizedPath}`, init);
+    return fetch(`${base}${normalizedPath}`, requestInit);
   }
 }
 
@@ -354,39 +366,6 @@ export function buildTranslationConfig(
 
   if (model) {
     payload.model = model;
-  }
-
-  if (Object.keys(extraHeaders).length > 0) {
-    payload.extra_headers = extraHeaders;
-  }
-
-  return payload;
-}
-
-export function buildContentChatConfig(
-  settings: ContentChatSettings,
-): ContentChatConfigPayload {
-  const extraHeaders = parseHeadersJson(settings.headersJson);
-  const model = normalizeTranslationModel(settings.provider, settings.model);
-
-  const payload: ContentChatConfigPayload = {
-    provider: settings.provider,
-  };
-
-  if (settings.apiKey.trim()) {
-    payload.api_key = settings.apiKey.trim();
-  }
-
-  if (settings.baseUrl.trim()) {
-    payload.base_url = settings.baseUrl.trim();
-  }
-
-  if (model) {
-    payload.model = model;
-  }
-
-  if (settings.customPrompt.trim()) {
-    payload.custom_prompt = settings.customPrompt.trim();
   }
 
   if (Object.keys(extraHeaders).length > 0) {
@@ -509,11 +488,15 @@ export async function waitForJobResult(
     }
 
     if (data.status === "failed") {
-      const detail = data.error || lastMessage || "Job failed.";
+      let detail = data.error || lastMessage || "Job failed.";
       const errorCode = String(data.error_code || "").trim();
-      const retryableHint = data.retryable ? "（可重试）" : "";
+      if (errorCode === "JOB_INTERRUPTED_RESTART") {
+        detail = `${detail} 后端重启会导致任务中断，请重新粘贴同一链接并开始处理。`;
+      } else if (data.retryable) {
+        detail = `${detail}（可重试：请稍后重试或重新提交同一链接。）`;
+      }
       if (errorCode) {
-        throw new Error(`[${errorCode}] ${detail}${retryableHint}`);
+        throw new Error(`[${errorCode}] ${detail}`);
       }
       throw new Error(detail);
     }
@@ -547,49 +530,6 @@ export function mapJobStageLabel(stage: string): string {
     return "保存结果";
   }
   return stage;
-}
-
-export function getViewState(
-  errorMessage: string,
-  isRunning: boolean,
-  jobResult: JobResult | null,
-): ViewState {
-  if (errorMessage) {
-    return {
-      tone: "error",
-      label: "Failed",
-      message: errorMessage,
-    };
-  }
-
-  if (isRunning) {
-    return {
-      tone: "running",
-      label: "Processing",
-      message:
-        "正在提取素材、转录并生成文章草稿。",
-    };
-  }
-
-  if (jobResult) {
-    const sourceMessage =
-      jobResult.source_type === "audio"
-        ? "已使用音频完成转录，文章草稿可继续追改与导出。"
-        : "已使用字幕完成生成，文章草稿可继续追改与导出。";
-
-    return {
-      tone: "success",
-      label: "Complete",
-      message: sourceMessage,
-    };
-  }
-
-  return {
-    tone: "idle",
-    label: "Ready",
-    message:
-      "粘贴链接后即可生成中文文章。cookie 仅在受限视频时作为高级兜底。",
-  };
 }
 
 export function normalizeApiErrorMessage(message: string): string {
@@ -636,6 +576,10 @@ export function normalizeApiErrorMessage(message: string): string {
     (lowered.includes("failed") || lowered.includes("error") || lowered.includes("runtime"))
   ) {
     return "Whisper 处理失败，请检查本地模型、音频文件或设备配置。";
+  }
+
+  if (lowered.includes("job_interrupted_restart")) {
+    return "任务因服务重启而中断，请重新提交同一视频链接。";
   }
 
   return normalized;

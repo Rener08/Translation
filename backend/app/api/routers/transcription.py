@@ -1,10 +1,9 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.error_mapping import raise_mapped_http_exception
-from app.api.runtime_deps import resolve
-from app.services.speaker_diarization_service import assign_speakers_to_transcript, diarize_audio_file
-from app.services.transcription_service import transcribe_audio_file
+from app.api.runtime_deps import get_diarize_audio_file, get_transcribe_audio_file
+from app.services.speaker_diarization_service import assign_speakers_to_transcript
 from app.youtube import (
     DiarizeRequest,
     DiarizeResponse,
@@ -24,10 +23,13 @@ router = APIRouter()
     response_model=TranscribeResponse,
     response_model_exclude_none=True,
 )
-async def transcribe_audio(request: TranscribeRequest) -> TranscribeResponse:
+async def transcribe_audio(
+    request: TranscribeRequest,
+    transcribe_audio_file_fn=Depends(get_transcribe_audio_file),
+) -> TranscribeResponse:
     try:
         result = await run_in_threadpool(
-            resolve("transcribe_audio_file", transcribe_audio_file),
+            transcribe_audio_file_fn,
             request.audio_file_path,
         )
     except Exception as error:
@@ -51,14 +53,18 @@ async def transcribe_audio(request: TranscribeRequest) -> TranscribeResponse:
 
 
 @router.post("/api/diarize", response_model=DiarizeResponse)
-async def diarize_audio(request: DiarizeRequest) -> DiarizeResponse:
+async def diarize_audio(
+    request: DiarizeRequest,
+    transcribe_audio_file_fn=Depends(get_transcribe_audio_file),
+    diarize_audio_file_fn=Depends(get_diarize_audio_file),
+) -> DiarizeResponse:
     try:
         transcript = await run_in_threadpool(
-            resolve("transcribe_audio_file", transcribe_audio_file),
+            transcribe_audio_file_fn,
             request.audio_file_path,
         )
         diarization = await run_in_threadpool(
-            resolve("diarize_audio_file", diarize_audio_file),
+            diarize_audio_file_fn,
             request.audio_file_path,
         )
         aligned_transcript = await run_in_threadpool(

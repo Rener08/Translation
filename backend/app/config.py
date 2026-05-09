@@ -39,6 +39,7 @@ def _get_env_int(name: str, default: int) -> int:
 class AppSettings:
     api_auth_token: str
     api_rate_limit_per_minute: int
+    trust_proxy_headers: bool
     enable_default_cookies_file: bool
     job_queue_db_path: Path
     yt_dlp_timeout_sec: int
@@ -52,6 +53,7 @@ def get_settings() -> AppSettings:
     return AppSettings(
         api_auth_token=get_env_str("API_AUTH_TOKEN"),
         api_rate_limit_per_minute=max(0, _get_env_int("API_RATE_LIMIT_PER_MINUTE", 120)),
+        trust_proxy_headers=_get_env_bool("TRUST_PROXY_HEADERS", False),
         enable_default_cookies_file=_get_env_bool("YTDLP_ENABLE_DEFAULT_COOKIES_FILE", False),
         job_queue_db_path=Path(
             get_env_str("JOB_QUEUE_DB_PATH")

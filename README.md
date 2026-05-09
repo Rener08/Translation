@@ -90,6 +90,7 @@ Copy `.env.example` to `.env` if you want a local environment file.
 Current local setup uses:
 
 - `NEXT_PUBLIC_API_BASE_URL`: frontend backend base URL
+- `NEXT_PUBLIC_API_AUTH_TOKEN`: optional; must match backend `API_AUTH_TOKEN` when that variable is set, so browser requests include `Authorization: Bearer …` on `/api/*`. Values prefixed `NEXT_PUBLIC_` are **visible to anyone who can load your frontend**—use only for trusted localhost MVP.
 - `DEEPSEEK_API_KEY`: required when the default translation provider is `deepseek`
 - `TRANSLATION_PROVIDER`: default translation provider when request settings do not override it
 - `WHISPER_MODEL`: local Whisper model name, for example `small`
@@ -99,9 +100,12 @@ Current local setup uses:
 - `YTDLP_COOKIES_FILE`: optional cookies.txt path for yt-dlp
 - `YTDLP_ENABLE_DEFAULT_COOKIES_FILE`: whether backend auto-loads repo `youtube-cookies.txt` (default `0`)
 - `YTDLP_REMOTE_COMPONENTS`: optional `yt-dlp` remote components flag, for example `ejs:github`
-- `API_AUTH_TOKEN`: optional API bearer token for `/api/*` routes
-- `API_RATE_LIMIT_PER_MINUTE`: write-request rate limit per client IP
-- `JOB_QUEUE_DB_PATH`: SQLite file path for persisted job records
+- `API_AUTH_TOKEN`: optional shared secret; when set, **every** `/api/*` request must send `Authorization: Bearer <token>` or header `x-api-token`
+- `API_RATE_LIMIT_PER_MINUTE`: write-request rate limit per client IP (POST/PUT/PATCH/DELETE)
+- `JOB_QUEUE_DB_PATH`: SQLite file path for persisted async job records (`tmp/job_queue.sqlite` by default)
+- `TRUST_PROXY_HEADERS`: set to `1` only when behind a trusted reverse proxy so client IP comes from `X-Forwarded-For` / `X-Real-IP`
+
+**Note:** Liveness and readiness routes are **`/health`**, **`/readyz`**, and **`/livez`** (they do **not** use the `/api` prefix and are **not** covered by `API_AUTH_TOKEN`). Configure your reverse proxy accordingly.
 
 ## Local Whisper And Translation Keys
 
@@ -210,6 +214,20 @@ Expected response:
 
 ```json
 {"status":"ok"}
+```
+
+### Health and readiness
+
+| Route | Purpose |
+|-------|---------|
+| `GET /health` | Process is up |
+| `GET /livez` | Same as health for local MVP |
+| `GET /readyz` | Checks `tmp/` writable and job-queue SQLite path reachable |
+
+Example:
+
+```bash
+curl -s http://localhost:8000/readyz | jq .
 ```
 
 Parse endpoint:
@@ -506,6 +524,7 @@ Web frontend loop for component development:
 ## Current Phase Scope
 
 - Includes `GET /health`
+- Includes `GET /livez` and `GET /readyz` (local disk / job DB probes)
 - Includes `POST /api/parse-youtube`
 - Includes `POST /api/video/inspect`
 - Includes `POST /api/video/fetch-source`

@@ -5,15 +5,17 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, status
 
 from app.api.error_mapping import classify_service_error
-from app.api.runtime_deps import resolve
+from app.api.runtime_deps import get_run_video_job_runner
 from app.config import get_env_str
 from app.services.job_queue_service import (
     get_job_record,
+    is_job_cancel_requested,
+    register_job_task_handler,
     request_job_cancel,
-    submit_background_job,
+    submit_persistent_job,
     update_job_progress,
 )
-from app.services.job_run_service import run_video_job_with_translation_config
+from app.services.job_run_service import JobCancelledError
 from app.services.session_history_service import upsert_job_session
 from app.youtube import (
     JobRunRequest,
@@ -30,6 +32,7 @@ from app.youtube import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+VIDEO_JOB_TASK_TYPE = "video_job_v1"
 
 
 @router.post(
@@ -49,14 +52,14 @@ async def run_job(request: JobRunRequest) -> JobRunStatusResponse:
         else None
     )
     stage_timeouts = _resolve_job_stage_timeouts_from_env()
-    job_id = submit_background_job(
-        lambda created_job_id: _run_job_background(
-            created_job_id,
-            parsed.normalized_url,
-            request.source_mode,
-            translation_config,
-            stage_timeouts=stage_timeouts,
-        )
+    job_id = submit_persistent_job(
+        VIDEO_JOB_TASK_TYPE,
+        {
+            "normalized_url": parsed.normalized_url,
+            "source_mode": request.source_mode,
+            "translation_config": translation_config,
+            "stage_timeouts": stage_timeouts,
+        },
     )
     return JobRunStatusResponse(
         ok=True,
@@ -101,6 +104,7 @@ def _run_job_background(
     stage_timeouts: dict[str, int],
 ) -> None:
     try:
+        _raise_if_job_cancelled(job_id)
         update_job_progress(
             job_id,
             status="running",
@@ -111,14 +115,12 @@ def _run_job_background(
         )
 
         result = _invoke_job_runner(
-            resolve(
-                "run_video_job_with_translation_config",
-                run_video_job_with_translation_config,
-            ),
+            get_run_video_job_runner(),
             normalized_url=normalized_url,
             source_mode=source_mode,
             translation_config=translation_config,
             stage_timeouts=stage_timeouts,
+            cancellation_checker=lambda: is_job_cancel_requested(job_id),
             progress_callback=lambda stage, value, text: update_job_progress(
                 job_id,
                 status="running",
@@ -129,6 +131,7 @@ def _run_job_background(
             ),
         )
 
+        _raise_if_job_cancelled(job_id)
         update_job_progress(
             job_id,
             status="running",
@@ -143,6 +146,7 @@ def _run_job_background(
             source_mode=source_mode,
             translation_config=translation_config,
         )
+        _raise_if_job_cancelled(job_id)
         response = _build_job_run_response(result)
         update_job_progress(
             job_id,
@@ -155,6 +159,9 @@ def _run_job_background(
             error_code=None,
             retryable=None,
         )
+    except JobCancelledError:
+        logger.info("Job %s cancelled by user", job_id)
+        return
     except Exception as error:
         classification = classify_service_error(error)
         logger.exception("Job run failed for %s", normalized_url)
@@ -167,6 +174,25 @@ def _run_job_background(
             error_code=classification.error_code,
             retryable=classification.retryable,
         )
+
+
+def _run_video_job_task(job_id: str, payload: dict[str, object]) -> None:
+    normalized_url = str(payload.get("normalized_url") or "").strip()
+    source_mode = str(payload.get("source_mode") or "subtitle_first").strip() or "subtitle_first"
+    translation_config = payload.get("translation_config")
+    if not isinstance(translation_config, dict):
+        translation_config = None
+    stage_timeouts = payload.get("stage_timeouts")
+    if not isinstance(stage_timeouts, dict):
+        stage_timeouts = _resolve_job_stage_timeouts_from_env()
+
+    _run_job_background(
+        job_id,
+        normalized_url,
+        source_mode,
+        translation_config,
+        stage_timeouts=stage_timeouts,
+    )
 
 
 def _persist_job_session(
@@ -318,6 +344,7 @@ def _invoke_job_runner(
     source_mode: str,
     translation_config: dict[str, object] | None,
     stage_timeouts: dict[str, int],
+    cancellation_checker,
     progress_callback,
 ):
     kwargs: dict[str, object] = {
@@ -335,5 +362,15 @@ def _invoke_job_runner(
             kwargs["stage_timeout_seconds"] = stage_timeouts
         if "progress_callback" in parameters:
             kwargs["progress_callback"] = progress_callback
+        if "cancellation_checker" in parameters:
+            kwargs["cancellation_checker"] = cancellation_checker
 
     return run_callable(normalized_url, **kwargs)
+
+
+def _raise_if_job_cancelled(job_id: str) -> None:
+    if is_job_cancel_requested(job_id):
+        raise JobCancelledError("Job was cancelled by user.")
+
+
+register_job_task_handler(VIDEO_JOB_TASK_TYPE, _run_video_job_task)

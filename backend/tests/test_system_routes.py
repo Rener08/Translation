@@ -41,3 +41,11 @@ def test_readyz_endpoint() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
+    assert body["checks"]["tmp_writable"] == "ok"
+    assert body["checks"]["job_queue_db"] == "ok"
+
+
+def test_livez_endpoint() -> None:
+    response = client.get("/livez")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}

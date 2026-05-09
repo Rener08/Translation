@@ -120,9 +120,10 @@ This page is the post-run workspace.
 - [x] Add request_id-aware HTTP middleware and structured request logs
 - [x] Add `/readyz` and `/livez` health endpoints
 - [x] Persist job queue records to SQLite so status survives service restart
-- [ ] Replace thread-only stage timeout with hard-killable process timeout for long-running stages
+- [x] Replace string-based `runtime_deps.resolve` lookups with explicit FastAPI dependencies
+- [x] Replace thread-only stage timeout with hard-killable process timeout for transcribe stage
 - [ ] Move in-memory execution queue to durable worker queue (Redis/Postgres-backed)
-- [ ] Remove API key persistence from frontend localStorage
+- [x] Remove API key persistence from frontend localStorage
 - [ ] Tighten production CORS profile and enforce auth in deployment profile
 - [ ] Add user/account layer and per-user quota model before multi-user rollout
 
@@ -215,7 +216,12 @@ This page is the post-run workspace.
 - [x] Web is the only active product UI
 - [x] Remove old translation-only wording from entry and sidebar
 - [x] Reposition cookie hints as advanced fallback only
-- [ ] Promote article draft as the only primary result block (transcript/translation in details)
+- [x] Remove unreferenced legacy frontend components and dead helper exports
+- [x] Promote article draft as the only primary result block (transcript/translation in details)
+
+## MVP manual smoke (repeat before releases)
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) section **MVP manual smoke checklist**.
 
 ## Deferred / Out Of Scope For Now
 
@@ -223,9 +229,15 @@ This page is the post-run workspace.
 - [ ] Cloud deployment work
 - [ ] Mobile / Expo client
 - [ ] Generic multi-agent orchestration platform
-- [ ] Database-backed run queue
+- [ ] Database-backed run queue (beyond current SQLite job store + JSON session cache)
 - [ ] Multi-language expansion beyond current Chinese-first writing flow
 - [ ] Broad SaaS productization work unrelated to the current local app
+- [ ] Multi-replica queue coordination (`UPDATE … RETURNING`), Redis / cloud queues
+- [ ] Billing (Stripe), quotas per user, referral programs
+- [ ] SSO / RBAC / full audit logs for enterprise
+- [ ] Content knowledge graphs, collaborative filtering, semantic translation dedupe caches
+- [ ] Third-party plugin market and public developer APIs
+- [ ] Major refactor split of `translation_service.py` until driven by concrete incidents
 
 ## Decisions
 

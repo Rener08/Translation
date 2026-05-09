@@ -1,11 +1,10 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.error_mapping import raise_mapped_http_exception
-from app.api.runtime_deps import resolve
-from app.services.translation_service import discover_provider_models
+from app.api.runtime_deps import get_discover_provider_models
 from app.youtube import (
     ProviderModelsRequest,
     ProviderModelsResponse,
@@ -21,10 +20,11 @@ router = APIRouter()
 @router.post("/api/provider-models", response_model=ProviderModelsResponse)
 async def provider_models(
     request: ProviderModelsRequest,
+    discover_provider_models_fn=Depends(get_discover_provider_models),
 ) -> ProviderModelsResponse:
     try:
         models = await run_in_threadpool(
-            resolve("discover_provider_models", discover_provider_models),
+            discover_provider_models_fn,
             provider=request.provider,
             base_url=request.base_url or "",
             api_key=request.api_key or "",
@@ -43,10 +43,11 @@ async def provider_models(
 )
 async def test_provider_connection(
     request: ProviderTestConnectionRequest,
+    discover_provider_models_fn=Depends(get_discover_provider_models),
 ) -> ProviderTestConnectionResponse:
     try:
         models = await run_in_threadpool(
-            resolve("discover_provider_models", discover_provider_models),
+            discover_provider_models_fn,
             provider=request.provider,
             base_url=request.base_url or "",
             api_key=request.api_key or "",

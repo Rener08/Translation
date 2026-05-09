@@ -9,6 +9,7 @@ import { ResultView } from "./components/result-view";
 import { TranslationSettingsPanel } from "./components/translation-settings-panel";
 import { useJobRunner } from "./hooks/use-job-runner";
 import {
+  RestoredConversationState,
   SidebarListItem,
   useSessionHistory,
 } from "./hooks/use-session-history";
@@ -74,6 +75,8 @@ const CHAT_SHORTCUTS = [
 export default function HomePage() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
+  const [restoredConversation, setRestoredConversation] =
+    useState<RestoredConversationState | null>(null);
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
   const [rewriteFocus, setRewriteFocus] = useState(DEFAULT_REWRITE_FOCUS);
   const [articleProfile, setArticleProfile] = useState<ArticleProfileKey>("standard");
@@ -95,9 +98,14 @@ export default function HomePage() {
   } = useSessionHistory({
     activeContextId,
     query: sidebarQuery,
-    onOpenSession: ({ youtubeUrl: nextUrl, jobResult: nextResult }) => {
+    onOpenSession: ({
+      youtubeUrl: nextUrl,
+      jobResult: nextResult,
+      restoredConversation: restored,
+    }) => {
       setYoutubeUrl(nextUrl);
       setJobResult(nextResult);
+      setRestoredConversation(restored);
       clearJobError();
     },
   });
@@ -112,7 +120,10 @@ export default function HomePage() {
   } = useJobRunner({
     settings,
     youtubeUrl,
-    onJobResult: setJobResult,
+    onJobResult: (result) => {
+      setRestoredConversation(null);
+      setJobResult(result);
+    },
     onJobSuccess: (result) => {
       recordSearchHistory(youtubeUrl, result.video.title || youtubeUrl);
       void loadHistory();
@@ -137,6 +148,7 @@ export default function HomePage() {
   } = useRewriteChat({
     jobResult,
     settings,
+    restoredConversation,
     rewriteFocus: `${rewriteFocus}\n\n文章规格：${ARTICLE_PROFILES[articleProfile].instruction}`,
   });
 
@@ -210,6 +222,7 @@ export default function HomePage() {
   function clearConversation() {
     setYoutubeUrl("");
     setJobResult(null);
+    setRestoredConversation(null);
     setSidebarQuery("");
     clearJobError();
   }
@@ -238,6 +251,7 @@ export default function HomePage() {
     if (jobResult) {
       setJobResult(null);
     }
+    setRestoredConversation(null);
   }
 
   return (

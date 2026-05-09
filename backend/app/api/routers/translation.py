@@ -1,9 +1,8 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.error_mapping import raise_mapped_http_exception
-from app.api.runtime_deps import resolve
-from app.services.translation_service import translate_segments_to_chinese
+from app.api.runtime_deps import get_translate_segments_to_chinese
 from app.youtube import TranslateItemResponse, TranslateRequest, TranslateResponse
 
 
@@ -11,10 +10,13 @@ router = APIRouter()
 
 
 @router.post("/api/translate", response_model=TranslateResponse)
-async def translate_segments(request: TranslateRequest) -> TranslateResponse:
+async def translate_segments(
+    request: TranslateRequest,
+    translate_segments_to_chinese_fn=Depends(get_translate_segments_to_chinese),
+) -> TranslateResponse:
     try:
         translations = await run_in_threadpool(
-            resolve("translate_segments_to_chinese", translate_segments_to_chinese),
+            translate_segments_to_chinese_fn,
             [segment.model_dump() for segment in request.segments],
             translation_config=(
                 request.translation_config.model_dump()

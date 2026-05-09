@@ -1,17 +1,15 @@
 import logging
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 
 from app.api.error_mapping import raise_mapped_http_exception
-from app.api.runtime_deps import resolve
-from app.services.content_chat_service import answer_content_question
+from app.api.runtime_deps import get_answer_content_question, get_run_writer_agent
 from app.services.content_rewrite_service import (
     ContentRewriteEmptyOutputError,
     ContentRewriteProviderError,
 )
 from app.services.session_history_service import append_chat_exchange, record_rewrite_result
-from app.services.writer_agent_service import run_writer_agent
 from app.youtube import ContentChatRequest, ContentChatResponse, ContentRewriteRequest, ContentRewriteResponse
 
 
@@ -20,10 +18,13 @@ router = APIRouter()
 
 
 @router.post("/api/content-chat", response_model=ContentChatResponse)
-async def content_chat(request: ContentChatRequest) -> ContentChatResponse:
+async def content_chat(
+    request: ContentChatRequest,
+    answer_content_question_fn=Depends(get_answer_content_question),
+) -> ContentChatResponse:
     try:
         result = await run_in_threadpool(
-            resolve("answer_content_question", answer_content_question),
+            answer_content_question_fn,
             content_context_id=request.content_context_id,
             video_title=request.video_title,
             transcript_en=request.transcript_en,
@@ -60,7 +61,10 @@ async def content_chat(request: ContentChatRequest) -> ContentChatResponse:
 
 
 @router.post("/api/content-rewrite", response_model=ContentRewriteResponse)
-async def content_rewrite(request: ContentRewriteRequest) -> ContentRewriteResponse:
+async def content_rewrite(
+    request: ContentRewriteRequest,
+    run_writer_agent_fn=Depends(get_run_writer_agent),
+) -> ContentRewriteResponse:
     try:
         rewrite_config = (
             request.translation_config.model_dump()
@@ -68,7 +72,7 @@ async def content_rewrite(request: ContentRewriteRequest) -> ContentRewriteRespo
             else None
         )
         result = await run_in_threadpool(
-            resolve("run_writer_agent", run_writer_agent),
+            run_writer_agent_fn,
             source_text=request.source_text,
             rewrite_focus=request.rewrite_focus,
             rewrite_config=rewrite_config,

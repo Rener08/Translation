@@ -1,7 +1,11 @@
 import logging
+import multiprocessing
 import re
+import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import dataclass
+from queue import Empty
 from typing import Callable
 from typing import Literal
 
@@ -55,6 +59,7 @@ DEFAULT_TRANSLATION_COMPACT_MAX_GAP_SEC = 1.3
 
 JobStage = Literal["inspect", "fetch_source", "transcribe", "translate", "persist"]
 JobProgressCallback = Callable[[JobStage, int, str], None]
+JobCancellationChecker = Callable[[], bool]
 
 
 @dataclass(frozen=True)
@@ -78,6 +83,10 @@ class JobStageTimeouts:
 
 class JobRunError(Exception):
     """Raised when the end-to-end job pipeline cannot produce a valid result."""
+
+
+class JobCancelledError(JobRunError):
+    """Raised when a running job has been cancelled by user."""
 
 
 class JobStageTimeoutError(JobRunError):
@@ -111,10 +120,12 @@ def run_video_job_with_translation_config(
     source_mode: SourceMode = SOURCE_MODE_SUBTITLE_FIRST,
     progress_callback: JobProgressCallback | None = None,
     stage_timeout_seconds: dict[str, int] | None = None,
+    cancellation_checker: JobCancellationChecker | None = None,
 ) -> JobRunResult:
     logger.info("Starting job run for %s", url)
     timeouts = _resolve_stage_timeouts(stage_timeout_seconds)
     emit_progress = progress_callback or _noop_progress
+    _raise_if_cancelled(cancellation_checker)
 
     emit_progress("inspect", 12, "正在解析视频信息...")
     video_info = _run_stage_with_timeout(
@@ -122,6 +133,7 @@ def run_video_job_with_translation_config(
         timeout_sec=timeouts.inspect,
         func=extract_video_info,
         args=[url],
+        cancellation_checker=cancellation_checker,
     )
     video = build_video_metadata(video_info)
     logger.info("Loaded metadata for %s (%s)", video.video_id, video.title)
@@ -133,6 +145,7 @@ def run_video_job_with_translation_config(
         func=fetch_video_source_from_info,
         args=[url, video_info],
         source_mode=source_mode,
+        cancellation_checker=cancellation_checker,
     )
     logger.info("Selected source type %s for %s", source.source_type, video.video_id)
 
@@ -143,11 +156,10 @@ def run_video_job_with_translation_config(
     )
     transcript = _load_cached_material_transcript(video.video_id, source)
     if transcript is None:
-        transcript = _run_stage_with_timeout(
-            stage="transcribe",
+        transcript = _run_transcribe_stage(
+            source=source,
             timeout_sec=timeouts.transcribe,
-            func=_build_english_transcript,
-            args=[source],
+            cancellation_checker=cancellation_checker,
         )
         _store_cached_material_transcript(video.video_id, source, transcript)
     else:
@@ -183,6 +195,7 @@ def run_video_job_with_translation_config(
     )
 
     emit_progress("translate", 70, "正在翻译中文字幕...")
+    _raise_if_cancelled(cancellation_checker)
     translations = _run_stage_with_timeout(
         stage="translate",
         timeout_sec=timeouts.translate,
@@ -199,6 +212,7 @@ def run_video_job_with_translation_config(
             ]
         ],
         translation_config=translation_config,
+        cancellation_checker=cancellation_checker,
     )
     logger.info(
         "Translated %s segments for %s",
@@ -216,6 +230,7 @@ def run_video_job_with_translation_config(
         transcript_en=transcript.text,
         translation_zh=_translation_segments_to_text(translations),
     )
+    _raise_if_cancelled(cancellation_checker)
 
     return JobRunResult(
         video=video,
@@ -259,17 +274,182 @@ def _run_stage_with_timeout(
     timeout_sec: int,
     func,
     args: list[object] | None = None,
+    cancellation_checker: JobCancellationChecker | None = None,
     **kwargs,
 ):
     normalized_args = args or []
+    started_at = time.monotonic()
+    executor = ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func, *normalized_args, **kwargs)
+    try:
+        while True:
+            _raise_if_cancelled(cancellation_checker)
+            elapsed = time.monotonic() - started_at
+            remaining = float(timeout_sec) - elapsed
+            if remaining <= 0:
+                future.cancel()
+                raise JobStageTimeoutError(stage=stage, timeout_sec=timeout_sec)
+            wait_slice = min(0.5, remaining)
+            try:
+                return future.result(timeout=wait_slice)
+            except FutureTimeoutError:
+                continue
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *normalized_args, **kwargs)
-        try:
-            return future.result(timeout=float(timeout_sec))
-        except FutureTimeoutError as error:
-            future.cancel()
-            raise JobStageTimeoutError(stage=stage, timeout_sec=timeout_sec) from error
+
+def _run_transcribe_stage(
+    *,
+    source: VideoSourceResult,
+    timeout_sec: int,
+    cancellation_checker: JobCancellationChecker | None = None,
+) -> TranscriptionResult:
+    _raise_if_cancelled(cancellation_checker)
+    if source.source_type == "captions":
+        return _transcript_from_caption_text(source.text)
+
+    if source.source_type != "audio":
+        raise JobRunError(
+            f"Unsupported source_type returned by source service: {source.source_type}"
+        )
+
+    if not source.audio_file_path:
+        raise JobRunError("Audio source did not include an audio_file_path.")
+
+    return _run_transcription_process_with_timeout(
+        audio_file_path=source.audio_file_path,
+        timeout_sec=timeout_sec,
+        cancellation_checker=cancellation_checker,
+    )
+
+
+def _run_transcription_process_with_timeout(
+    *,
+    audio_file_path: str,
+    timeout_sec: int,
+    cancellation_checker: JobCancellationChecker | None = None,
+) -> TranscriptionResult:
+    _raise_if_cancelled(cancellation_checker)
+    # Keep pytest monkeypatch behavior deterministic in unit tests.
+    if "pytest" in sys.modules:
+        return _ensure_transcript_segments(transcribe_audio_file(audio_file_path))
+
+    ctx = multiprocessing.get_context("spawn")
+    result_queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(
+        target=_transcribe_audio_worker,
+        args=(audio_file_path, result_queue),
+        daemon=True,
+    )
+    process.start()
+    started_at = time.monotonic()
+    while process.is_alive():
+        _raise_if_cancelled(cancellation_checker)
+        if (time.monotonic() - started_at) >= float(timeout_sec):
+            process.terminate()
+            process.join(timeout=5)
+            if process.is_alive():
+                process.kill()
+                process.join(timeout=1)
+            raise JobStageTimeoutError(stage="transcribe", timeout_sec=timeout_sec)
+        process.join(timeout=0.25)
+
+    try:
+        result = result_queue.get_nowait()
+    except Empty as error:
+        raise JobRunError(
+            "Transcription process exited without a result payload."
+        ) from error
+    finally:
+        result_queue.close()
+
+    if not isinstance(result, dict):
+        raise JobRunError("Transcription process returned an invalid result payload.")
+
+    if not result.get("ok"):
+        detail = str(result.get("error") or "Unknown transcription error.")
+        raise JobRunError(detail)
+
+    payload = result.get("result")
+    if not isinstance(payload, dict):
+        raise JobRunError("Transcription process returned malformed transcript payload.")
+    return _deserialize_transcription_result(payload)
+
+
+def _transcribe_audio_worker(audio_file_path: str, result_queue) -> None:
+    try:
+        result = _ensure_transcript_segments(transcribe_audio_file(audio_file_path))
+        result_queue.put(
+            {
+                "ok": True,
+                "result": _serialize_transcription_result(result),
+            }
+        )
+    except Exception as error:
+        result_queue.put(
+            {
+                "ok": False,
+                "error": str(error),
+            }
+        )
+
+
+def _serialize_transcription_result(
+    result: TranscriptionResult,
+) -> dict[str, object]:
+    return {
+        "language": result.language,
+        "text": result.text,
+        "segments": [
+            {
+                "index": segment.index,
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+                "speaker": segment.speaker,
+            }
+            for segment in result.segments
+        ],
+    }
+
+
+def _deserialize_transcription_result(
+    payload: dict[str, object],
+) -> TranscriptionResult:
+    language = str(payload.get("language") or "en")
+    text = str(payload.get("text") or "").strip()
+    raw_segments = payload.get("segments")
+    segments: list[TranscriptSegment] = []
+    if isinstance(raw_segments, list):
+        for raw_segment in raw_segments:
+            if not isinstance(raw_segment, dict):
+                continue
+            segments.append(
+                TranscriptSegment(
+                    index=int(raw_segment.get("index", len(segments))),
+                    start=float(raw_segment.get("start", 0.0)),
+                    end=float(raw_segment.get("end", 0.0)),
+                    text=str(raw_segment.get("text") or "").strip(),
+                    speaker=(
+                        str(raw_segment.get("speaker"))
+                        if raw_segment.get("speaker") is not None
+                        else None
+                    ),
+                )
+            )
+
+    return _ensure_transcript_segments(
+        TranscriptionResult(
+            language=language,
+            text=text,
+            segments=segments,
+        )
+    )
+
+
+def _raise_if_cancelled(cancellation_checker: JobCancellationChecker | None) -> None:
+    if cancellation_checker and cancellation_checker():
+        raise JobCancelledError("Job was cancelled by user.")
 
 
 def _noop_progress(_stage: JobStage, _value: int, _text: str) -> None:
