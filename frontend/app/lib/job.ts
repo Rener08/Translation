@@ -46,40 +46,6 @@ export type JobRunStatusResponse = {
   error?: string | null;
 };
 
-export type ResolvedSpeakerMapping = {
-  speaker_id: string;
-  speaker: string;
-  matched_candidate: string | null;
-  confidence: "high" | "medium" | "low" | "unknown";
-  evidence: string[];
-};
-
-export type ResolvedSpeakerSegment = {
-  index: number;
-  start: number;
-  end: number;
-  text: string;
-  speaker_id: string | null;
-  speaker: string | null;
-};
-
-export type ResolveSpeakersResult = {
-  ok: boolean;
-  video_id: string;
-  title: string;
-  audio_file_path: string;
-  speaker_count: number;
-  candidates: {
-    name: string;
-    confidence: "high" | "medium" | "low";
-    source_fields: string[];
-    role_hints: string[];
-    evidence: string[];
-  }[];
-  speaker_mappings: ResolvedSpeakerMapping[];
-  segments: ResolvedSpeakerSegment[];
-};
-
 export type TranslationProvider =
   | "openai"
   | "deepseek"

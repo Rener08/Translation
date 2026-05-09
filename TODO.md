@@ -18,6 +18,75 @@ Current target loop:
 7. Use chat for follow-up questions or local revisions
 8. Copy or export result
 
+## Web UI Development Guide
+
+This guide is the design contract for the two web pages in this repository.
+The target is a web-first, ChatGPT-like workspace that later becomes the base for the client wrapper.
+
+### Shared layout rules
+
+- Use one left sidebar for history and one central working area.
+- Keep the sidebar and main content visually aligned between the entry page and the result page.
+- Do not add avatars, timestamps, or user info to the history list.
+- Do not duplicate the same task bar or shadow card in the same page.
+- Keep controls flat, compact, and aligned on a single row when they belong to the same action group.
+- Keep the settings entry in the lower-left corner.
+- Keep the history toggle and new-chat action in the same top row of the sidebar.
+- Do not show the raw YouTube URL again after processing starts.
+
+### Page 1: Entry page
+
+This page is the first landing state.
+
+- Left sidebar:
+  - Show only conversation/history entries.
+  - Each history item should be compact and icon-free.
+  - Use the same sidebar shell style as the second page.
+  - The history drawer should expand and collapse with the same toggle button.
+  - The new-chat button should use a simple pencil/compose icon.
+- Main area:
+  - Show the product title only once.
+  - Show one flat URL composer centered in the page.
+  - Show one start button only.
+  - Keep the composer visually simple, like a search bar or Google query bar.
+  - Do not add a second stacked task card, extra subtitle copy, or decorative duplicate panels.
+- Behavior:
+  - Clicking new chat clears the input and closes any open drawer.
+  - Clicking history opens the same sidebar drawer.
+  - Clicking settings opens the settings panel from the lower-left corner.
+
+### Page 2: Result page
+
+This page is the post-run workspace.
+
+- Left sidebar:
+  - Reuse the same sidebar structure as Page 1.
+  - Keep it aligned to the same width and padding as the entry page.
+  - Keep the top-row toggle and new-chat controls in the same placement.
+  - Keep settings in the lower-left corner.
+- Main area:
+  - Use one large central task area for translated content and follow-up discussion.
+  - Translation output and content Q&A should live in the same conversation-style container.
+  - Remove the assistant icon and any redundant helper decorations.
+  - Do not split translation and chat into separate right-side panels.
+  - Copy and export actions should sit near the content header and align with the text block.
+  - The output should read like direct Chinese content, not like a tool dashboard.
+- Behavior:
+  - The result page should feel like a single working document.
+  - The input for follow-up questions should attach to the same pane as the translation result.
+  - The page should not re-show the YouTube URL as a visible content block.
+
+### Acceptance checks
+
+- Page 1 and Page 2 use the same sidebar geometry and spacing.
+- The sidebar toggle and new-chat button do not overlap.
+- No duplicate shadow cards exist in either page.
+- No timestamps, avatars, or user badges are shown in history.
+- No extra subtitle appears under the product title.
+- No secondary right sidebar appears on the result page.
+- Copy and export controls are aligned with the main content header.
+- Translation output and chat content share one main result surface.
+
 ## Done
 
 - [x] Local FastAPI backend for inspect -> fetch source -> transcribe -> translate

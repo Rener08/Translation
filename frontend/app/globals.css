@@ -1360,92 +1360,6 @@ select {
   white-space: pre-wrap;
 }
 
-.speaker-status-card {
-  display: grid;
-  gap: 12px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: rgba(247, 244, 239, 0.72);
-}
-
-.speaker-status-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.speaker-status-title {
-  margin: 4px 0 0;
-  font-size: 14px;
-  line-height: 1.5;
-}
-
-.speaker-chip-list,
-.speaker-segment-list {
-  display: grid;
-  gap: 10px;
-}
-
-.speaker-chip-list {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-}
-
-.speaker-chip-card,
-.speaker-segment-card {
-  display: grid;
-  gap: 6px;
-  padding: 12px 14px;
-  border: 1px solid rgba(163, 144, 118, 0.22);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.64);
-}
-
-.speaker-chip-id,
-.speaker-segment-label,
-.speaker-chip-confidence,
-.speaker-error-text {
-  font-size: 12px;
-}
-
-.speaker-chip-name {
-  font-size: 14px;
-  line-height: 1.4;
-}
-
-.speaker-chip-confidence {
-  width: fit-content;
-  padding: 2px 8px;
-  border-radius: 999px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  background: rgba(184, 170, 149, 0.22);
-}
-
-.speaker-chip-confidence.is-high {
-  background: rgba(107, 140, 91, 0.18);
-}
-
-.speaker-chip-confidence.is-medium,
-.speaker-chip-confidence.is-low {
-  background: rgba(181, 138, 79, 0.18);
-}
-
-.speaker-chip-confidence.is-unknown {
-  background: rgba(120, 120, 120, 0.16);
-}
-
-.speaker-segment-label {
-  color: rgba(56, 45, 29, 0.72);
-  font-weight: 700;
-}
-
-.speaker-error-text {
-  margin: 0;
-  color: #9a4d3a;
-}
-
 .empty-state-card {
   align-content: start;
 }
@@ -1807,26 +1721,6 @@ body::before {
 .dialogue-confidence-dot.is-unknown {
   background: rgba(117, 105, 93, 0.12);
   color: var(--muted);
-}
-
-.speaker-ribbon-placeholder {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 0 0;
-}
-
-.speaker-placeholder-dot {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--sand);
-  box-shadow: 0 0 0 8px rgba(197, 158, 104, 0.12);
-}
-
-.speaker-placeholder-copy,
-.speaker-error-text {
-  margin: 0;
 }
 
 .reading-frame {

@@ -73,7 +73,7 @@ Local generated files created during setup or runtime, not source directories:
 - Backend: FastAPI
 - Runtime: Node.js 20+, Python 3.11
 
-## Installed On This Machine
+## Local Prerequisites
 
 - Python 3.11.9
 - Node.js 20.19.4

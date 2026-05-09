@@ -1,5 +1,19 @@
 import type { Metadata } from "next";
+import { Inter, Noto_Sans_SC } from "next/font/google";
 import "./globals.css";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-sans",
+  display: "swap",
+});
+
+const notoSansSc = Noto_Sans_SC({
+  subsets: ["latin"],
+  variable: "--font-cjk",
+  weight: ["300", "400", "500", "600"],
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "YouTube 翻译助手",
@@ -13,8 +27,10 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body>{children}</body>
+    <html lang="zh-CN">
+      <body className={`${inter.variable} ${notoSansSc.variable}`}>
+        {children}
+      </body>
     </html>
   );
 }
