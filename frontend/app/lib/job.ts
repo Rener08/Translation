@@ -34,7 +34,7 @@ export type JobResult = {
   };
 };
 
-export type JobStatus = "queued" | "running" | "done" | "failed";
+export type JobStatus = "queued" | "running" | "done" | "failed" | "cancelled";
 
 export type JobRunStatusResponse = {
   ok: boolean;
@@ -466,7 +466,7 @@ export async function extractApiErrorMessage(
 
   if (response.status === 502) {
     return normalizeApiErrorMessage(
-      "Upstream video fetch failed while accessing YouTube. If yt-dlp is using browser cookies, fully close Chrome or configure YTDLP_COOKIES_FILE with an exported cookies.txt file.",
+      "Upstream video fetch failed while accessing YouTube. For restricted videos only, use YTDLP_COOKIES_FILE as an advanced fallback.",
     );
   }
 
@@ -517,6 +517,9 @@ export async function waitForJobResult(
       }
       throw new Error(detail);
     }
+    if (data.status === "cancelled") {
+      throw new Error(data.error || "任务已取消。");
+    }
 
     await new Promise((resolve) => window.setTimeout(resolve, 1000));
   }
@@ -532,13 +535,13 @@ export function mapJobStageLabel(stage: string): string {
     return "解析视频";
   }
   if (stage === "fetch_source") {
-    return "提取字幕/音频";
+    return "提取素材";
   }
   if (stage === "transcribe") {
     return "转录";
   }
   if (stage === "translate") {
-    return "翻译";
+    return "翻译整理";
   }
   if (stage === "persist") {
     return "保存结果";
@@ -564,15 +567,15 @@ export function getViewState(
       tone: "running",
       label: "Processing",
       message:
-        "Downloading audio, running local Whisper, and generating bilingual output.",
+        "正在提取素材、转录并生成文章草稿。",
     };
   }
 
   if (jobResult) {
     const sourceMessage =
       jobResult.source_type === "audio"
-        ? "Finished with downloaded audio as the source. Whisper transcription and the Chinese translation are ready."
-        : "Finished with subtitles as the source. The Chinese translation is ready without an audio download.";
+        ? "已使用音频完成转录，文章草稿可继续追改与导出。"
+        : "已使用字幕完成生成，文章草稿可继续追改与导出。";
 
     return {
       tone: "success",
@@ -585,7 +588,7 @@ export function getViewState(
     tone: "idle",
     label: "Ready",
     message:
-      "Paste one YouTube link, add a translation API key if needed, and run the download -> Whisper -> translate pipeline.",
+      "粘贴链接后即可生成中文文章。cookie 仅在受限视频时作为高级兜底。",
   };
 }
 
@@ -595,23 +598,19 @@ export function normalizeApiErrorMessage(message: string): string {
 
   if (lowered.includes("could not copy chrome cookie database")) {
     return (
-      "yt-dlp could not read Chrome cookies. Close all Chrome processes first, " +
-      "or export a cookies.txt file and set YTDLP_COOKIES_FILE in .env."
+      "视频可能受限。若必须走登录态兜底，请先关闭 Chrome，再导出 cookies.txt 并设置 YTDLP_COOKIES_FILE。"
     );
   }
 
   if (lowered.includes("failed to decrypt with dpapi")) {
     return (
-      "yt-dlp could not decrypt browser cookies on this Windows account. " +
-      "Use an exported cookies.txt file and set YTDLP_COOKIES_FILE in .env."
+      "浏览器 cookies 无法解密。仅在受限视频场景下，改用导出的 cookies.txt（YTDLP_COOKIES_FILE）兜底。"
     );
   }
 
   if (lowered.includes("sign in to confirm you're not a bot")) {
     return (
-      "YouTube is asking for a signed-in browser session. Configure " +
-      "YTDLP_COOKIES_FILE with an exported cookies.txt file, or try " +
-      "YTDLP_COOKIES_FROM_BROWSER after fully closing the browser."
+      "该视频触发了 YouTube 登录验证。可继续重试字幕/音频路径；若仍失败，再配置 cookies.txt 作为高级兜底。"
     );
   }
 
@@ -621,9 +620,7 @@ export function normalizeApiErrorMessage(message: string): string {
     lowered.includes("unable to download webpage")
   ) {
     return (
-      "YouTube 返回 429（访问过于频繁/风控拦截）。请稍后重试，或在后端配置可用 cookies：" +
-      "优先设置 YTDLP_COOKIES_FILE（导出的 cookies.txt）；" +
-      "也可尝试 YTDLP_COOKIES_FROM_BROWSER，并确保浏览器已完全关闭后再试。"
+      "YouTube 返回 429（访问过于频繁/风控拦截）。请稍后重试；仅在持续失败时，再配置 cookies.txt 兜底。"
     );
   }
 

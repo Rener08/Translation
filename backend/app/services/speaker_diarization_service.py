@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from importlib import import_module
 from pathlib import Path
+import re
 import subprocess
 from typing import Any
 
@@ -44,6 +45,7 @@ MIN_SHORT_TURN_DURATION = 1.0
 MAX_SPEAKER_COUNT = 8
 MIN_DOMINANT_SPEAKER_DURATION = 12.0
 MERGEABLE_GAP_SECONDS = 0.35
+WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"^[a-zA-Z]:[\\/]")
 
 
 def diarize_audio_file(audio_file_path: str) -> SpeakerDiarizationResult:
@@ -338,7 +340,7 @@ def _pick_replacement_label(
 def _resolve_audio_file_path(audio_file_path: str) -> Path:
     raw_path = Path(audio_file_path)
     allowed_root = (ROOT_DIR / "tmp").resolve()
-    if raw_path.is_absolute():
+    if raw_path.is_absolute() or WINDOWS_ABSOLUTE_PATH_PATTERN.match(str(audio_file_path)):
         resolved = raw_path.resolve()
         if not resolved.is_relative_to(allowed_root):
             raise SpeakerDiarizationRuntimeError(

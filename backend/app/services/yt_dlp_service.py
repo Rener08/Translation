@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config import (
     ROOT_DIR,
+    get_settings,
     get_yt_dlp_auth_args,
     get_yt_dlp_js_runtime_args,
     get_yt_dlp_proxy_args,
@@ -114,14 +115,20 @@ def extract_video_info(url: str) -> dict[str, object]:
         url,
     ]
 
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=float(get_settings().yt_dlp_timeout_sec),
+        )
+    except subprocess.TimeoutExpired as error:
+        raise VideoInspectError(
+            f"yt-dlp inspection timed out after {get_settings().yt_dlp_timeout_sec}s."
+        ) from error
 
     stderr = (completed.stderr or "").strip()
     stdout = (completed.stdout or "").strip()

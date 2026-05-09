@@ -1023,3 +1023,121 @@ def test_jobs_run_endpoint_forwards_source_mode(monkeypatch) -> None:
     job_data = _wait_for_job_result(str(submission["job_id"]))
     assert job_data["status"] == "done"
     assert job_data["result"]["source_type"] == "audio"
+
+
+def test_jobs_cancel_endpoint_marks_job_cancelled(monkeypatch) -> None:
+    def fake_run(
+        url: str,
+        source_mode: str = "subtitle_first",
+        translation_config: dict[str, object] | None = None,
+    ) -> JobRunResult:
+        time.sleep(0.4)
+        return JobRunResult(
+            video=VideoMetadata(
+                video_id="abc123xyz",
+                title="Slow video",
+                duration_sec=10,
+                uploader="Uploader",
+                thumbnail="https://example.com/thumb.jpg",
+                subtitles=[],
+                automatic_captions=[],
+            ),
+            source_type="audio",
+            transcript_en=TranscriptionResult(
+                language="en",
+                text="Audio transcript",
+                segments=[TranscriptSegment(index=0, start=0.0, end=1.0, text="Audio transcript")],
+            ),
+            translation_zh_segments=[
+                TranslationSegment(
+                    index=0,
+                    start=0.0,
+                    end=1.0,
+                    source_text="Audio transcript",
+                    translated_text="音频转录",
+                )
+            ],
+            content_context_id="ctx_demo",
+        )
+
+    monkeypatch.setattr("app.main.run_video_job_with_translation_config", fake_run)
+
+    run_response = client.post(
+        "/api/jobs/run",
+        json={"url": "https://www.youtube.com/watch?v=abc123xyz"},
+    )
+    assert run_response.status_code == 202
+    job_id = str(run_response.json()["job_id"])
+
+    cancel_response = client.post(f"/api/jobs/{job_id}/cancel")
+    assert cancel_response.status_code == 200
+    body = cancel_response.json()
+    assert body["status"] == "cancelled"
+    assert body["error_code"] == "JOB_CANCELLED"
+
+
+def test_run_video_job_reuses_material_transcript_cache(monkeypatch) -> None:
+    transcribe_calls = {"count": 0}
+    cache_store: dict[str, object] = {}
+
+    def fake_extract(url: str) -> dict[str, object]:
+        return {"id": "cache-video-1", "title": "Cache test"}
+
+    def fake_build(payload: dict[str, object]) -> VideoMetadata:
+        return VideoMetadata(
+            video_id="cache-video-1",
+            title="Cache test",
+            duration_sec=10,
+            uploader="Uploader",
+            thumbnail="https://example.com/thumb.jpg",
+            subtitles=[],
+            automatic_captions=[],
+        )
+
+    def fake_source(
+        url: str,
+        payload: dict[str, object],
+        source_mode: str = "subtitle_first",
+    ) -> VideoSourceResult:
+        return VideoSourceResult(source_type="audio", audio_file_path="tmp/cache-audio.webm")
+
+    def fake_transcribe(audio_file_path: str) -> TranscriptionResult:
+        transcribe_calls["count"] += 1
+        return TranscriptionResult(
+            language="en",
+            text="Cached transcript.",
+            segments=[TranscriptSegment(index=0, start=0.0, end=1.0, text="Cached transcript.")],
+        )
+
+    def fake_translate(
+        segments: list[dict[str, object]],
+        translation_config: dict[str, object] | None = None,
+    ) -> list[TranslationSegment]:
+        return [
+            TranslationSegment(
+                index=0,
+                start=0.0,
+                end=1.0,
+                source_text="Cached transcript.",
+                translated_text="缓存转录",
+            )
+        ]
+
+    def fake_load_json_cache(namespace: str, key: str):
+        return cache_store.get(f"{namespace}:{key}")
+
+    def fake_store_json_cache(namespace: str, key: str, payload: object) -> None:
+        cache_store[f"{namespace}:{key}"] = payload
+
+    monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
+    monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
+    monkeypatch.setattr("app.services.job_run_service.fetch_video_source_from_info", fake_source)
+    monkeypatch.setattr("app.services.job_run_service.transcribe_audio_file", fake_transcribe)
+    monkeypatch.setattr("app.services.job_run_service.translate_segments_to_chinese", fake_translate)
+    monkeypatch.setattr("app.services.job_run_service.load_json_cache", fake_load_json_cache)
+    monkeypatch.setattr("app.services.job_run_service.store_json_cache", fake_store_json_cache)
+
+    run_video_job("https://www.youtube.com/watch?v=cache-video-1")
+    run_video_job("https://www.youtube.com/watch?v=cache-video-1")
+
+    assert transcribe_calls["count"] == 1

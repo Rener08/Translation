@@ -10,13 +10,15 @@ It does not assume auth, cloud deployment, mobile, or a generic multi-agent plat
 Current target loop:
 
 1. Input YouTube URL
-2. Inspect video
-3. Fetch captions or audio
-4. Transcribe when needed
-5. Translate to Chinese
-6. Rewrite into Chinese article output
-7. Use chat for follow-up questions or local revisions
-8. Copy or export result
+2. Build `MaterialPackage` from deterministic ingest
+3. Resolve `ArticleSpec`
+4. Run `WriterAgent` (`outline -> draft -> validate -> revise once`)
+5. Continue revision chat
+6. Export article
+
+Contract chain:
+
+`URL -> MaterialPackage -> ArticleSpec -> WriterAgent -> ArticleDraft -> Revision Chat -> Export`
 
 ## Web UI Development Guide
 
@@ -101,8 +103,28 @@ This page is the post-run workspace.
 - [x] README updated to match the current rewrite-first workflow
 - [x] Preserve raw rewrite text separately from rendered Markdown for copy/export/history replay
 - [x] Make session-history writes merge atomically with per-session locking
+- [x] Freeze PyQt desktop client and move it to `archive/desktop-legacy`
+- [x] Make Web the only active product UI
+- [x] Add `docs/PRODUCT_CONTRACT.md` and `docs/ARCHITECTURE.md`
+- [x] Add transcript material cache in job pipeline (`video/source/language` fingerprint)
+- [x] Switch `/api/content-rewrite` internals to single `WriterAgent`
+- [x] Add `POST /api/jobs/{job_id}/cancel`
+- [x] Add `POST /api/provider/test-connection`
+- [x] Add `GET /api/system/export-logs`
 
 ## P0: Next Must-Fix
+
+- [x] Add API authentication hook (`API_AUTH_TOKEN`) and request-level rate limiting
+- [x] Harden session history key normalization to block path traversal
+- [x] Centralize runtime settings with one `get_settings()` entry point
+- [x] Add request_id-aware HTTP middleware and structured request logs
+- [x] Add `/readyz` and `/livez` health endpoints
+- [x] Persist job queue records to SQLite so status survives service restart
+- [ ] Replace thread-only stage timeout with hard-killable process timeout for long-running stages
+- [ ] Move in-memory execution queue to durable worker queue (Redis/Postgres-backed)
+- [ ] Remove API key persistence from frontend localStorage
+- [ ] Tighten production CORS profile and enforce auth in deployment profile
+- [ ] Add user/account layer and per-user quota model before multi-user rollout
 
 - [x] Make rewrite style behavior fully consistent between desktop prompt injection and backend fallback behavior
 - [x] Decide rewrite source of truth:
@@ -190,12 +212,10 @@ This page is the post-run workspace.
 
 ## P2: Frontend Web Path
 
-- [x] Decide whether the web frontend remains:
-  - a dev/debug surface
-  - or a real user-facing interface
-- [x] If kept, align web UI with the desktop rewrite-first workflow
-- [x] Remove old translation-only wording from remaining frontend UI copy
-- [x] Align web result panels with current desktop terminology
+- [x] Web is the only active product UI
+- [x] Remove old translation-only wording from entry and sidebar
+- [x] Reposition cookie hints as advanced fallback only
+- [ ] Promote article draft as the only primary result block (transcript/translation in details)
 
 ## Deferred / Out Of Scope For Now
 
@@ -209,7 +229,8 @@ This page is the post-run workspace.
 
 ## Decisions
 
-- Writing styles are treated as validated skill packages in the desktop app, while backend fallback routing remains the source of truth when no full prompt is provided.
+- Writing styles are treated as validated skill packages in the web app, while backend fallback routing remains the source of truth when no full prompt is provided.
 - Imported prompts are validated before use, not treated as raw unstructured text.
 - Chat history is stored per rewritten article / `content_context_id`, not as a global thread list.
 - Export targets an article package with metadata when the format supports it, while Markdown / TXT can still be body-first exports.
+- Cookie-based YouTube auth is an advanced fallback, not a default input path.

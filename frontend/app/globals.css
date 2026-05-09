@@ -306,6 +306,16 @@ select {
   color: #bf3b2c;
 }
 
+.entry-cancel {
+  border: 1px solid var(--line);
+  background: #fff;
+  color: #333;
+  border-radius: 999px;
+  height: 36px;
+  padding: 0 14px;
+  cursor: pointer;
+}
+
 .result-page {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
@@ -355,6 +365,51 @@ select {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+
+.material-details {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 10px 12px;
+  background: #fcfcfa;
+}
+
+.material-details summary {
+  cursor: pointer;
+  color: #454545;
+  font-size: 13px;
+}
+
+.material-grid {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.material-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+}
+
+.material-card h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #5a5a5a;
+}
+
+.material-card pre {
+  margin: 0;
+  font-family: inherit;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 15px;
+  line-height: 1.6;
+  color: #232323;
+  max-height: 220px;
+  overflow: auto;
 }
 
 .icon-ghost {
@@ -581,5 +636,9 @@ select {
 
   .result-page {
     grid-template-rows: auto auto;
+  }
+
+  .material-grid {
+    grid-template-columns: 1fr;
   }
 }

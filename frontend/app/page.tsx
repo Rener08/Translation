@@ -18,6 +18,22 @@ import { JobResult, TranslationSettings, defaultSettings } from "./lib/job";
 
 const DEFAULT_REWRITE_FOCUS =
   "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。";
+const ARTICLE_PROFILE_STORAGE_KEY = "translation-article-profile";
+const ARTICLE_PROFILES = {
+  brief: {
+    label: "简报",
+    instruction: "输出紧凑版文章，优先提炼关键事实与结论，控制篇幅。",
+  },
+  standard: {
+    label: "标准",
+    instruction: "输出标准深度文章，兼顾事实完整性与可读性。",
+  },
+  deep: {
+    label: "深度",
+    instruction: "输出深度长文，强化背景脉络、过程细节和因果解释。",
+  },
+} as const;
+type ArticleProfileKey = keyof typeof ARTICLE_PROFILES;
 const TRANSLATION_SETTINGS_STORAGE_KEY = "translation-settings";
 const REWRITE_FOCUS_STORAGE_KEY = "translation-rewrite-focus";
 const TRANSLATION_PROVIDER_VALUES = new Set([
@@ -60,6 +76,7 @@ export default function HomePage() {
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
   const [rewriteFocus, setRewriteFocus] = useState(DEFAULT_REWRITE_FOCUS);
+  const [articleProfile, setArticleProfile] = useState<ArticleProfileKey>("standard");
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarQuery, setSidebarQuery] = useState("");
@@ -91,6 +108,7 @@ export default function HomePage() {
     errorMessage,
     clearJobError,
     runJob,
+    cancelJob,
   } = useJobRunner({
     settings,
     youtubeUrl,
@@ -102,6 +120,7 @@ export default function HomePage() {
   });
 
   const {
+    translationText,
     rewriteText,
     rewriteProviderLabel,
     rewriteLoading,
@@ -118,7 +137,7 @@ export default function HomePage() {
   } = useRewriteChat({
     jobResult,
     settings,
-    rewriteFocus,
+    rewriteFocus: `${rewriteFocus}\n\n文章规格：${ARTICLE_PROFILES[articleProfile].instruction}`,
   });
 
   useEffect(() => {
@@ -147,13 +166,21 @@ export default function HomePage() {
           model: typeof parsed.model === "string" ? parsed.model : current.model,
           headersJson:
             typeof parsed.headersJson === "string" ? parsed.headersJson : current.headersJson,
-          apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : current.apiKey,
+          apiKey: "",
         }));
       }
 
       const rawRewriteFocus = window.localStorage.getItem(REWRITE_FOCUS_STORAGE_KEY);
       if (rawRewriteFocus) {
         setRewriteFocus(rawRewriteFocus);
+      }
+      const rawArticleProfile = window.localStorage.getItem(ARTICLE_PROFILE_STORAGE_KEY);
+      if (
+        rawArticleProfile === "brief" ||
+        rawArticleProfile === "standard" ||
+        rawArticleProfile === "deep"
+      ) {
+        setArticleProfile(rawArticleProfile);
       }
     } catch {
       // Ignore malformed local storage.
@@ -168,13 +195,17 @@ export default function HomePage() {
     try {
       window.localStorage.setItem(
         TRANSLATION_SETTINGS_STORAGE_KEY,
-        JSON.stringify(settings),
+        JSON.stringify({
+          ...settings,
+          apiKey: "",
+        }),
       );
       window.localStorage.setItem(REWRITE_FOCUS_STORAGE_KEY, rewriteFocus);
+      window.localStorage.setItem(ARTICLE_PROFILE_STORAGE_KEY, articleProfile);
     } catch {
       // Ignore storage failures.
     }
-  }, [hasLoadedPreferences, rewriteFocus, settings]);
+  }, [articleProfile, hasLoadedPreferences, rewriteFocus, settings]);
 
   function clearConversation() {
     setYoutubeUrl("");
@@ -237,10 +268,13 @@ export default function HomePage() {
               errorMessage={errorMessage}
               onChangeUrl={setYoutubeUrl}
               onSubmit={runJob}
+              onCancel={cancelJob}
             />
           ) : (
             <ResultView
               jobResult={jobResult}
+              articleProfileLabel={ARTICLE_PROFILES[articleProfile].label}
+              translationText={translationText}
               rewriteProviderLabel={rewriteProviderLabel}
               rewriteLoading={rewriteLoading}
               rewriteError={rewriteError}
@@ -290,6 +324,8 @@ export default function HomePage() {
               rewriteFocus={rewriteFocus}
               onChange={setSettings}
               onRewriteFocusChange={setRewriteFocus}
+              articleProfile={articleProfile}
+              onArticleProfileChange={setArticleProfile}
             />
           </section>
         </div>

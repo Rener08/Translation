@@ -13,15 +13,19 @@ import {
 type TranslationSettingsPanelProps = {
   settings: TranslationSettings;
   rewriteFocus: string;
+  articleProfile: "brief" | "standard" | "deep";
   onChange: (nextSettings: TranslationSettings) => void;
   onRewriteFocusChange: (nextValue: string) => void;
+  onArticleProfileChange: (nextValue: "brief" | "standard" | "deep") => void;
 };
 
 export function TranslationSettingsPanel({
   settings,
   rewriteFocus,
+  articleProfile,
   onChange,
   onRewriteFocusChange,
+  onArticleProfileChange,
 }: TranslationSettingsPanelProps) {
   const modelPlaceholder = getProviderModelPlaceholder(settings.provider);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
@@ -101,7 +105,7 @@ export function TranslationSettingsPanel({
   return (
     <section className="settings-panel">
       <div className="settings-header">
-        <h2 className="settings-heading">翻译设置</h2>
+        <h2 className="settings-heading">生成设置</h2>
       </div>
 
       <div className="settings-grid compact-settings-grid">
@@ -122,7 +126,7 @@ export function TranslationSettingsPanel({
         </label>
 
         <label className="settings-field">
-          <span>翻译服务</span>
+          <span>模型服务</span>
           <select
             value={settings.provider}
             onChange={(event) => {
@@ -220,6 +224,22 @@ export function TranslationSettingsPanel({
             <option value="保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。">
               默认内置风格（晚点通用）
             </option>
+          </select>
+        </label>
+
+        <label className="settings-field">
+          <span>文章规格</span>
+          <select
+            value={articleProfile}
+            onChange={(event) =>
+              onArticleProfileChange(
+                event.target.value as "brief" | "standard" | "deep",
+              )
+            }
+          >
+            <option value="brief">简报</option>
+            <option value="standard">标准</option>
+            <option value="deep">深度</option>
           </select>
         </label>
       </div>

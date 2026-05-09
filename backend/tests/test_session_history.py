@@ -174,7 +174,7 @@ def test_content_rewrite_updates_session_history(monkeypatch, tmp_path: Path) ->
         translation_zh="大家好。\n欢迎回来。",
     )
 
-    def fake_rewrite_content(**kwargs):
+    def fake_run_writer_agent(**kwargs):
         assert kwargs["source_text"] == "大家好。\n欢迎回来。"
         assert kwargs["rewrite_focus"] == "请改成更口语化。"
         return type(
@@ -187,7 +187,7 @@ def test_content_rewrite_updates_session_history(monkeypatch, tmp_path: Path) ->
             },
         )()
 
-    monkeypatch.setattr("app.main.rewrite_content", fake_rewrite_content)
+    monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
 
     response = client.post(
         "/api/content-rewrite",
@@ -356,3 +356,23 @@ def test_session_history_writes_merge_atomically(monkeypatch, tmp_path: Path) ->
     assert len(detail["chat_turns"]) == 2
     assert detail["chat_turns"][0]["role"] == "user"
     assert detail["chat_turns"][1]["role"] == "assistant"
+
+
+def test_session_history_rejects_unsafe_context_id(monkeypatch, tmp_path: Path) -> None:
+    _use_tmp_cache(monkeypatch, tmp_path)
+    upsert_job_session(
+        content_context_id="../../etc/passwd",
+        video_id="vid",
+        video_url="https://www.youtube.com/watch?v=abc123xyz",
+        video_title="unsafe",
+        source_mode="subtitle_first",
+        source_type="captions",
+        translation_provider="deepseek",
+        translation_model="deepseek-chat",
+        transcript_en_text="text",
+        transcript_en_segments=[],
+        translation_zh_text="文本",
+        translation_zh_segments=[],
+    )
+    history_dir = persistent_cache_service.CACHE_ROOT_DIR / "session_history"
+    assert not history_dir.exists() or not any(history_dir.glob("*.json"))

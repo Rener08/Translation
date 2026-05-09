@@ -39,7 +39,7 @@ export function AppSidebar({
     <aside className={`app-sidebar ${collapsed ? "is-collapsed" : ""}`}>
       <div className="sidebar-top">
         <div className="sidebar-title-row">
-          {!collapsed ? <h1 className="sidebar-title">YouTube 翻译助手</h1> : null}
+          {!collapsed ? <h1 className="sidebar-title">链接素材写作台</h1> : null}
           <div className="sidebar-actions">
             {collapsed ? (
               <button

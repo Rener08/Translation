@@ -239,7 +239,7 @@ class JobRunResponse(BaseModel):
 class JobRunStatusResponse(BaseModel):
     ok: bool
     job_id: str
-    status: Literal["queued", "running", "done", "failed"]
+    status: Literal["queued", "running", "done", "failed", "cancelled"]
     progress_value: int = 0
     progress_text: str | None = None
     stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None
@@ -263,6 +263,23 @@ class ProviderModelsResponse(BaseModel):
     ok: bool
     provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
     models: list[str]
+
+
+class ProviderTestConnectionRequest(BaseModel):
+    provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+
+class ProviderTestConnectionResponse(BaseModel):
+    ok: bool
+    provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
+    reachable: bool
+    selected_model: str | None = None
+    discovered_models: list[str] = Field(default_factory=list)
+    message: str
 
 
 class ContentChatMessageRequest(BaseModel):
@@ -397,6 +414,12 @@ class SessionHistoryDetailResponse(BaseModel):
 class SessionHistoryListResponse(BaseModel):
     ok: bool
     items: list[SessionHistorySummaryResponse] = Field(default_factory=list)
+
+
+class SystemExportLogsResponse(BaseModel):
+    ok: bool
+    archive_path: str
+    included_files: list[str] = Field(default_factory=list)
 
 
 class ParsedYouTubeUrl(BaseModel):

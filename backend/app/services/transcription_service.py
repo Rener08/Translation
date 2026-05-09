@@ -2,6 +2,7 @@ import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+import re
 
 from faster_whisper import WhisperModel
 
@@ -11,6 +12,8 @@ from app.services.persistent_cache_service import (
     load_json_cache,
     store_json_cache,
 )
+
+WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"^[a-zA-Z]:[\\/]")
 
 class TranscriptionError(Exception):
     """Base error for transcription failures."""
@@ -99,7 +102,7 @@ def transcribe_audio_file(audio_file_path: str) -> TranscriptionResult:
 
 def _resolve_audio_file_path(audio_file_path: str) -> Path:
     raw_path = Path(audio_file_path)
-    if raw_path.is_absolute():
+    if raw_path.is_absolute() or WINDOWS_ABSOLUTE_PATH_PATTERN.match(str(audio_file_path)):
         allowed_root = (ROOT_DIR / "tmp").resolve()
         resolved = raw_path.resolve()
         if not resolved.is_relative_to(allowed_root):

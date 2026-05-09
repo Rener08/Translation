@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import re
 from typing import Any
 
 from app.services import persistent_cache_service
@@ -21,6 +22,7 @@ except ImportError:  # pragma: no cover - platform dependent
 
 
 SESSION_HISTORY_NAMESPACE = "session_history"
+SAFE_CONTEXT_ID_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{8,128}$")
 
 
 def upsert_job_session(
@@ -295,7 +297,12 @@ def _preview_text(value: object | None, limit: int = 120) -> str:
 
 
 def _normalize_key(value: object | None) -> str:
-    return _normalize_text(value)
+    normalized = _normalize_text(value)
+    if not normalized:
+        return ""
+    if not SAFE_CONTEXT_ID_PATTERN.fullmatch(normalized):
+        return ""
+    return normalized
 
 
 def _normalize_optional_text(value: object | None) -> str | None:

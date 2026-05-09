@@ -9,9 +9,9 @@ from app.services.content_chat_service import answer_content_question
 from app.services.content_rewrite_service import (
     ContentRewriteEmptyOutputError,
     ContentRewriteProviderError,
-    rewrite_content,
 )
 from app.services.session_history_service import append_chat_exchange, record_rewrite_result
+from app.services.writer_agent_service import run_writer_agent
 from app.youtube import ContentChatRequest, ContentChatResponse, ContentRewriteRequest, ContentRewriteResponse
 
 
@@ -68,7 +68,7 @@ async def content_rewrite(request: ContentRewriteRequest) -> ContentRewriteRespo
             else None
         )
         result = await run_in_threadpool(
-            resolve("rewrite_content", rewrite_content),
+            resolve("run_writer_agent", run_writer_agent),
             source_text=request.source_text,
             rewrite_focus=request.rewrite_focus,
             rewrite_config=rewrite_config,

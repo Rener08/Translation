@@ -7,7 +7,12 @@ from fastapi import APIRouter, HTTPException, status
 from app.api.error_mapping import classify_service_error
 from app.api.runtime_deps import resolve
 from app.config import get_env_str
-from app.services.job_queue_service import get_job_record, submit_background_job, update_job_progress
+from app.services.job_queue_service import (
+    get_job_record,
+    request_job_cancel,
+    submit_background_job,
+    update_job_progress,
+)
 from app.services.job_run_service import run_video_job_with_translation_config
 from app.services.session_history_service import upsert_job_session
 from app.youtube import (
@@ -72,6 +77,18 @@ async def get_job_status(job_id: str) -> JobRunStatusResponse:
     if record is None:
         raise HTTPException(status_code=404, detail="Job not found")
 
+    return _job_record_to_response(record)
+
+
+@router.post(
+    "/api/jobs/{job_id}/cancel",
+    response_model=JobRunStatusResponse,
+    response_model_exclude_none=True,
+)
+async def cancel_job(job_id: str) -> JobRunStatusResponse:
+    record = request_job_cancel(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail="Job not found")
     return _job_record_to_response(record)
 
 

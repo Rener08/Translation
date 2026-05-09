@@ -8,6 +8,8 @@ These files define the current product and should stay current with the code:
 
 - [`README.md`](../README.md) - product overview, setup, workflow, and current scope
 - [`TODO.md`](../TODO.md) - active backlog and prioritized follow-up work
+- [`docs/PRODUCT_CONTRACT.md`](PRODUCT_CONTRACT.md) - product mainline contract and scope boundaries
+- [`docs/ARCHITECTURE.md`](ARCHITECTURE.md) - Web/FastAPI architecture and pipeline split
 - [`docs/writing_style_prompt_format.md`](writing_style_prompt_format.md) - format rules for imported writing prompts and styles
 
 Current source-of-truth notes:
@@ -15,11 +17,11 @@ Current source-of-truth notes:
 - Rewrite output is stored separately from the rendered Markdown so copy/export/history replay preserve the original structure.
 - Session history writes are atomic per `content_context_id` so rewrite and chat updates do not overwrite each other.
 - Imported writing prompts are validated before rewrite so empty bodies and broken placeholders fail fast.
-- The desktop app now ships with a stable built-in default writing style and post-generation rewrite quality checks.
-- The desktop app includes a runtime log viewer for backend and desktop logs.
+- The writing layer now runs through a single `WriterAgent` flow: spec -> outline -> draft -> quality check -> revise once.
+- Web is the only active product UI; PyQt desktop client is archived as legacy.
 - The app persists inspect metadata, source mode, transcript text, and translated text for local debugging.
-- The desktop UI normalizes user-facing errors for cookie, auth, upstream disconnect, and Whisper failures.
-- The web frontend is treated as a rewrite-aligned dev/debug surface, not the primary user-facing path.
+- Cookie guidance is advanced fallback only for restricted videos.
+- The web frontend is the primary user-facing workflow.
 
 ## 2. Runtime Prompt And Style Assets
 

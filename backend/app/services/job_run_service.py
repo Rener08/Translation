@@ -8,6 +8,11 @@ from typing import Literal
 from app.config import get_env_str
 from app.services.content_context_service import create_content_context
 from app.services.participant_candidate_service import extract_candidate_people
+from app.services.persistent_cache_service import (
+    build_cache_key,
+    load_json_cache,
+    store_json_cache,
+)
 from app.services.speaker_diarization_service import (
     SpeakerDiarizationConfigurationError,
     SpeakerDiarizationRuntimeError,
@@ -136,12 +141,21 @@ def run_video_job_with_translation_config(
         45,
         "检测到字幕，正在整理文本..." if source.source_type == "captions" else "正在进行本地转录...",
     )
-    transcript = _run_stage_with_timeout(
-        stage="transcribe",
-        timeout_sec=timeouts.transcribe,
-        func=_build_english_transcript,
-        args=[source],
-    )
+    transcript = _load_cached_material_transcript(video.video_id, source)
+    if transcript is None:
+        transcript = _run_stage_with_timeout(
+            stage="transcribe",
+            timeout_sec=timeouts.transcribe,
+            func=_build_english_transcript,
+            args=[source],
+        )
+        _store_cached_material_transcript(video.video_id, source, transcript)
+    else:
+        logger.info(
+            "Using cached transcript material for %s (source=%s)",
+            video.video_id,
+            source.source_type,
+        )
     if _job_run_should_attach_speakers():
         transcript = _maybe_attach_speakers(
             video=video, source=source, transcript=transcript
@@ -548,3 +562,88 @@ def _translation_segments_to_text(segments: list[TranslationSegment]) -> str:
         for segment in segments
         if segment.translated_text.strip()
     ).strip()
+
+
+def _load_cached_material_transcript(
+    video_id: str,
+    source: VideoSourceResult,
+) -> TranscriptionResult | None:
+    key = _material_transcript_cache_key(video_id, source)
+    payload = load_json_cache("material_transcript", key)
+    if not isinstance(payload, dict):
+        return None
+
+    language = str(payload.get("language") or "").strip()
+    text = str(payload.get("text") or "").strip()
+    raw_segments = payload.get("segments")
+    if not language or not text or not isinstance(raw_segments, list):
+        return None
+
+    segments: list[TranscriptSegment] = []
+    for item in raw_segments:
+        if not isinstance(item, dict):
+            return None
+        segment_text = str(item.get("text") or "").strip()
+        if not segment_text:
+            continue
+        segments.append(
+            TranscriptSegment(
+                index=int(item.get("index") or 0),
+                start=_safe_float(item.get("start")),
+                end=_safe_float(item.get("end")),
+                text=segment_text,
+                speaker=str(item.get("speaker") or "").strip() or None,
+            )
+        )
+
+    if not segments:
+        return None
+    return TranscriptionResult(language=language, text=text, segments=segments)
+
+
+def _store_cached_material_transcript(
+    video_id: str,
+    source: VideoSourceResult,
+    transcript: TranscriptionResult,
+) -> None:
+    key = _material_transcript_cache_key(video_id, source)
+    store_json_cache(
+        "material_transcript",
+        key,
+        {
+            "language": transcript.language,
+            "text": transcript.text,
+            "segments": [
+                {
+                    "index": segment.index,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                    "speaker": segment.speaker,
+                }
+                for segment in transcript.segments
+            ],
+        },
+    )
+
+
+def _material_transcript_cache_key(video_id: str, source: VideoSourceResult) -> str:
+    source_fingerprint = {
+        "source_type": source.source_type,
+        "language": source.language or "",
+        "text": source.text or "",
+        "audio_file_path": source.audio_file_path or "",
+    }
+    return build_cache_key(
+        {
+            "video_id": video_id,
+            "source": source_fingerprint,
+        }
+    )
+
+
+def _safe_float(value: object) -> float:
+    try:
+        return float(str(value))
+    except (TypeError, ValueError):
+        return 0.0

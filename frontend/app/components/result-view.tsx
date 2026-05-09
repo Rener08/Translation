@@ -14,6 +14,8 @@ type ChatShortcut = {
 
 type ResultViewProps = {
   jobResult: JobResult;
+  articleProfileLabel: string;
+  translationText: string;
   rewriteProviderLabel: string;
   rewriteLoading: boolean;
   rewriteError: string;
@@ -33,6 +35,8 @@ type ResultViewProps = {
 
 export function ResultView({
   jobResult,
+  articleProfileLabel,
+  translationText,
   rewriteProviderLabel,
   rewriteLoading,
   rewriteError,
@@ -53,7 +57,8 @@ export function ResultView({
     <section className="result-page">
       <div className="result-scroll">
         <article className="result-article">
-          <h2>{jobResult.video.title || "中文改写结果"}</h2>
+          <h2>{jobResult.video.title || "Article Draft"}</h2>
+          <p className="result-provider">文章规格：{articleProfileLabel}</p>
           {rewriteProviderLabel ? (
             <p className="result-provider">{rewriteProviderLabel}</p>
           ) : null}
@@ -61,8 +66,8 @@ export function ResultView({
           <div className="result-body">
             <pre>
               {rewriteLoading
-                ? "正在生成改写内容..."
-                : rewriteText || "改写结果为空，请尝试再次改写。"}
+                ? "正在生成文章草稿..."
+                : rewriteText || "文章草稿为空，请尝试再次生成。"}
             </pre>
           </div>
           <div className="result-actions-inline">
@@ -89,6 +94,20 @@ export function ResultView({
           </div>
         </article>
 
+        <details className="material-details">
+          <summary>素材详情（转录/翻译）</summary>
+          <div className="material-grid">
+            <article className="material-card">
+              <h3>英文转录</h3>
+              <pre>{jobResult.transcript_en.text || "无转录文本。"}</pre>
+            </article>
+            <article className="material-card">
+              <h3>中文翻译</h3>
+              <pre>{translationText || "无翻译文本。"}</pre>
+            </article>
+          </div>
+        </details>
+
         <section className="chat-thread">
           {messages.map((message, index) => (
             <article
@@ -99,7 +118,7 @@ export function ResultView({
             </article>
           ))}
           {messages.length === 0 ? (
-            <p className="chat-placeholder">有问题，尽管问</p>
+            <p className="chat-placeholder">可继续追改、补充、压缩或重写结构。</p>
           ) : null}
         </section>
       </div>

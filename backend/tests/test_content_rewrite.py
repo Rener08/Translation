@@ -108,7 +108,7 @@ def test_rewrite_content_injects_transcript_into_full_skill_prompt(monkeypatch) 
 
 
 def test_content_rewrite_endpoint_returns_rewritten_text(monkeypatch) -> None:
-    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+    def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
         assert kwargs["source_text"] == "这里是需要改写的原文。"
         assert kwargs["rewrite_focus"] == "请改成更口语化。"
         assert kwargs["rewrite_config"] == {
@@ -124,7 +124,7 @@ def test_content_rewrite_endpoint_returns_rewritten_text(monkeypatch) -> None:
             model="deepseek-chat",
         )
 
-    monkeypatch.setattr("app.main.rewrite_content", fake_rewrite_content)
+    monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
 
     response = client.post(
         "/api/content-rewrite",
@@ -206,10 +206,10 @@ def test_content_rewrite_endpoint_rejects_full_prompt_without_transcript_placeho
 
 
 def test_content_rewrite_endpoint_surfaces_provider_failure(monkeypatch) -> None:
-    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+    def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
         raise ContentRewriteProviderError("deepseek rewrite request failed: timed out")
 
-    monkeypatch.setattr("app.main.rewrite_content", fake_rewrite_content)
+    monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
 
     response = client.post(
         "/api/content-rewrite",
@@ -226,12 +226,12 @@ def test_content_rewrite_endpoint_surfaces_provider_failure(monkeypatch) -> None
 
 
 def test_content_rewrite_endpoint_surfaces_empty_rewrite_output(monkeypatch) -> None:
-    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+    def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
         raise ContentRewriteEmptyOutputError(
             "内容改写失败：deepseek 返回了空内容。请重试，或更换模型/提示词。"
         )
 
-    monkeypatch.setattr("app.main.rewrite_content", fake_rewrite_content)
+    monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
 
     response = client.post(
         "/api/content-rewrite",

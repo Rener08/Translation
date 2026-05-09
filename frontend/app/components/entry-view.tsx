@@ -8,6 +8,7 @@ type EntryViewProps = {
   errorMessage: string;
   onChangeUrl: (value: string) => void;
   onSubmit: () => void;
+  onCancel: () => Promise<void>;
 };
 
 export function EntryView({
@@ -17,10 +18,11 @@ export function EntryView({
   errorMessage,
   onChangeUrl,
   onSubmit,
+  onCancel,
 }: EntryViewProps) {
   return (
     <section className="entry-page">
-      <h2 className="entry-title">YouTube 翻译助手</h2>
+      <h2 className="entry-title">链接素材 → 中文文章</h2>
       <form
         className="entry-composer"
         onSubmit={(event) => {
@@ -30,7 +32,7 @@ export function EntryView({
       >
         <input
           type="url"
-          placeholder="粘贴 YouTube 视频链接，例如：https://www.youtube.com/watch?v=..."
+          placeholder="粘贴 YouTube 链接，生成中文文章草稿"
           value={youtubeUrl}
           onChange={(event) => onChangeUrl(event.target.value)}
         />
@@ -43,6 +45,15 @@ export function EntryView({
           {isRunning ? "…" : <ArrowUp size={17} strokeWidth={2.2} />}
         </button>
       </form>
+      {isRunning ? (
+        <button
+          type="button"
+          className="entry-cancel"
+          onClick={() => void onCancel()}
+        >
+          取消当前任务
+        </button>
+      ) : null}
       {jobStatusMessage ? <p className="entry-status">{jobStatusMessage}</p> : null}
       {errorMessage ? <p className="entry-error">{errorMessage}</p> : null}
     </section>

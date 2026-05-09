@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routers import content, health, history, jobs, provider_models, transcription, translation, video
+from app.api.routers import content, health, history, jobs, provider_models, system, transcription, translation, video
 
 
 def build_api_router() -> APIRouter:
@@ -13,4 +13,5 @@ def build_api_router() -> APIRouter:
     router.include_router(content.router)
     router.include_router(history.router)
     router.include_router(jobs.router)
+    router.include_router(system.router)
     return router

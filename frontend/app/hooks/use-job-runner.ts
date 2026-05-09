@@ -28,6 +28,7 @@ export function useJobRunner({
   onJobSuccess,
 }: UseJobRunnerParams) {
   const [isRunning, setIsRunning] = useState(false);
+  const [activeJobId, setActiveJobId] = useState("");
   const [jobStatusMessage, setJobStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
 
@@ -69,6 +70,7 @@ export function useJobRunner({
       if (!jobId) {
         throw new Error("Job submission did not return a job id.");
       }
+      setActiveJobId(jobId);
       if (submission.progress_text) {
         setJobStatusMessage(submission.progress_text);
       }
@@ -109,12 +111,28 @@ export function useJobRunner({
       }
       setJobStatusMessage("");
     } finally {
+      setActiveJobId("");
       setIsRunning(false);
     }
   }
 
   function clearJobError() {
     setErrorMessage("");
+  }
+
+  async function cancelJob() {
+    const jobId = activeJobId.trim();
+    if (!jobId) {
+      return;
+    }
+    try {
+      await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
+        method: "POST",
+      });
+      setJobStatusMessage("任务已取消");
+    } catch {
+      setJobStatusMessage("取消请求已发送，请等待状态刷新。");
+    }
   }
 
   return {
@@ -124,5 +142,6 @@ export function useJobRunner({
     setErrorMessage,
     clearJobError,
     runJob,
+    cancelJob,
   };
 }

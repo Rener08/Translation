@@ -19,6 +19,7 @@ def isolate_job_queue_state() -> None:
     job_queue_service._JOB_EXECUTOR_MAX_WORKERS = None
     with job_queue_service._JOB_RECORDS_LOCK:
         job_queue_service._JOB_RECORDS.clear()
+    job_queue_service.reset_job_queue_state_for_tests()
 
     yield
 
@@ -29,6 +30,7 @@ def isolate_job_queue_state() -> None:
     job_queue_service._JOB_EXECUTOR_MAX_WORKERS = None
     with job_queue_service._JOB_RECORDS_LOCK:
         job_queue_service._JOB_RECORDS.clear()
+    job_queue_service.reset_job_queue_state_for_tests()
 
 
 def _timestamp(hours_ago: float) -> str:
@@ -40,7 +42,7 @@ def _make_record(job_id: str, status: JobStatus, hours_ago: float) -> JobRecord:
     return JobRecord(
         job_id=job_id,
         status=status,
-        progress_value=100 if status in {"done", "failed"} else 0,
+        progress_value=100 if status in {"done", "failed", "cancelled"} else 0,
         progress_text=status,
         result={"job_id": job_id} if status == "done" else None,
         error="boom" if status == "failed" else None,
@@ -176,3 +178,31 @@ def test_submit_background_job_honors_global_worker_limit(
     second_release.set()
     assert _wait_for_record_status(first_job_id, "done").result == {"job_id": "job-one"}
     assert _wait_for_record_status(second_job_id, "done").result == {"job_id": "job-two"}
+
+
+def test_request_job_cancel_marks_job_cancelled() -> None:
+    started = threading.Event()
+    release = threading.Event()
+
+    def target(job_id: str) -> None:
+        started.set()
+        assert release.wait(timeout=2)
+        job_queue_service.update_job_progress(
+            job_id,
+            status="done",
+            progress_value=100,
+            progress_text="完成",
+        )
+
+    job_id = job_queue_service.submit_background_job(target, job_id="cancel-me")
+    assert started.wait(timeout=2)
+
+    cancelled = job_queue_service.request_job_cancel(job_id)
+    assert cancelled is not None
+    assert cancelled.status == "cancelled"
+    assert cancelled.cancel_requested is True
+    assert job_queue_service.is_job_cancel_requested(job_id) is True
+
+    release.set()
+    final = _wait_for_record_status(job_id, "cancelled")
+    assert final.error_code == "JOB_CANCELLED"
