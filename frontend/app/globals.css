@@ -163,7 +163,7 @@ select {
   border-radius: 10px;
   color: #2a2a2a;
   cursor: pointer;
-  font-size: 25px;
+  font-size: 14px;
   line-height: 1.35;
   white-space: nowrap;
   overflow: hidden;
@@ -272,7 +272,7 @@ select {
   background: transparent;
   outline: none;
   color: #202020;
-  font-size: 32px;
+  font-size: 18px;
 }
 
 .entry-composer input::placeholder {

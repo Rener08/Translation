@@ -24,7 +24,6 @@ async def export_logs() -> SystemExportLogsResponse:
     source_files = [
         settings.backend_log_file,
         settings.frontend_log_file,
-        settings.desktop_log_file,
     ]
 
     included: list[str] = []
