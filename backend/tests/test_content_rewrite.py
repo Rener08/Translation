@@ -59,7 +59,7 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
     assert "Authorization" not in captured["headers"]
     assert captured["json"]["model"] == "qwen3.5:4b"
     assert captured["json"]["messages"][0]["role"] == "system"
-    assert "中文内容改写助手" in captured["json"]["messages"][0]["content"]
+    assert "中文第三视角改写助手" in captured["json"]["messages"][0]["content"]
     assert captured["json"]["messages"][1]["role"] == "system"
     assert "【场景模板】" in captured["json"]["messages"][1]["content"]
     assert "场景模板片段" in captured["json"]["messages"][1]["content"]
@@ -72,6 +72,8 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
     assert "质量流程片段" in captured["json"]["messages"][1]["content"]
     assert captured["json"]["messages"][2]["role"] == "user"
     assert "改写目标：改成更有节奏感。" in captured["json"]["messages"][2]["content"]
+    assert "第三视角成文" in captured["json"]["messages"][2]["content"]
+    assert "不使用我/我们/咱们/本人作为叙述主语" in captured["json"]["messages"][2]["content"]
     assert "原始内容第一句。原始内容第二句。" in captured["json"]["messages"][2]["content"]
     assert result == ContentRewriteResult(
         rewritten_text="这是改写后的内容。",
@@ -133,6 +135,7 @@ def test_rewrite_content_speech_verbatim_includes_detail_ledger(
         source_text="原始内容第一句。原始内容第二句。",
         rewrite_focus="保留原作者说话节奏。",
         detail_ledger="- 数字: 3\n- 专有名词: NASA",
+        rewrite_style="speech_verbatim",
         rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
     )
 

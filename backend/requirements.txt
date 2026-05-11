@@ -2,6 +2,7 @@ fastapi==0.116.1
 uvicorn[standard]==0.35.0
 pytest==8.4.1
 httpx==0.28.1
+socksio==1.0.0
 python-dotenv==1.2.2
 yt-dlp==2026.03.03
 faster-whisper==1.2.1

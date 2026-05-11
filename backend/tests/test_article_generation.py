@@ -76,6 +76,8 @@ def test_build_article_generation_prompt_includes_spec_constraints() -> None:
     assert "总字数目标：5000 字" in prompt
     assert "段落数量：3-4 段" in prompt
     assert "每段字数：建议约 1667 字" in prompt
+    assert "第三视角中文科技文章" in prompt
+    assert "不使用“我 / 我们 / 咱们 / 本人”等第一人称自述" in prompt
     assert "English source text." in prompt
     assert "清洗后的中文内容。" in prompt
 
@@ -131,3 +133,27 @@ def test_build_article_rewrite_prompt_includes_validation_issues() -> None:
     assert "Total chars 500 outside allowed range 1200-1800." in prompt
     assert "Section count 1 outside allowed range 2-3." in prompt
     assert "原文很短。" in prompt
+
+
+def test_build_article_rewrite_prompt_includes_style_issues() -> None:
+    spec = resolve_article_spec("a" * 2000)
+    validation = ArticleValidationResult(
+        ok=True,
+        total_chars=1500,
+        section_count=3,
+        section_chars=(500, 500, 500),
+        issues=(),
+    )
+
+    prompt = build_article_rewrite_prompt(
+        previous_article="我认为这件事很重要。",
+        spec=spec,
+        validation=validation,
+        style_issues=(
+            "文章仍包含第一人称自述，请改成第三视角叙述，不要使用我/我们/咱们作为叙述主语。",
+        ),
+    )
+
+    assert "第三视角问题" in prompt
+    assert "第一人称自述" in prompt
+    assert "我认为这件事很重要。" in prompt

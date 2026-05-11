@@ -82,6 +82,23 @@ DETAIL_LEDGER_STRONG_ENTITY_TOKENS = {
     "lmstudio",
     "lm studio",
 }
+ARTICLE_LONGFORM_FIRST_PERSON_MARKERS: tuple[str, ...] = (
+    "我想",
+    "我会",
+    "我认为",
+    "我觉得",
+    "我来",
+    "我要",
+    "我先",
+    "我正在",
+    "我们",
+    "我们先",
+    "我们会",
+    "我们认为",
+    "我们觉得",
+    "咱们",
+    "本人",
+)
 
 
 @dataclass(frozen=True)
@@ -266,15 +283,17 @@ class WriterAgent:
             rewrite_config=rewrite_config,
         )
         validation = validate_generated_article(draft_result.rewritten_text, spec)
+        style_issues = _detect_article_longform_style_issues(draft_result.rewritten_text)
         final_result = draft_result
         revised_once = False
 
-        if not validation.ok:
+        if not validation.ok or style_issues:
             revised_once = True
             revise_prompt = build_article_rewrite_prompt(
                 previous_article=draft_result.rewritten_text,
                 spec=spec,
                 validation=validation,
+                style_issues=style_issues,
             )
             final_result = rewrite_content(
                 source_text=normalized_source,
@@ -283,6 +302,7 @@ class WriterAgent:
                 rewrite_config=rewrite_config,
             )
             validation = validate_generated_article(final_result.rewritten_text, spec)
+            style_issues = _detect_article_longform_style_issues(final_result.rewritten_text)
 
         return WriterRunReport(
             rewritten_text=final_result.rewritten_text,
@@ -352,6 +372,19 @@ def _build_soft_validation(text: str) -> ArticleValidationResult:
         section_chars=section_chars,
         issues=(),
     )
+
+
+def _detect_article_longform_style_issues(text: str) -> tuple[str, ...]:
+    normalized_text = _strip_quoted_spans(text)
+    if not normalized_text.strip():
+        return ()
+
+    if any(marker in normalized_text for marker in ARTICLE_LONGFORM_FIRST_PERSON_MARKERS):
+        return (
+            "文章仍包含第一人称自述，请改成第三视角叙述，不要使用我/我们/咱们作为叙述主语。",
+        )
+
+    return ()
 
 
 def _build_detail_ledger(source_text: str) -> DetailLedger:
@@ -688,3 +721,12 @@ def _extract_outline(text: str) -> tuple[str, ...]:
     if cleaned:
         return cleaned[:8]
     return ("按素材主线组织段落",)
+
+
+def _strip_quoted_spans(text: str) -> str:
+    normalized = text or ""
+    normalized = re.sub(r'"[^"]*"', " ", normalized)
+    normalized = re.sub(r"“[^”]*”", " ", normalized)
+    normalized = re.sub(r"『[^』]*』", " ", normalized)
+    normalized = re.sub(r"「[^」]*」", " ", normalized)
+    return normalized

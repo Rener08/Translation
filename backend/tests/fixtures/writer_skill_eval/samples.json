@@ -1,0 +1,58 @@
+{
+  "samples": [
+    {
+      "sample_id": "nasa_force_talent",
+      "title": "NASA chief Jared Isaacman announces NASA Force to recruit top talent",
+      "url": "https://www.youtube.com/watch?v=g3MrwUluW4w",
+      "category": "organization",
+      "baseline_prompt_file": "01_big_company_war.md",
+      "transcript_path": "transcripts/nasa_force_talent.txt",
+      "notes": "组织重排与人才招募"
+    },
+    {
+      "sample_id": "steve_jobs_stanford",
+      "title": "Steve Jobs' 2005 Stanford Commencement Address",
+      "url": "https://www.youtube.com/watch?v=UF8uR6Z6KLc",
+      "category": "speech",
+      "baseline_prompt_file": "09_interview_transcript_sync.md",
+      "transcript_path": "transcripts/steve_jobs_stanford.txt",
+      "notes": "典型演讲稿，适合检查第三视角和顺序"
+    },
+    {
+      "sample_id": "tim_cook_mit",
+      "title": "Tim Cook's MIT Commencement Address 2017",
+      "url": "https://www.youtube.com/watch?v=ckjkz8zuMMs",
+      "category": "speech",
+      "baseline_prompt_file": "09_interview_transcript_sync.md",
+      "transcript_path": "transcripts/tim_cook_mit.txt",
+      "notes": "带数字和判断的毕业演讲"
+    },
+    {
+      "sample_id": "sam_altman_ted2025",
+      "title": "OpenAI’s Sam Altman Talks ChatGPT, AI Agents and Superintelligence — Live at TED2025",
+      "url": "https://www.youtube.com/watch?v=5MWT_doo68k",
+      "category": "interview",
+      "baseline_prompt_file": "06_infra_cloud_model_platform.md",
+      "transcript_path": "transcripts/sam_altman_ted2025.txt",
+      "notes": "AI 平台和超级智能相关访谈"
+    },
+    {
+      "sample_id": "jensen_huang_gtc",
+      "title": "NVIDIA GTC Washington, D.C. Keynote with CEO Jensen Huang",
+      "url": "https://www.youtube.com/watch?v=lQHK61IDFH4",
+      "category": "keynote",
+      "baseline_prompt_file": "06_infra_cloud_model_platform.md",
+      "transcript_path": "transcripts/jensen_huang_gtc.txt",
+      "notes": "长文本边界样本，适合看压缩和顺序"
+    },
+    {
+      "sample_id": "vision_pro_review",
+      "title": "Using Apple Vision Pro: What It’s Actually Like!",
+      "url": "https://www.youtube.com/watch?v=dtp6b76pMak",
+      "category": "product_review",
+      "baseline_prompt_file": "03_product_review.md",
+      "transcript_path": "transcripts/vision_pro_review.txt",
+      "notes": "产品/实测类样本"
+    }
+  ]
+}

@@ -104,6 +104,15 @@ export const REWRITE_STYLE = {
 export type RewriteStyle =
   (typeof REWRITE_STYLE)[keyof typeof REWRITE_STYLE];
 
+export const DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS =
+  "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。";
+
+export const DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS =
+  "改写成第三视角的中文文章，保留原意和事实，不删关键信息，不使用第一人称自述。";
+
+export const LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS =
+  "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。";
+
 export const SOURCE_MODE = {
   SUBTITLE_FIRST: "subtitle_first",
   FORCE_AUDIO: "force_audio",

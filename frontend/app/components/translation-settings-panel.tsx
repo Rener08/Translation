@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 
 import {
+  DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS,
+  DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
   apiFetch,
   extractApiErrorMessage,
   getProviderModelPlaceholder,
@@ -216,18 +218,32 @@ export function TranslationSettingsPanel({
           <span>改写模式</span>
           <select
             value={settings.rewriteStyle}
-            onChange={(event) =>
+            onChange={(event) => {
+              const nextRewriteStyle = event.target.value as TranslationSettings["rewriteStyle"];
+              const shouldResetRewriteFocus =
+                rewriteFocus.trim().length === 0 ||
+                rewriteFocus === DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS ||
+                rewriteFocus === DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS;
+
               onChange({
                 ...settings,
-                rewriteStyle: event.target.value as TranslationSettings["rewriteStyle"],
-              })
-            }
+                rewriteStyle: nextRewriteStyle,
+              });
+
+              if (shouldResetRewriteFocus) {
+                onRewriteFocusChange(
+                  nextRewriteStyle === REWRITE_STYLE.ARTICLE_LONGFORM
+                    ? DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS
+                    : DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
+                );
+              }
+            }}
           >
             <option value={REWRITE_STYLE.SPEECH_VERBATIM}>
               保留原口吻（推荐）
             </option>
             <option value={REWRITE_STYLE.ARTICLE_LONGFORM}>
-              公众号长文（晚点风格）
+              第三视角文章（晚点风格）
             </option>
           </select>
         </label>
@@ -240,6 +256,9 @@ export function TranslationSettingsPanel({
           >
             <option value="保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。">
               默认（保留口吻）
+            </option>
+            <option value="改写成第三视角的中文文章，保留原意和事实，不删关键信息，不使用第一人称自述。">
+              默认（第三视角文章）
             </option>
             <option value="保留访谈对话感：不合并不同人的发言段落，保留口语化表达和反问、停顿、追问，避免改写成总结。">
               偏访谈整理

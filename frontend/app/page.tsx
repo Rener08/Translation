@@ -13,13 +13,14 @@ import {
   useSessionHistory,
 } from "./hooks/use-session-history";
 import { useRewriteChat } from "./hooks/use-rewrite-chat";
-import { JobResult, TranslationSettings, defaultSettings } from "./lib/job";
-
-
-const DEFAULT_REWRITE_FOCUS =
-  "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。";
-const LEGACY_LONGFORM_REWRITE_FOCUS =
-  "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。";
+import {
+  DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS,
+  DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
+  LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS,
+  JobResult,
+  TranslationSettings,
+  defaultSettings,
+} from "./lib/job";
 const TRANSLATION_SETTINGS_STORAGE_KEY = "translation-settings";
 const REWRITE_FOCUS_STORAGE_KEY = "translation-rewrite-focus";
 const TRANSLATION_PROVIDER_VALUES = new Set([
@@ -62,7 +63,9 @@ export default function HomePage() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
-  const [rewriteFocus, setRewriteFocus] = useState(DEFAULT_REWRITE_FOCUS);
+  const [rewriteFocus, setRewriteFocus] = useState(
+    DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
+  );
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarQuery, setSidebarQuery] = useState("");
@@ -166,11 +169,22 @@ export default function HomePage() {
       const rawRewriteFocus = window.localStorage.getItem(REWRITE_FOCUS_STORAGE_KEY);
       if (rawRewriteFocus) {
         const normalizedRewriteFocus =
-          rawRewriteFocus === LEGACY_LONGFORM_REWRITE_FOCUS &&
-          nextRewriteStyle !== "article_longform"
-            ? DEFAULT_REWRITE_FOCUS
-            : rawRewriteFocus;
+          nextRewriteStyle === "article_longform"
+            ? rawRewriteFocus === DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS ||
+              rawRewriteFocus === LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS
+              ? DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS
+              : rawRewriteFocus
+            : rawRewriteFocus === DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS ||
+                rawRewriteFocus === LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS
+              ? DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS
+              : rawRewriteFocus;
         setRewriteFocus(normalizedRewriteFocus);
+      } else {
+        setRewriteFocus(
+          nextRewriteStyle === "article_longform"
+            ? DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS
+            : DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
+        );
       }
     } catch {
       // Ignore malformed local storage.

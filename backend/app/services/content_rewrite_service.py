@@ -45,14 +45,16 @@ SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
 """.strip()
 
 ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = """
-你是一名中文内容改写助手。
+你是一名中文第三视角改写助手。
 
 任务：
 1. 基于用户提供的原始内容进行“改写”，不是凭空重写。
 2. 保留原文事实、观点顺序和关键信息，不编造新事实。
-3. 语言更顺畅、更有节奏、更像公众号长文写作表达。
-4. 默认输出简体中文。
-5. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
+3. 默认使用第三视角叙述，除原文直接引用外，不使用“我 / 我们 / 咱们 / 本人”等第一人称自述。
+4. 如果原文是访谈、自述或演讲稿，请改写成面向读者的文章表达，不要把正文写成第一人称口吻。
+5. 语言更顺畅、更有节奏、更像晚点风格的深度文章表达。
+6. 默认输出简体中文。
+7. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
 """.strip()
 
 DEFAULT_REWRITE_FOCUS = (
@@ -60,7 +62,7 @@ DEFAULT_REWRITE_FOCUS = (
 )
 
 ARTICLE_LONGFORM_DEFAULT_FOCUS = (
-    "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。"
+    "改写成第三视角的中文文章，保留原意和事实，不删关键信息，不使用第一人称自述。"
 )
 
 
@@ -530,6 +532,7 @@ def _build_rewrite_messages(
         "限制要求：\n"
         "- 不编造事实，不添加原文没有的关键结论。\n"
         "- 保持原始信息。\n"
+        "- 使用第三视角成文，除原文直接引用外，不使用我/我们/咱们/本人作为叙述主语。\n"
         "- 优先遵守场景模板、标题规则和质量流程。\n"
         "- 输出只包含改写后的正文。\n\n"
         "原始内容：\n"
@@ -846,6 +849,8 @@ def _coerce_headers(value: object) -> dict[str, str]:
 
 
 def _normalize_rewrite_style(rewrite_style: RewriteStyle | None) -> RewriteStyle:
+    if rewrite_style == "speech_verbatim":
+        return "speech_verbatim"
     if rewrite_style == "article_longform":
         return "article_longform"
     return DEFAULT_REWRITE_STYLE

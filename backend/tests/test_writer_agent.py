@@ -276,3 +276,60 @@ def test_writer_agent_speech_verbatim_does_not_patch_for_missing_turn_phrase(
     assert report.draft.revised_once is False
     assert report.detail_coverage_issues == ()
     assert report.rewrite_style == "speech_verbatim"
+
+
+def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            assert kwargs["rewrite_style"] == "article_longform"
+            return ContentRewriteResult(
+                rewritten_text="- 第一部分\n- 第二部分\n- 第三部分",
+                provider="ollama",
+                model="qwen3.5:4b",
+            )
+
+        if len(calls) == 2:
+            assert kwargs["rewrite_style"] == "article_longform"
+            return ContentRewriteResult(
+                rewritten_text=(
+                    "我认为这件事很重要。" + ("甲" * 450) + "\n\n"
+                    "我们先看第一点。" + ("乙" * 450) + "\n\n"
+                    "我再强调一次。" + ("丙" * 450)
+                ),
+                provider="ollama",
+                model="qwen3.5:4b",
+            )
+
+        assert kwargs["rewrite_style"] == "article_longform"
+        assert "第三视角问题" in str(kwargs["rewrite_focus"])
+        return ContentRewriteResult(
+            rewritten_text=(
+                "这件事很重要。" + ("甲" * 450) + "\n\n"
+                "首先看第一点。" + ("乙" * 450) + "\n\n"
+                "这里需要再强调一次。" + ("丙" * 450)
+            ),
+            provider="ollama",
+            model="qwen3.5:4b",
+        )
+
+    monkeypatch.setattr(
+        "app.services.writer_agent_service.rewrite_content",
+        fake_rewrite_content,
+    )
+
+    report = WriterAgent().run(
+        material=MaterialPackage(source_text="a" * 2400),
+        rewrite_focus="改写成结构清晰的中文文章。",
+        rewrite_style="article_longform",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+    )
+
+    assert len(calls) == 3
+    assert report.draft.revised_once is True
+    assert report.draft.validation.ok is True
+    assert report.rewrite_style == "article_longform"

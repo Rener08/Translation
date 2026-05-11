@@ -27,6 +27,8 @@ npm install
 - Backend full suite: `cd backend && ./.venv/bin/python -m pytest`
 - Backend MVP regressions (queue + jobs):  
   `./.venv/bin/python -m pytest tests/test_job_queue_service.py tests/test_jobs_run.py`
+- Writer skill eval report:  
+  `python3 scripts/evaluate_writer_skill.py --manifest backend/tests/fixtures/writer_skill_eval/samples.json`
 - Frontend: `cd frontend && npm run build`
 
 If you change the desktop launcher or startup scripts, please also verify the

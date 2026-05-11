@@ -225,6 +225,15 @@ This page is the post-run workspace.
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) section **MVP manual smoke checklist**.
 
+## Writing Skill Evaluation
+
+- [x] Add a fixed sample set and CLI evaluation harness for:
+  - `speech_verbatim`
+  - `article_longform`
+  - `{{transcript}}` full-prompt baseline
+- [x] Emit JSON + Markdown reports with detail coverage, ordering, third-person, compression, and AI-slop signals
+- [ ] Use the report to decide whether to shrink `lastpost-skill` or keep the current prompt routing structure
+
 ## Deferred / Out Of Scope For Now
 
 - [ ] Auth and user accounts
