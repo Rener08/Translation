@@ -11,14 +11,16 @@ Current target loop:
 
 1. Input YouTube URL
 2. Build `MaterialPackage` from deterministic ingest
-3. Resolve `ArticleSpec`
-4. Run `WriterAgent` (`outline -> draft -> validate -> revise once`)
+3. Run `WriterAgent` in the user's selected `rewrite_style`:
+   - default `speech_verbatim`: `DetailLedger -> draft -> coverage check -> single patch for missing hard items`
+   - explicit `article_longform`: legacy `resolve ArticleSpec -> outline -> draft -> validate -> revise once`
+4. Surface remaining gaps as `detail_coverage_issues` for an optional "patch again" action
 5. Continue revision chat
 6. Export article
 
 Contract chain:
 
-`URL -> MaterialPackage -> ArticleSpec -> WriterAgent -> ArticleDraft -> Revision Chat -> Export`
+`URL -> MaterialPackage -> WriterAgent (rewrite_style) -> ArticleDraft -> Revision Chat -> Export`
 
 ## Web UI Development Guide
 
@@ -246,3 +248,4 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) section **MVP manual smoke checklist**.
 - Chat history is stored per rewritten article / `content_context_id`, not as a global thread list.
 - Export targets an article package with metadata when the format supports it, while Markdown / TXT can still be body-first exports.
 - Cookie-based YouTube auth is an advanced fallback, not a default input path.
+- `WriterAgent` is a single-agent writing pipeline, not a multi-agent framework. `speech_verbatim` is the default mode and uses a `DetailLedger`-driven coverage loop instead of length validation; `article_longform` is the only mode that still uses `ArticleSpec` and the outline/draft/validate/revise loop. The lastpost-skill reference templates only feed `article_longform`.

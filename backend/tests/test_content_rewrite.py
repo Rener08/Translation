@@ -51,6 +51,7 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
     result = rewrite_content(
         source_text="原始内容第一句。原始内容第二句。",
         rewrite_focus="改成更有节奏感。",
+        rewrite_style="article_longform",
         rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
     )
 
@@ -74,6 +75,74 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
     assert "原始内容第一句。原始内容第二句。" in captured["json"]["messages"][2]["content"]
     assert result == ContentRewriteResult(
         rewritten_text="这是改写后的内容。",
+        provider="ollama",
+        model="qwen3.5:4b",
+    )
+
+
+def test_rewrite_content_defaults_to_speech_verbatim_without_references(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_post(*args, **kwargs):
+        captured["json"] = kwargs["json"]
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", "http://127.0.0.1:11434/api/chat"),
+            json={"message": {"content": "这是口吻整理后的内容。"}},
+        )
+
+    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+
+    result = rewrite_content(
+        source_text="原始内容第一句。原始内容第二句。",
+        rewrite_focus="保留原作者说话节奏。",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+    )
+
+    assert captured["json"]["messages"][0]["role"] == "system"
+    assert "口吻整理助手" in captured["json"]["messages"][0]["content"]
+    assert len(captured["json"]["messages"]) == 2
+    assert "晚点题材路由" not in captured["json"]["messages"][0]["content"]
+    assert "【参考来源】" not in captured["json"]["messages"][1]["content"]
+    assert "不要总结化" in captured["json"]["messages"][1]["content"]
+    assert result == ContentRewriteResult(
+        rewritten_text="这是口吻整理后的内容。",
+        provider="ollama",
+        model="qwen3.5:4b",
+    )
+
+
+def test_rewrite_content_speech_verbatim_includes_detail_ledger(
+    monkeypatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_post(*args, **kwargs):
+        captured["json"] = kwargs["json"]
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", "http://127.0.0.1:11434/api/chat"),
+            json={"message": {"content": "这是口吻整理后的内容。"}},
+        )
+
+    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+
+    result = rewrite_content(
+        source_text="原始内容第一句。原始内容第二句。",
+        rewrite_focus="保留原作者说话节奏。",
+        detail_ledger="- 数字: 3\n- 专有名词: NASA",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+    )
+
+    assert captured["json"]["messages"][0]["role"] == "system"
+    assert len(captured["json"]["messages"]) == 2
+    assert "【细节清单（优先保留）】" in captured["json"]["messages"][1]["content"]
+    assert "- 数字: 3" in captured["json"]["messages"][1]["content"]
+    assert "- 专有名词: NASA" in captured["json"]["messages"][1]["content"]
+    assert result == ContentRewriteResult(
+        rewritten_text="这是口吻整理后的内容。",
         provider="ollama",
         model="qwen3.5:4b",
     )
@@ -111,6 +180,7 @@ def test_content_rewrite_endpoint_returns_rewritten_text(monkeypatch) -> None:
     def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
         assert kwargs["source_text"] == "这里是需要改写的原文。"
         assert kwargs["rewrite_focus"] == "请改成更口语化。"
+        assert kwargs["rewrite_style"] == "speech_verbatim"
         assert kwargs["rewrite_config"] == {
             "provider": "deepseek",
             "api_key": None,
@@ -145,7 +215,56 @@ def test_content_rewrite_endpoint_returns_rewritten_text(monkeypatch) -> None:
         "model": "deepseek-chat",
         "rewritten_text": "这是改写后的版本。",
         "quality_issues": [],
+        "detail_coverage_issues": [],
     }
+
+
+def test_content_rewrite_endpoint_returns_detail_coverage_issues(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
+        return ContentRewriteResult(
+            rewritten_text="改写后的正文。",
+            provider="deepseek",
+            model="deepseek-chat",
+            quality_issues=("段落重复",),
+            detail_coverage_issues=("缺失细节：数字 3", "缺失细节：专有名词 NASA"),
+        )
+
+    def fake_record_rewrite_result(**kwargs) -> None:
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
+    monkeypatch.setattr(
+        "app.api.routers.content.record_rewrite_result",
+        fake_record_rewrite_result,
+    )
+
+    response = client.post(
+        "/api/content-rewrite",
+        json={
+            "source_text": "原文",
+            "rewrite_focus": "改写",
+            "content_context_id": "ctx-detail-coverage",
+            "translation_config": {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["detail_coverage_issues"] == [
+        "缺失细节：数字 3",
+        "缺失细节：专有名词 NASA",
+    ]
+    assert body["quality_issues"] == ["段落重复"]
+    assert captured["rewrite_detail_coverage_issues"] == [
+        "缺失细节：数字 3",
+        "缺失细节：专有名词 NASA",
+    ]
+    assert captured["rewrite_quality_issues"] == ["段落重复"]
 
 
 def test_content_rewrite_endpoint_rejects_empty_source_text() -> None:
@@ -340,6 +459,7 @@ def test_rewrite_content_attaches_quality_issues(monkeypatch) -> None:
     result = rewrite_content(
         source_text="原始内容。",
         rewrite_focus="请改写为更顺畅的中文文章。",
+        rewrite_style="article_longform",
         rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
     )
 

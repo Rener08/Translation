@@ -75,6 +75,7 @@ async def content_rewrite(
             run_writer_agent_fn,
             source_text=request.source_text,
             rewrite_focus=request.rewrite_focus,
+            rewrite_style=request.rewrite_style,
             rewrite_config=rewrite_config,
         )
     except ContentRewriteEmptyOutputError as error:
@@ -86,9 +87,11 @@ async def content_rewrite(
     except Exception as error:
         raise_mapped_http_exception(error)
 
+    quality_issues = list(getattr(result, "quality_issues", ()) or [])
+    detail_coverage_issues = list(getattr(result, "detail_coverage_issues", ()) or [])
+
     if request.content_context_id:
         try:
-            quality_issues = list(getattr(result, "quality_issues", ()) or [])
             await run_in_threadpool(
                 record_rewrite_result,
                 content_context_id=request.content_context_id,
@@ -96,6 +99,7 @@ async def content_rewrite(
                 rewrite_source_text=request.source_text,
                 rewritten_text=result.rewritten_text,
                 rewrite_quality_issues=quality_issues,
+                rewrite_detail_coverage_issues=detail_coverage_issues,
                 rewrite_provider=result.provider,
                 rewrite_model=result.model,
             )
@@ -110,5 +114,6 @@ async def content_rewrite(
         provider=result.provider,
         model=result.model,
         rewritten_text=result.rewritten_text,
-        quality_issues=list(getattr(result, "quality_issues", ()) or []),
+        quality_issues=quality_issues,
+        detail_coverage_issues=detail_coverage_issues,
     )

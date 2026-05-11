@@ -96,6 +96,14 @@ export type TranslationProvider =
   | "lmstudio"
   | "ollama";
 
+export const REWRITE_STYLE = {
+  SPEECH_VERBATIM: "speech_verbatim",
+  ARTICLE_LONGFORM: "article_longform",
+} as const;
+
+export type RewriteStyle =
+  (typeof REWRITE_STYLE)[keyof typeof REWRITE_STYLE];
+
 export const SOURCE_MODE = {
   SUBTITLE_FIRST: "subtitle_first",
   FORCE_AUDIO: "force_audio",
@@ -110,6 +118,7 @@ export type TranslationSettings = {
   baseUrl: string;
   model: string;
   headersJson: string;
+  rewriteStyle: RewriteStyle;
 };
 
 export type TranslationConfigPayload = {
@@ -133,6 +142,7 @@ export type ContentRewriteResponse = {
   model: string;
   rewritten_text: string;
   quality_issues?: string[];
+  detail_coverage_issues?: string[];
 };
 
 const configuredApiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").trim();
@@ -206,6 +216,7 @@ export const defaultSettings: TranslationSettings = {
   baseUrl: "",
   model: getProviderDefaultModel(defaultTranslationProvider),
   headersJson: "",
+  rewriteStyle: REWRITE_STYLE.SPEECH_VERBATIM,
 };
 
 function normalizeApiBase(url: string): string {

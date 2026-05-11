@@ -6,7 +6,9 @@ Translation is a **link/source to Chinese article** workbench.
 
 Primary product path:
 
-`URL -> MaterialPackage -> ArticleSpec -> WriterAgent -> ArticleDraft -> Revision Chat -> Export`
+`URL -> MaterialPackage -> WriterAgent (speech_verbatim) -> ArticleDraft -> Revision Chat -> Export`
+
+The default writing mode is `speech_verbatim`: it pins extracted facts (numbers, dates, names, quotes, turn/conclusion phrases) into a `DetailLedger`, generates the draft once, then runs a single coverage-driven patch when hard items are missing. The legacy `article_longform` mode (uses `ArticleSpec` length budgets and outline/draft/revise) is only used when the user explicitly selects it.
 
 ## Hard Boundaries
 

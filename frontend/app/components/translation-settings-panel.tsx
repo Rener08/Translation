@@ -4,6 +4,7 @@ import {
   apiFetch,
   extractApiErrorMessage,
   getProviderModelPlaceholder,
+  REWRITE_STYLE,
   normalizeTranslationModel,
   parseHeadersJson,
   type TranslationProvider,
@@ -13,19 +14,15 @@ import {
 type TranslationSettingsPanelProps = {
   settings: TranslationSettings;
   rewriteFocus: string;
-  articleProfile: "brief" | "standard" | "deep";
   onChange: (nextSettings: TranslationSettings) => void;
   onRewriteFocusChange: (nextValue: string) => void;
-  onArticleProfileChange: (nextValue: "brief" | "standard" | "deep") => void;
 };
 
 export function TranslationSettingsPanel({
   settings,
   rewriteFocus,
-  articleProfile,
   onChange,
   onRewriteFocusChange,
-  onArticleProfileChange,
 }: TranslationSettingsPanelProps) {
   const modelPlaceholder = getProviderModelPlaceholder(settings.provider);
   const [modelOptions, setModelOptions] = useState<string[]>([]);
@@ -105,7 +102,7 @@ export function TranslationSettingsPanel({
   return (
     <section className="settings-panel">
       <div className="settings-header">
-        <h2 className="settings-heading">生成设置</h2>
+        <h2 className="settings-heading">翻译设置</h2>
       </div>
 
       <div className="settings-grid compact-settings-grid">
@@ -126,7 +123,7 @@ export function TranslationSettingsPanel({
         </label>
 
         <label className="settings-field">
-          <span>模型服务</span>
+          <span>翻译服务</span>
           <select
             value={settings.provider}
             onChange={(event) => {
@@ -216,30 +213,40 @@ export function TranslationSettingsPanel({
         </label>
 
         <label className="settings-field">
-          <span>写作风格</span>
+          <span>改写模式</span>
           <select
-            value={rewriteFocus}
-            onChange={(event) => onRewriteFocusChange(event.target.value)}
+            value={settings.rewriteStyle}
+            onChange={(event) =>
+              onChange({
+                ...settings,
+                rewriteStyle: event.target.value as TranslationSettings["rewriteStyle"],
+              })
+            }
           >
-            <option value="保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。">
-              默认内置风格（晚点通用）
+            <option value={REWRITE_STYLE.SPEECH_VERBATIM}>
+              保留原口吻（推荐）
+            </option>
+            <option value={REWRITE_STYLE.ARTICLE_LONGFORM}>
+              公众号长文（晚点风格）
             </option>
           </select>
         </label>
 
         <label className="settings-field">
-          <span>文章规格</span>
+          <span>细化提示</span>
           <select
-            value={articleProfile}
-            onChange={(event) =>
-              onArticleProfileChange(
-                event.target.value as "brief" | "standard" | "deep",
-              )
-            }
+            value={rewriteFocus}
+            onChange={(event) => onRewriteFocusChange(event.target.value)}
           >
-            <option value="brief">简报</option>
-            <option value="standard">标准</option>
-            <option value="deep">深度</option>
+            <option value="保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。">
+              默认（保留口吻）
+            </option>
+            <option value="保留访谈对话感：不合并不同人的发言段落，保留口语化表达和反问、停顿、追问，避免改写成总结。">
+              偏访谈整理
+            </option>
+            <option value="保留演讲稿节奏：保留段内推进感和强调句，可适当合并语气重复，但保留例子、数字和强结论。">
+              偏演讲稿
+            </option>
           </select>
         </label>
       </div>

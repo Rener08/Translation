@@ -74,6 +74,9 @@ def upsert_job_session(
         payload["rewrite_quality_issues"] = _normalize_text_list(
             payload.get("rewrite_quality_issues")
         )
+        payload["rewrite_detail_coverage_issues"] = _normalize_text_list(
+            payload.get("rewrite_detail_coverage_issues")
+        )
         payload["rewrite_provider"] = _normalize_optional_text(payload.get("rewrite_provider"))
         payload["rewrite_model"] = _normalize_optional_text(payload.get("rewrite_model"))
         payload["chat_turns"] = _normalize_chat_turns(payload.get("chat_turns"))
@@ -90,6 +93,7 @@ def record_rewrite_result(
     rewrite_source_text: str,
     rewritten_text: str,
     rewrite_quality_issues: list[str] | None = None,
+    rewrite_detail_coverage_issues: list[str] | None = None,
     rewrite_provider: str,
     rewrite_model: str,
 ) -> None:
@@ -107,6 +111,9 @@ def record_rewrite_result(
         payload["rewrite_source_text"] = rewrite_source_text.strip()
         payload["rewritten_text"] = rewritten_text.strip()
         payload["rewrite_quality_issues"] = _normalize_text_list(rewrite_quality_issues)
+        payload["rewrite_detail_coverage_issues"] = _normalize_text_list(
+            rewrite_detail_coverage_issues
+        )
         payload["rewrite_provider"] = _normalize_optional_text(rewrite_provider)
         payload["rewrite_model"] = _normalize_optional_text(rewrite_model)
         payload["chat_turns"] = _normalize_chat_turns(payload.get("chat_turns"))
@@ -232,6 +239,9 @@ def _normalize_session_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["rewritten_text"] = _normalize_text(normalized.get("rewritten_text"))
     normalized["rewrite_quality_issues"] = _normalize_text_list(
         normalized.get("rewrite_quality_issues")
+    )
+    normalized["rewrite_detail_coverage_issues"] = _normalize_text_list(
+        normalized.get("rewrite_detail_coverage_issues")
     )
     normalized["rewrite_provider"] = _normalize_optional_text(
         normalized.get("rewrite_provider")

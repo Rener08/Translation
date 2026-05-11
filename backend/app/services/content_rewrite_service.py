@@ -28,8 +28,23 @@ SUPPORTED_REWRITE_PROVIDERS = {"openai", "deepseek", "lmstudio", "ollama"}
 MAX_REWRITE_REQUEST_ATTEMPTS = 3
 REFERENCE_FILE_CHAR_BUDGET = 8000
 DEFAULT_LASTPOST_SKILL_DIR = Path.home() / ".hermes" / "skills" / "creative" / "lastpost-skill"
+RewriteStyle = Literal["speech_verbatim", "article_longform"]
 
-REWRITE_ASSISTANT_INSTRUCTIONS = """
+DEFAULT_REWRITE_STYLE: RewriteStyle = "speech_verbatim"
+
+SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
+你是一名中文口吻整理助手。
+
+任务：
+1. 基于用户提供的原始内容进行整理，不要凭空重写。
+2. 保留原作者的说话节奏、语气、观点顺序和关键信息，不编造新事实。
+3. 优先保留问答节奏、口头表达、停顿感和语气词，只做轻度润色和断句整理。
+4. 默认输出简体中文。
+5. 不要总结化重写，不要改成公众号长文，不要加入标题前缀或分析过程。
+6. 只输出整理后的正文。
+""".strip()
+
+ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = """
 你是一名中文内容改写助手。
 
 任务：
@@ -41,6 +56,10 @@ REWRITE_ASSISTANT_INSTRUCTIONS = """
 """.strip()
 
 DEFAULT_REWRITE_FOCUS = (
+    "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。"
+)
+
+ARTICLE_LONGFORM_DEFAULT_FOCUS = (
     "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。"
 )
 
@@ -80,6 +99,7 @@ class ContentRewriteResult:
     provider: Literal["openai", "deepseek", "lmstudio", "ollama"]
     model: str
     quality_issues: tuple[str, ...] = ()
+    detail_coverage_issues: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -340,14 +360,20 @@ def rewrite_content(
     *,
     source_text: str,
     rewrite_focus: str | None = None,
+    rewrite_style: RewriteStyle | None = None,
     rewrite_config: dict[str, object] | None = None,
+    detail_ledger: str | None = None,
 ) -> ContentRewriteResult:
     normalized_source = str(source_text or "").strip()
     if not normalized_source:
         raise ContentRewriteConfigurationError("source_text must not be empty.")
 
     if rewrite_focus is None:
-        normalized_focus = DEFAULT_REWRITE_FOCUS
+        normalized_focus = (
+            ARTICLE_LONGFORM_DEFAULT_FOCUS
+            if _normalize_rewrite_style(rewrite_style) == "article_longform"
+            else DEFAULT_REWRITE_FOCUS
+        )
     else:
         normalized_focus = str(rewrite_focus).strip()
         if not normalized_focus:
@@ -359,18 +385,31 @@ def rewrite_content(
     if not prompt_validation.is_valid:
         raise ContentRewriteInputError("；".join(prompt_validation.errors))
 
+    normalized_style = _normalize_rewrite_style(rewrite_style)
     config = _resolve_rewrite_config(rewrite_config)
-    references = None if prompt_validation.has_transcript_placeholder else load_rewrite_references()
+    references = None
+    if not prompt_validation.has_transcript_placeholder and normalized_style != "speech_verbatim":
+        references = load_rewrite_references()
     messages = _build_rewrite_messages(
         source_text=normalized_source,
         rewrite_focus=normalized_focus,
+        rewrite_style=normalized_style,
         references=references,
+        detail_ledger=detail_ledger,
     )
 
     if config.provider == "ollama":
-        rewritten_text = _rewrite_with_ollama(config, messages)
+        rewritten_text = _rewrite_with_ollama(
+            config,
+            messages,
+            rewrite_style=normalized_style,
+        )
     else:
-        rewritten_text = _rewrite_with_openai_compatible(config, messages)
+        rewritten_text = _rewrite_with_openai_compatible(
+            config,
+            messages,
+            rewrite_style=normalized_style,
+        )
 
     cleaned = clean_model_output_text(rewritten_text).strip()
     if not cleaned:
@@ -434,7 +473,9 @@ def _build_rewrite_messages(
     *,
     source_text: str,
     rewrite_focus: str,
+    rewrite_style: RewriteStyle,
     references: RewriteReferences | None,
+    detail_ledger: str | None,
 ) -> list[dict[str, str]]:
     if _uses_full_skill_prompt(rewrite_focus):
         # 如果前端传来了包含 {{transcript}} 占位符的完整 Skill Prompt，直接替换并使用
@@ -443,6 +484,13 @@ def _build_rewrite_messages(
             {"role": "system", "content": "你是一个智能写作助手。请严格遵守用户的格式要求。"},
             {"role": "user", "content": user_prompt},
         ]
+
+    if rewrite_style == "speech_verbatim":
+        return _build_speech_verbatim_messages(
+            source_text=source_text,
+            rewrite_focus=rewrite_focus,
+            detail_ledger=detail_ledger,
+        )
 
     if references is None:
         raise ContentRewriteConfigurationError(
@@ -475,7 +523,7 @@ def _build_rewrite_messages(
         f"{references.quality_pipeline}"
     )
 
-    # 没有完整 skill prompt 时，统一落到 backend 维护的参考材料和题材路由
+    # 长文模式下，统一落到 backend 维护的参考材料和题材路由
     user_prompt = (
         "请改写以下内容。\n\n"
         f"改写目标：{rewrite_focus}\n\n"
@@ -489,8 +537,52 @@ def _build_rewrite_messages(
     )
 
     return [
-        {"role": "system", "content": REWRITE_ASSISTANT_INSTRUCTIONS},
+        {
+            "role": "system",
+            "content": ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS,
+        },
         {"role": "system", "content": reference_context},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _build_speech_verbatim_messages(
+    *,
+    source_text: str,
+    rewrite_focus: str,
+    detail_ledger: str | None,
+) -> list[dict[str, str]]:
+    prompt_parts = [
+        "请将下面内容整理成自然、克制的中文稿件。",
+        "",
+        f"整理目标：{rewrite_focus}",
+        "",
+        "硬性要求：",
+        "- 保留原作者的说话节奏、语气、观点顺序和信息密度。",
+        "- 优先保留问答节奏、口头表达、停顿感和语气词，只做轻度断句与润色。",
+        "- 不要总结化，不要改写成公众号长文，不要重排成更抽象的提纲。",
+        "- 不要删掉有意义的重复、强调或转折，除非它们明显影响阅读。",
+        "- 不要新增原文没有的新事实，不要补充背景判断。",
+        "- 只输出正文，不要标题、解释、项目符号说明或分析过程。",
+    ]
+    if detail_ledger:
+        prompt_parts.extend(
+            [
+                "",
+                "【细节清单（优先保留）】",
+                detail_ledger.strip(),
+            ]
+        )
+    prompt_parts.extend(
+        [
+            "",
+            "原始内容：",
+            source_text,
+        ]
+    )
+    user_prompt = "\n".join(prompt_parts)
+    return [
+        {"role": "system", "content": SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS},
         {"role": "user", "content": user_prompt},
     ]
 
@@ -581,12 +673,15 @@ def _resolve_rewrite_config(
 def _rewrite_with_openai_compatible(
     config: RewriteProviderConfig,
     messages: list[dict[str, str]],
+    *,
+    rewrite_style: RewriteStyle,
 ) -> str:
+    temperature, max_tokens = _rewrite_generation_settings(rewrite_style)
     payload = {
         "model": config.model,
         "messages": messages,
-        "temperature": 0.4,
-        "max_tokens": 3000,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
         "stream": False,
     }
 
@@ -639,14 +734,18 @@ def _rewrite_with_openai_compatible(
 def _rewrite_with_ollama(
     config: RewriteProviderConfig,
     messages: list[dict[str, str]],
+    *,
+    rewrite_style: RewriteStyle,
 ) -> str:
+    temperature, max_tokens = _rewrite_generation_settings(rewrite_style)
     payload = {
         "model": config.model,
         "messages": messages,
         "stream": False,
         "think": False,
         "options": {
-            "temperature": 0.4,
+            "temperature": temperature,
+            "num_predict": max_tokens,
         },
     }
 
@@ -744,6 +843,18 @@ def _coerce_headers(value: object) -> dict[str, str]:
             continue
         headers[normalized_key] = normalized_value
     return headers
+
+
+def _normalize_rewrite_style(rewrite_style: RewriteStyle | None) -> RewriteStyle:
+    if rewrite_style == "article_longform":
+        return "article_longform"
+    return DEFAULT_REWRITE_STYLE
+
+
+def _rewrite_generation_settings(rewrite_style: RewriteStyle) -> tuple[float, int]:
+    if rewrite_style == "speech_verbatim":
+        return 0.7, 8000
+    return 0.4, 3000
 
 
 def _resolve_lastpost_skill_root() -> Path | None:

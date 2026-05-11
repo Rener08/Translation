@@ -26,15 +26,25 @@
 
 ### 2) Writing Pipeline (single-agent)
 
-`/api/content-rewrite` delegates to `WriterAgent`:
+`/api/content-rewrite` delegates to `WriterAgent`. The agent picks a path based on `rewrite_style`:
 
-1. resolve `ArticleSpec`
+**`speech_verbatim` (default)** — preserve the original speaker's voice:
+
+1. extract a `DetailLedger` from the source (numbers, dates, quotes, named entities, turn/conclusion phrases, key sentences)
+2. generate the draft in one pass with the ledger pinned in the prompt
+3. run a coverage check against the ledger's hard items (`preserve_exact=True`)
+4. if any hard item is missing, run a single targeted patch that only fills in the missing details
+5. surface remaining gaps as `detail_coverage_issues` so the UI can offer a one-click "patch again" action
+
+**`article_longform`** — explicit long-form magazine style (legacy path):
+
+1. resolve `ArticleSpec` (length and section budget)
 2. generate outline/plan
 3. generate draft
-4. validate draft
+4. validate draft against the spec
 5. revise once if validation fails
 
-External API response remains compatible (`rewritten_text`, `provider`, `model`, `quality_issues`).
+External API response remains compatible. Existing fields (`rewritten_text`, `provider`, `model`, `quality_issues`) are unchanged. `detail_coverage_issues` is an additive field; old clients can ignore it.
 
 ## Runtime Operations
 

@@ -172,6 +172,9 @@ class ChatConfigRequest(BaseModel):
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
 
+RewriteStyle = Literal["speech_verbatim", "article_longform"]
+
+
 class TranslateSegmentRequest(BaseModel):
     index: int
     start: float
@@ -339,6 +342,7 @@ class ContentRewriteRequest(BaseModel):
             "Otherwise backend falls back to its managed rewrite references and routing."
         ),
     )
+    rewrite_style: RewriteStyle = "speech_verbatim"
     translation_config: TranslationConfigRequest | None = None
     content_context_id: str | None = None
 
@@ -356,6 +360,7 @@ class ContentRewriteResponse(BaseModel):
     model: str
     rewritten_text: str
     quality_issues: list[str] = Field(default_factory=list)
+    detail_coverage_issues: list[str] = Field(default_factory=list)
 
 
 class SessionHistoryTurnResponse(BaseModel):
@@ -406,6 +411,7 @@ class SessionHistoryDetailResponse(BaseModel):
     rewrite_source_text: str = ""
     rewritten_text: str = ""
     rewrite_quality_issues: list[str] = Field(default_factory=list)
+    rewrite_detail_coverage_issues: list[str] = Field(default_factory=list)
     rewrite_provider: str | None = None
     rewrite_model: str | None = None
     chat_turns: list[SessionHistoryTurnResponse] = Field(default_factory=list)

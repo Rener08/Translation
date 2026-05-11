@@ -9,7 +9,6 @@ import { ResultView } from "./components/result-view";
 import { TranslationSettingsPanel } from "./components/translation-settings-panel";
 import { useJobRunner } from "./hooks/use-job-runner";
 import {
-  RestoredConversationState,
   SidebarListItem,
   useSessionHistory,
 } from "./hooks/use-session-history";
@@ -18,23 +17,9 @@ import { JobResult, TranslationSettings, defaultSettings } from "./lib/job";
 
 
 const DEFAULT_REWRITE_FOCUS =
+  "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。";
+const LEGACY_LONGFORM_REWRITE_FOCUS =
   "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。";
-const ARTICLE_PROFILE_STORAGE_KEY = "translation-article-profile";
-const ARTICLE_PROFILES = {
-  brief: {
-    label: "简报",
-    instruction: "输出紧凑版文章，优先提炼关键事实与结论，控制篇幅。",
-  },
-  standard: {
-    label: "标准",
-    instruction: "输出标准深度文章，兼顾事实完整性与可读性。",
-  },
-  deep: {
-    label: "深度",
-    instruction: "输出深度长文，强化背景脉络、过程细节和因果解释。",
-  },
-} as const;
-type ArticleProfileKey = keyof typeof ARTICLE_PROFILES;
 const TRANSLATION_SETTINGS_STORAGE_KEY = "translation-settings";
 const REWRITE_FOCUS_STORAGE_KEY = "translation-rewrite-focus";
 const TRANSLATION_PROVIDER_VALUES = new Set([
@@ -44,6 +29,7 @@ const TRANSLATION_PROVIDER_VALUES = new Set([
   "lmstudio",
 ]);
 const SOURCE_MODE_VALUES = new Set(["subtitle_first", "force_audio"]);
+const REWRITE_STYLE_VALUES = new Set(["speech_verbatim", "article_longform"]);
 
 const CHAT_SHORTCUTS = [
   {
@@ -75,11 +61,8 @@ const CHAT_SHORTCUTS = [
 export default function HomePage() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
-  const [restoredConversation, setRestoredConversation] =
-    useState<RestoredConversationState | null>(null);
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
   const [rewriteFocus, setRewriteFocus] = useState(DEFAULT_REWRITE_FOCUS);
-  const [articleProfile, setArticleProfile] = useState<ArticleProfileKey>("standard");
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarQuery, setSidebarQuery] = useState("");
@@ -98,14 +81,9 @@ export default function HomePage() {
   } = useSessionHistory({
     activeContextId,
     query: sidebarQuery,
-    onOpenSession: ({
-      youtubeUrl: nextUrl,
-      jobResult: nextResult,
-      restoredConversation: restored,
-    }) => {
+    onOpenSession: ({ youtubeUrl: nextUrl, jobResult: nextResult }) => {
       setYoutubeUrl(nextUrl);
       setJobResult(nextResult);
-      setRestoredConversation(restored);
       clearJobError();
     },
   });
@@ -116,14 +94,10 @@ export default function HomePage() {
     errorMessage,
     clearJobError,
     runJob,
-    cancelJob,
   } = useJobRunner({
     settings,
     youtubeUrl,
-    onJobResult: (result) => {
-      setRestoredConversation(null);
-      setJobResult(result);
-    },
+    onJobResult: setJobResult,
     onJobSuccess: (result) => {
       recordSearchHistory(youtubeUrl, result.video.title || youtubeUrl);
       void loadHistory();
@@ -131,12 +105,14 @@ export default function HomePage() {
   });
 
   const {
-    translationText,
     rewriteText,
     rewriteProviderLabel,
     rewriteLoading,
     rewriteError,
     rewriteCopied,
+    detailCoverageIssues,
+    detailPatchLoading,
+    requestDetailPatch,
     messages,
     chatInput,
     chatSubmitting,
@@ -148,8 +124,7 @@ export default function HomePage() {
   } = useRewriteChat({
     jobResult,
     settings,
-    restoredConversation,
-    rewriteFocus: `${rewriteFocus}\n\n文章规格：${ARTICLE_PROFILES[articleProfile].instruction}`,
+    rewriteFocus,
   });
 
   useEffect(() => {
@@ -164,8 +139,13 @@ export default function HomePage() {
       const rawSettings = window.localStorage.getItem(
         TRANSLATION_SETTINGS_STORAGE_KEY,
       );
+      let nextRewriteStyle: TranslationSettings["rewriteStyle"] =
+        defaultSettings.rewriteStyle;
       if (rawSettings) {
         const parsed = JSON.parse(rawSettings) as Partial<TranslationSettings>;
+        nextRewriteStyle = REWRITE_STYLE_VALUES.has(parsed.rewriteStyle ?? "")
+          ? (parsed.rewriteStyle as TranslationSettings["rewriteStyle"])
+          : defaultSettings.rewriteStyle;
         setSettings((current) => ({
           ...current,
           provider: TRANSLATION_PROVIDER_VALUES.has(parsed.provider ?? "")
@@ -178,21 +158,19 @@ export default function HomePage() {
           model: typeof parsed.model === "string" ? parsed.model : current.model,
           headersJson:
             typeof parsed.headersJson === "string" ? parsed.headersJson : current.headersJson,
-          apiKey: "",
+          apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : current.apiKey,
+          rewriteStyle: nextRewriteStyle,
         }));
       }
 
       const rawRewriteFocus = window.localStorage.getItem(REWRITE_FOCUS_STORAGE_KEY);
       if (rawRewriteFocus) {
-        setRewriteFocus(rawRewriteFocus);
-      }
-      const rawArticleProfile = window.localStorage.getItem(ARTICLE_PROFILE_STORAGE_KEY);
-      if (
-        rawArticleProfile === "brief" ||
-        rawArticleProfile === "standard" ||
-        rawArticleProfile === "deep"
-      ) {
-        setArticleProfile(rawArticleProfile);
+        const normalizedRewriteFocus =
+          rawRewriteFocus === LEGACY_LONGFORM_REWRITE_FOCUS &&
+          nextRewriteStyle !== "article_longform"
+            ? DEFAULT_REWRITE_FOCUS
+            : rawRewriteFocus;
+        setRewriteFocus(normalizedRewriteFocus);
       }
     } catch {
       // Ignore malformed local storage.
@@ -207,22 +185,17 @@ export default function HomePage() {
     try {
       window.localStorage.setItem(
         TRANSLATION_SETTINGS_STORAGE_KEY,
-        JSON.stringify({
-          ...settings,
-          apiKey: "",
-        }),
+        JSON.stringify(settings),
       );
       window.localStorage.setItem(REWRITE_FOCUS_STORAGE_KEY, rewriteFocus);
-      window.localStorage.setItem(ARTICLE_PROFILE_STORAGE_KEY, articleProfile);
     } catch {
       // Ignore storage failures.
     }
-  }, [articleProfile, hasLoadedPreferences, rewriteFocus, settings]);
+  }, [hasLoadedPreferences, rewriteFocus, settings]);
 
   function clearConversation() {
     setYoutubeUrl("");
     setJobResult(null);
-    setRestoredConversation(null);
     setSidebarQuery("");
     clearJobError();
   }
@@ -251,7 +224,6 @@ export default function HomePage() {
     if (jobResult) {
       setJobResult(null);
     }
-    setRestoredConversation(null);
   }
 
   return (
@@ -282,18 +254,17 @@ export default function HomePage() {
               errorMessage={errorMessage}
               onChangeUrl={setYoutubeUrl}
               onSubmit={runJob}
-              onCancel={cancelJob}
             />
           ) : (
             <ResultView
               jobResult={jobResult}
-              articleProfileLabel={ARTICLE_PROFILES[articleProfile].label}
-              translationText={translationText}
               rewriteProviderLabel={rewriteProviderLabel}
               rewriteLoading={rewriteLoading}
               rewriteError={rewriteError}
               rewriteText={rewriteText}
               rewriteCopied={rewriteCopied}
+              detailCoverageIssues={detailCoverageIssues}
+              detailPatchLoading={detailPatchLoading}
               messages={messages}
               chatInput={chatInput}
               chatSubmitting={chatSubmitting}
@@ -301,6 +272,7 @@ export default function HomePage() {
               shortcuts={CHAT_SHORTCUTS}
               onCopyRewrite={copyRewrite}
               onExportRewrite={exportRewrite}
+              onRequestDetailPatch={requestDetailPatch}
               onSubmitShortcut={submitChatQuestion}
               onSubmitChat={() => submitChatQuestion(chatInput)}
               onChangeChatInput={setChatInput}
@@ -338,8 +310,6 @@ export default function HomePage() {
               rewriteFocus={rewriteFocus}
               onChange={setSettings}
               onRewriteFocusChange={setRewriteFocus}
-              articleProfile={articleProfile}
-              onArticleProfileChange={setArticleProfile}
             />
           </section>
         </div>

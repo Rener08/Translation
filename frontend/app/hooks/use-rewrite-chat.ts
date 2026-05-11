@@ -45,6 +45,8 @@ export function useRewriteChat({
   const [rewriteLoading, setRewriteLoading] = useState(false);
   const [rewriteError, setRewriteError] = useState("");
   const [rewriteCopied, setRewriteCopied] = useState(false);
+  const [detailCoverageIssues, setDetailCoverageIssues] = useState<string[]>([]);
+  const [detailPatchLoading, setDetailPatchLoading] = useState(false);
 
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -63,6 +65,7 @@ export function useRewriteChat({
     setChatInput("");
     setChatError("");
     setRewriteCopied(false);
+    setDetailCoverageIssues([]);
     if (!currentContextId) {
       setMessages([]);
       setRewriteText("");
@@ -117,6 +120,7 @@ export function useRewriteChat({
     setRewriteError("");
     setRewriteText("");
     setRewriteCopied(false);
+    setDetailCoverageIssues([]);
     try {
       const response = await apiFetch("/api/content-rewrite", {
         method: "POST",
@@ -124,6 +128,7 @@ export function useRewriteChat({
         body: JSON.stringify({
           source_text: source,
           translation_config: translationConfig,
+          rewrite_style: settings.rewriteStyle,
           content_context_id: jobResult?.content_context_id || undefined,
           rewrite_focus: rewriteFocus.trim() || undefined,
         }),
@@ -135,13 +140,85 @@ export function useRewriteChat({
         rewritten_text: string;
         provider: string;
         model: string;
+        detail_coverage_issues?: string[];
       };
       setRewriteText(data.rewritten_text ?? "");
       setRewriteProviderLabel(`${formatProviderName(data.provider)} · ${data.model}`);
+      setDetailCoverageIssues(
+        Array.isArray(data.detail_coverage_issues) ? data.detail_coverage_issues : [],
+      );
     } catch (error) {
       setRewriteError(error instanceof Error ? error.message : "Failed to rewrite content.");
     } finally {
       setRewriteLoading(false);
+    }
+  }
+
+  async function requestDetailPatch() {
+    if (detailPatchLoading || rewriteLoading) {
+      return;
+    }
+    const currentRewrite = rewriteText.trim();
+    const sourceText = translationText.trim();
+    if (!currentRewrite || !sourceText || detailCoverageIssues.length === 0) {
+      return;
+    }
+    let translationConfig: TranslationConfigPayload;
+    try {
+      translationConfig = buildTranslationConfig(settings);
+    } catch (error) {
+      setRewriteError(
+        error instanceof Error ? error.message : "Invalid rewrite settings.",
+      );
+      return;
+    }
+
+    const missingLines = detailCoverageIssues.map((issue) => `- ${issue}`).join("\n");
+    const patchFocus = [
+      "请只补足下面缺失的细节，不要重写整篇，不要压缩，不要新增事实。",
+      "",
+      "已有草稿：",
+      currentRewrite,
+      "",
+      "缺失细节：",
+      missingLines,
+      "",
+      "要求：把这些细节自然补回正文中，保留原作者口吻和顺序，只输出正文。",
+    ].join("\n");
+
+    setDetailPatchLoading(true);
+    setRewriteError("");
+    setRewriteCopied(false);
+    try {
+      const response = await apiFetch("/api/content-rewrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          source_text: sourceText,
+          translation_config: translationConfig,
+          rewrite_style: settings.rewriteStyle,
+          content_context_id: jobResult?.content_context_id || undefined,
+          rewrite_focus: patchFocus,
+        }),
+      });
+      if (!response.ok) {
+        throw new Error(await extractApiErrorMessage(response));
+      }
+      const data = (await response.json()) as {
+        rewritten_text: string;
+        provider: string;
+        model: string;
+        detail_coverage_issues?: string[];
+      };
+      setRewriteText(data.rewritten_text ?? "");
+      setRewriteProviderLabel(`${formatProviderName(data.provider)} · ${data.model}`);
+      setDetailCoverageIssues(
+        Array.isArray(data.detail_coverage_issues) ? data.detail_coverage_issues : [],
+      );
+    } catch (error) {
+      setRewriteError(error instanceof Error ? error.message : "Failed to patch details.");
+    } finally {
+      setDetailPatchLoading(false);
     }
   }
 
@@ -244,6 +321,9 @@ export function useRewriteChat({
     rewriteLoading,
     rewriteError,
     rewriteCopied,
+    detailCoverageIssues,
+    detailPatchLoading,
+    requestDetailPatch,
     messages,
     chatInput,
     chatSubmitting,

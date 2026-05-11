@@ -1,8 +1,5 @@
-"use client";
-
-import { ArrowUp, Copy, Download, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowUp, Copy, Download } from "lucide-react";
 import type { ComponentType } from "react";
-import { useEffect, useState } from "react";
 
 import { JobResult } from "../lib/job";
 import { ThreadMessage } from "../hooks/use-rewrite-chat";
@@ -17,13 +14,13 @@ type ChatShortcut = {
 
 type ResultViewProps = {
   jobResult: JobResult;
-  articleProfileLabel: string;
-  translationText: string;
   rewriteProviderLabel: string;
   rewriteLoading: boolean;
   rewriteError: string;
   rewriteText: string;
   rewriteCopied: boolean;
+  detailCoverageIssues: string[];
+  detailPatchLoading: boolean;
   messages: ThreadMessage[];
   chatInput: string;
   chatSubmitting: boolean;
@@ -31,6 +28,7 @@ type ResultViewProps = {
   shortcuts: ChatShortcut[];
   onCopyRewrite: () => Promise<void>;
   onExportRewrite: () => void;
+  onRequestDetailPatch: () => Promise<void>;
   onSubmitShortcut: (prompt: string) => Promise<void>;
   onSubmitChat: () => Promise<void>;
   onChangeChatInput: (value: string) => void;
@@ -38,13 +36,13 @@ type ResultViewProps = {
 
 export function ResultView({
   jobResult,
-  articleProfileLabel,
-  translationText,
   rewriteProviderLabel,
   rewriteLoading,
   rewriteError,
   rewriteText,
   rewriteCopied,
+  detailCoverageIssues,
+  detailPatchLoading,
   messages,
   chatInput,
   chatSubmitting,
@@ -52,48 +50,48 @@ export function ResultView({
   shortcuts,
   onCopyRewrite,
   onExportRewrite,
+  onRequestDetailPatch,
   onSubmitShortcut,
   onSubmitChat,
   onChangeChatInput,
 }: ResultViewProps) {
-  const feedbackKey = `rewrite-feedback-${jobResult.content_context_id}`;
-  const [feedbackVote, setFeedbackVote] = useState<string | null>(null);
-
-  useEffect(() => {
-    try {
-      setFeedbackVote(window.localStorage.getItem(feedbackKey));
-    } catch {
-      setFeedbackVote(null);
-    }
-  }, [feedbackKey]);
-
-  function applyRewriteFeedback(next: "up" | "down") {
-    try {
-      window.localStorage.setItem(feedbackKey, next);
-      setFeedbackVote(next);
-    } catch {
-      setFeedbackVote(next);
-    }
-  }
-
+  const showDetailCoverageNotice =
+    !rewriteLoading && rewriteText.trim().length > 0 && detailCoverageIssues.length > 0;
   return (
     <section className="result-page">
       <div className="result-scroll">
-        <article className="result-article result-draft-primary">
-          <h2 className="result-draft-heading">
-            {jobResult.video.title || "文章草稿"}
-          </h2>
-          <p className="result-draft-badge">主结果 · 文章草稿</p>
-          <p className="result-provider">文章规格：{articleProfileLabel}</p>
+        <article className="result-article">
+          <h2>{jobResult.video.title || "中文改写结果"}</h2>
           {rewriteProviderLabel ? (
             <p className="result-provider">{rewriteProviderLabel}</p>
           ) : null}
           {rewriteError ? <p className="entry-error">{rewriteError}</p> : null}
+          {showDetailCoverageNotice ? (
+            <div
+              className="result-detail-coverage"
+              role="status"
+              aria-live="polite"
+            >
+              <span className="result-detail-coverage-text">
+                {detailPatchLoading
+                  ? "正在补足缺失细节..."
+                  : `有 ${detailCoverageIssues.length} 处细节可能缺失`}
+              </span>
+              <button
+                className="result-detail-coverage-action"
+                type="button"
+                disabled={detailPatchLoading}
+                onClick={() => void onRequestDetailPatch()}
+              >
+                {detailPatchLoading ? "补足中..." : "再次补足"}
+              </button>
+            </div>
+          ) : null}
           <div className="result-body">
             <pre>
               {rewriteLoading
-                ? "正在生成文章草稿..."
-                : rewriteText || "文章草稿为空，请尝试再次生成。"}
+                ? "正在生成改写内容..."
+                : rewriteText || "改写结果为空，请尝试再次改写。"}
             </pre>
           </div>
           <div className="result-actions-inline">
@@ -117,48 +115,8 @@ export function ResultView({
             >
               <Download size={16} />
             </button>
-            <span className="rewrite-feedback" role="group" aria-label="改写满意度（仅保存在本机浏览器）">
-              <button
-                className={`icon-ghost${feedbackVote === "up" ? " is-selected" : ""}`}
-                type="button"
-                title="有帮助"
-                aria-label="改写有帮助"
-                aria-pressed={feedbackVote === "up"}
-                disabled={!rewriteText.trim()}
-                onClick={() => applyRewriteFeedback("up")}
-              >
-                <ThumbsUp size={16} />
-              </button>
-              <button
-                className={`icon-ghost${feedbackVote === "down" ? " is-selected" : ""}`}
-                type="button"
-                title="需改进"
-                aria-label="改写需改进"
-                aria-pressed={feedbackVote === "down"}
-                disabled={!rewriteText.trim()}
-                onClick={() => applyRewriteFeedback("down")}
-              >
-                <ThumbsDown size={16} />
-              </button>
-            </span>
           </div>
         </article>
-
-        <details className="material-details">
-          <summary className="material-details-summary">
-            素材详情（转录与翻译，默认收起）
-          </summary>
-          <div className="material-grid">
-            <article className="material-card">
-              <h3>英文转录</h3>
-              <pre>{jobResult.transcript_en.text || "无转录文本。"}</pre>
-            </article>
-            <article className="material-card">
-              <h3>中文翻译</h3>
-              <pre>{translationText || "无翻译文本。"}</pre>
-            </article>
-          </div>
-        </details>
 
         <section className="chat-thread">
           {messages.map((message, index) => (
@@ -170,7 +128,7 @@ export function ResultView({
             </article>
           ))}
           {messages.length === 0 ? (
-            <p className="chat-placeholder">可继续追改、补充、压缩或重写结构。</p>
+            <p className="chat-placeholder">有问题，尽管问</p>
           ) : null}
         </section>
       </div>

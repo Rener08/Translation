@@ -847,6 +847,7 @@ def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
         "model": "deepseek-chat",
         "rewritten_text": "# 测试标题\n\n这是改写后的中文正文。",
         "quality_issues": [],
+        "detail_coverage_issues": [],
     }
 
 
