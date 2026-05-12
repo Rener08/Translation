@@ -15,7 +15,6 @@ from app.services.content_rewrite_service import (
     _select_rewrite_template,
     load_rewrite_references,
 )
-from app.services.rewrite_quality_service import analyze_rewrite_quality
 from app.services.video_source_service import fetch_video_source
 from app.services.writer_agent_service import (
     ARTICLE_LONGFORM_FIRST_PERSON_MARKERS,
@@ -34,6 +33,8 @@ DEFAULT_MANIFEST_PATH = (
 )
 DEFAULT_OUTPUT_ROOT = REPO_ROOT / "tmp" / "writer_skill_eval"
 FULL_PROMPT_PLACEHOLDER_PATTERN = re.compile(r"\[[^\]]*在这里贴入[^\]]*\]")
+# 辅助参考指标：精确匹配改写输出是否含明确的 AI 模型自述/免责声明。
+# 扩展方式：人工 review report.md 的输出节选，发现新形式时追加；不引入 LLM 分类器。
 AI_SLOP_MARKERS = (
     "作为一个ai",
     "作为ai",
@@ -41,12 +42,7 @@ AI_SLOP_MARKERS = (
     "根据我的训练数据",
     "我无法访问",
     "我不能提供",
-    "无法提供",
-    "仅供参考",
-    "不构成",
     "免责声明",
-    "我不知道",
-    "抱歉，",
     "我是一个ai",
     "ai语言模型",
 )
@@ -770,10 +766,6 @@ def _detect_ai_slop_hits(text: str) -> tuple[str, ...]:
     for marker in AI_SLOP_MARKERS:
         if marker in lowered:
             hits.append(marker)
-    for issue in analyze_rewrite_quality(text):
-        lowered_issue = issue.lower()
-        if any(token in lowered_issue for token in ("免责声明", "自述", "模型", "hallucination")):
-            hits.append(issue)
     deduped: list[str] = []
     seen: set[str] = set()
     for hit in hits:
