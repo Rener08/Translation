@@ -567,6 +567,8 @@ def _build_speech_verbatim_messages(
         "- 不要删掉有意义的重复、强调或转折，除非它们明显影响阅读。",
         "- 不要新增原文没有的新事实，不要补充背景判断。",
         "- 只输出正文，不要标题、解释、项目符号说明或分析过程。",
+        "- 输出长度应在原文的 45%-60% 之间。如果整理后明显短于 45%，说明压缩过头，请补回口语化重复、停顿感、转折语气和具体例子。",
+        "- 当原文超过 50000 字时不强求长度比例，但仍要避免大段省略；可适当保留更多原话与例子。",
     ]
     if detail_ledger:
         prompt_parts.extend(
@@ -858,8 +860,8 @@ def _normalize_rewrite_style(rewrite_style: RewriteStyle | None) -> RewriteStyle
 
 def _rewrite_generation_settings(rewrite_style: RewriteStyle) -> tuple[float, int]:
     if rewrite_style == "speech_verbatim":
-        return 0.7, 8000
-    return 0.4, 3000
+        return 0.7, 32000
+    return 0.4, 12000
 
 
 def _resolve_lastpost_skill_root() -> Path | None:

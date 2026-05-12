@@ -777,11 +777,21 @@ def _detect_ai_slop_hits(text: str) -> tuple[str, ...]:
 
 
 def _are_hard_items_in_source_order(ledger, text: str) -> bool:
+    """检查改写文本里**实际出现的** hard items 是否按 ledger 顺序排列。
+
+    把"缺失"和"倒序"分开判定：
+    - 如果 item 整体不在 text 里 → 由 hard_detail_rate 单独统计，这里跳过。
+    - 如果 item 在 text 里但只出现在 cursor 之前 → 真乱序，返回 False。
+
+    这样"顺序通过率"才能独立于"覆盖率"反映 agent 真实的顺序保持能力。
+    """
     normalized_text = _normalize_text(text)
     cursor = 0
     for item in ledger.coverage_items():
         token = _normalize_text(item.text)
         if not token:
+            continue
+        if token not in normalized_text:
             continue
         position = normalized_text.find(token, cursor)
         if position < 0:
