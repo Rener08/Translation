@@ -61,6 +61,55 @@ into `tmp/writer_skill_eval/<timestamp>/` by default.
 
 > 按时间倒序累积，最新在顶。每次评测追加一节；堆到 5 条以上考虑拆到 `docs/eval-log/`。
 
+### 2026-05-12 — baseline #2（`deepseek-v4-pro` + 更长 `max_tokens` + speech 长度提示 + 顺序判定解耦）
+
+- code commit: `5b0f659`（`feat(writer): tune output length and decouple ordering metric`）
+- provider/model: `deepseek` / `deepseek-v4-pro`
+- 样本：6（**三路 18 格全部成功**，无 SSL / 鉴权失败）
+- report 路径：`tmp/writer_skill_eval/20260512-204154/`（本地对照；gitignored）
+- 备注：曾有一次 run 在 `084027` 出现单格 SSL 失败；使用**有效临时 key** 全量重跑约 **80 分钟** 得到本报告。请勿将 key 写入 `.env`（若需长期用请自行在本地更新）。
+
+#### 6-sample 平均（摘自 `report.md`）
+
+| mode | 硬细节覆盖率 | 第三视角通过率 | 顺序通过率 | 平均压缩比 | 错误数 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| speech_verbatim | 66.7% | 33.3% | 83.3% | 0.54 | 0 |
+| article_longform | 40.4% | 50.0% | 16.7% | 0.22 | 0 |
+| full_prompt_baseline | 52.8% | 16.7% | 50.0% | 0.18 | 0 |
+
+#### `decision_hint`（本次 run）
+
+> article_longform 仍有第一人称泄漏；article_longform 细节保真率偏低；全量 prompt 基线在硬细节覆盖上明显更稳。建议先收缩 lastpost-skill，再决定是否抽通用 runner。
+
+#### 相对 baseline #1（`deepseek-chat` / v4-flash）的注意点
+
+- **顺序通过率（speech）**：16.7% → **83.3%**（评测器解耦 + 本次模型行为共同作用；#1 数字在解耦前已偏保守）。
+- **硬细节（speech）**：77.6% → **66.7%**（仍 **未达 80%** 目标； article 与 baseline 路在 v4-pro 下也有波动，不宜单次 run 定生死）。
+- **平均压缩比（speech）**：0.36 → **0.54** ——但该均值被 **两路异常样本拉高**：
+  - `sam_altman_ted2025`：`compression_ratio ≈ 1.00`（输出略长于原文；speech 输出以**英文**为主，与「默认简体中文稿」产品预期不一致）。
+  - `jensen_huang_gtc`：`compression_ratio ≈ 1.02`（输出长于原文，属「扩写」而非整理）。
+- **中文向子集（4 条：nasa / steve / tim / vision，`speech_verbatim`）** 平均压缩比 **≈0.30**，目标区间 **0.45–0.6** → **仍未达标**。
+
+#### 计划内退出标准核对（以中文子集 + 全表综合解读）
+
+| 项 | 结果 |
+| --- | --- |
+| 中短 speech 压缩 0.45–0.6（中文子集） | **未** |
+| 6-sample speech 表观均值 0.54 | **误导性偏高**（含 ratio>1 与英文路径） |
+| 长素材 jensen：ratio>1 | **未**按「0.30–0.40 压缩」解释；需单独约定英文长稿 / 或强制中文化 + 上限 |
+| speech 顺序通过率 ≥60% | **是**（83.3%） |
+| speech 硬覆盖 ≥80% | **否**（66.7%） |
+
+#### 建议的下一步迭代（仍未实现）
+
+- **speech_verbatim**：对「输出语言」与「不得长于原文（除 patch 外）」加硬约束或后处理，避免 `sam_altman` / `jensen` 类 **ratio>1** 污染指标与产品体验。
+- **长度**：在中文子集上继续 **patch round**（按 `source_chars * 0.45` 触发）或加强用户提示；表观 0.54 不能当作「已达成 tiered」。
+- **复验**：固定 key 再跑 1–2 次，区分方差与真回归。
+
+#### 历史：单次 SSL 失败 run（仅供参考）
+
+- 报告 `tmp/writer_skill_eval/20260512-084027/`：`vision_pro_review` / `article_longform` 曾遇 `UNEXPECTED_EOF_WHILE_READING`；**勿再作正式基线**，以 `204154` 为准。
+
 ### 2026-05-12 — baseline #1（首次跑通后基线）
 
 - baseline commit: `8031a96` (HEAD)
