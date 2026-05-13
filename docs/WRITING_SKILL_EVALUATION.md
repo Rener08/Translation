@@ -40,7 +40,7 @@ python3 scripts/evaluate_writer_skill.py \
 Optional overrides:
 
 - `--provider deepseek`
-- `--model deepseek-v4-flash`
+- `--model deepseek-v4-pro`（与当前 baseline #2 对齐；`deepseek-chat` 仍可用于本地冒烟）
 - `--refresh-samples`
 - `--sample-id <id>` to run a subset
 
@@ -56,6 +56,125 @@ into `tmp/writer_skill_eval/<timestamp>/` by default.
 - If the report says `provider/model error`, treat the run as incomplete and do not use it to decide on the skill shape.
 - If `article_longform` keeps leaking first person or compresses harder than the baseline, keep the current structure narrow and shrink `lastpost-skill`.
 - If the skill-fed longform path is clearly stronger and more stable, keep it and fix the concrete failure samples rather than adding a new runner layer.
+
+## 写作 Agent 执行计划（可落地）
+
+目标：在**不引入多 agent / 不新增通用 runner API** 的前提下，把默认主线 `speech_verbatim` 做成稳定中文整理稿，并用固定样本 + 回归门禁持续迭代。下文按**阶段顺序**执行；每一阶段结束后再开下一阶段。
+
+### 0. 基线与门禁（先于一切代码改动定稿）
+
+**唯一可比基线（当前）**
+
+- 以 `tmp/writer_skill_eval/20260512-204154/` 为 **baseline #2**；对应代码起点 `5b0f659` 起（含 `max_tokens`、speech 长度提示、顺序判定解耦）。
+- **任何** `report.md` 里 `错误数 > 0` 或 `decision_hint` 含「provider/model 错误」的 run：**不写进本文件「评测记录」**，只作排障。
+
+**每次记录新 baseline 时必须写清**
+
+- `report.json` / `report.md` 所在目录名、`provider`、`model`、commit、耗时量级。
+- 若继续用 `deepseek-v4-pro`：全量 6×3 约 **60–90 分钟**量级，提前预留。
+
+**合并门禁（写进 PR 自检，不写成「指标必须全线上升」）**
+
+- `cd backend && python -m pytest` 全绿。
+- `frontend/frontend` 下 `npx tsc --noEmit`（及需要时的 `npm run build`）不退化。
+- 改动了写作路径时：**至少** `--sample-id steve_jobs_stanford --sample-id tim_cook_mit` 小集评测；合并前 **全量 6 样本** 一次。
+
+---
+
+### 1. SLA 分层（避免四条同时锁死导致无法迭代）
+
+门禁分 **P0（必须先过）** 与 **P1（主线达标）**；`article_longform` 单独一条 **P2（长文模式）**。
+
+| 代号 | 指标 | 目标 | 说明 |
+| --- | --- | --- | --- |
+| **P0-A** | `speech_verbatim` 输出语言 | 默认 **简体中文**；禁止整篇以英文为主交付 | 直接对齐产品「链接 → 中文稿」；先修 `sam_altman` / 英文漂移类失败 |
+| **P0-B** | `speech_verbatim` 压缩比异常 | `output_chars <= source_chars`（允许极小浮动如 ≤1.02 若需兼容空白） | 先消灭 **ratio>1** 的「扩写」；再谈 0.45–0.6 |
+| **P1-A** | `speech_verbatim` 中文子集压缩比 | 子集 `nasa_force_talent`, `steve_jobs_stanford`, `tim_cook_mit`, `vision_pro_review` 四条平均 **0.45–0.60** | baseline #2 该子集约 **0.30**，为后续主战场 |
+| **P1-B** | `speech_verbatim` 硬细节覆盖率（6-sample 表） | **≥ 当前 baseline #2 的 66.7%**，再逐步冲 **≥80%** | 80% 与 P1-A 可能拉扯，**禁止**为追压缩比单独掉硬覆盖而不记录 |
+| **P1-C** | `speech_verbatim` 顺序通过率 | **≥60%**（当前 baseline #2 为 83.3%） | 已解耦缺失 vs 乱序；回归时勿回退该逻辑 |
+| **P2** | `article_longform` 第三视角通过率 | **North Star ≥90%**；**连续两轮**全量评测（同 provider/model）**均 <70%** → UI/文档标为 **「实验模式」**，不主推 | 不在此阶段加多轮自反思 agent；达标靠 revise 或专门人称 patch，另开任务 |
+
+**决策规则**：合并以 **P0 全过 + P1-B 不低于 baseline #2** 为硬条件；P1-A、P1-B 同时大幅恶化则回滚。
+
+---
+
+### 2. 阶段 A — 评测 harness 收紧（「测准」）
+
+**目的**：报告里能直接看出「中文稿 / 子集压缩 / ratio 异常」，减少手工从 `report.json` 里算。
+
+| 步骤 | 操作 | 验收 |
+| --- | --- | --- |
+| A1 | 在 `[backend/app/services/writer_skill_eval_service.py](backend/app/services/writer_skill_eval_service.py)` 的 `WriterSkillEvalModeResult`（或汇总表）增加派生字段或 `report.md` 小节：如 `output_language_guess`（简中/英/混）、`compression_anomaly`（ratio>1）、`zh_subset_compression_avg`（固定四 sample_id） | 跑 `evaluate_writer_skill.py` 后 `report.md` 可读，无需手算 |
+| A2 | 在 `[scripts/evaluate_writer_skill.py](scripts/evaluate_writer_skill.py)` 可选增加 `--fail-on-error`：任一 mode `error` 非空则 exit code 非 0，便于 CI | 本地 `pytest` 不受影响时可选用 |
+| A3 | 在 `[backend/tests/test_writer_skill_eval_service.py](backend/tests/test_writer_skill_eval_service.py)` 为 A1 增加最小单测（固定短字符串） | `pytest` 通过 |
+
+---
+
+### 3. 阶段 B — 只改默认主线 `speech_verbatim`
+
+**涉及文件（按顺序改）**
+
+1. `[backend/app/services/content_rewrite_service.py](backend/app/services/content_rewrite_service.py)`：`SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS`、`_build_speech_verbatim_messages`（语言、不扩写、长度意图）。
+2. `[backend/app/services/writer_agent_service.py](backend/app/services/writer_agent_service.py)`：`speech_verbatim` 分支内在 **初稿之后** 增加长度门控：
+   - 若 `len(output) < 0.45 * len(source)`：调用已有 `rewrite_content` 能力做一次 **「补足」patch**（新 `rewrite_focus` 文案：只补缺、不重写全文、仍中文）。
+   - 若 `len(output) > len(source)`（或超阈值）：一次 **「压回信息密度」** patch 或拒绝扩写类提示（具体实现二选一，优先与现有 patch 路径一致）。
+3. 可选：在 `[backend/app/services/rewrite_quality_service.py](backend/app/services/rewrite_quality_service.py)` 增加 `language_mismatch` 类 **quality_issue**，供前端与评测统计（**不**在阶段 B 强改 API 响应形状时，可先只写在 `quality_issues` 文本前缀约定）。
+
+**验收（阶段 B 结束）**
+
+- P0-A、P0-B 在全量 6 样本 `speech_verbatim` 上成立。
+- P1-A 在四条中文子集上达标或文档记录「剩余差距 + 下一迭代假设」。
+- 全量 `report.md` 写入「评测记录」新一行，对照 baseline #2 表格。
+
+---
+
+### 4. 阶段 C — `article_longform` 收缩（不加新框架）
+
+**原则**：不引入 LangChain / 多 agent / 新 runner API；保留 `outline -> draft -> validate -> revise once`。
+
+| 步骤 | 操作 | 验收 |
+| --- | --- | --- |
+| C1 | 盘点 `lastpost-skill` 中实际被 `writer_skill_eval` 与路由命中的模板；在仓库内增加 **pinned 副本**（例如 `references/lastpost-skill-pinned/`）或文档写明固定 `LASTPOST_SKILL_DIR` + commit，避免仅依赖 `~/.hermes` | 新同事 clone 后能跑同构 article 评测 |
+| C2 | 删除或弱化与 YouTube 场景无关的晚点模板引用（改 `[backend/app/services/content_rewrite_service.py](backend/app/services/content_rewrite_service.py)` 路由或模板列表，**小步**） | 全量评测 `article_longform` 硬覆盖不劣于阶段 C 前一轮 |
+| C3 | 若需冲 P2：仅在 `article_longform` 增加 **第二轮**「人称 patch」（仍调用 `rewrite_content`，非新 agent），上限 1 次以控成本 | 记录 token/耗时；仍达不到 P2 则执行 **实验模式** 降级（前端 `[frontend/app/components/translation-settings-panel.tsx](frontend/app/components/translation-settings-panel.tsx)` 文案 + 本文件说明） |
+
+---
+
+### 5. 阶段 D — 外循环（版本化 + trace，最后做）
+
+**原则**：不让模型在线自改 prompt；人审 + 固定样本回归。
+
+| 步骤 | 操作 | 验收 |
+| --- | --- | --- |
+| D1 | 定义常量 `WRITER_POLICY_VERSION` / `SPEECH_VERBATIM_PROMPT_VERSION`（例如放在 `content_rewrite_service.py` 或单独 `writer_versions.py`），写入日志与（可选）响应头 | 日志可筛版本 |
+| D2 | 在 `[backend/app/api/routers/content.py](backend/app/api/routers/content.py)` + `[backend/app/services/session_history_service.py](backend/app/services/session_history_service.py)` 增量持久化：至少 `rewrite_style`、`provider`、`model`、可选 `writer_policy_version`；**API 对外字段先与 Jack 确认再加**，避免破坏旧客户端 | 会话可回放 |
+| D3 | 仓库内维护 `docs/writer-failure-samples.md` 或在 `tmp/` 外另设 `eval_failures/`（**小**、脱敏）：分类（英文、ratio>1、人称泄漏、硬缺）各 1–2 条摘录 + sample_id | 每次改 prompt 前过一遍该清单 |
+
+---
+
+### 6. 快速命令备忘
+
+```bash
+# 小集（改 prompt 后快速冒烟）
+backend/.venv/bin/python scripts/evaluate_writer_skill.py \
+  --provider deepseek --model deepseek-v4-pro \
+  --sample-id steve_jobs_stanford --sample-id tim_cook_mit
+
+# 全量基线（合并前）
+backend/.venv/bin/python scripts/evaluate_writer_skill.py \
+  --provider deepseek --model deepseek-v4-pro
+```
+
+---
+
+### 与 baseline #2 小节的关系
+
+- 「评测记录」里 **baseline #2** 表格保持历史快照。
+- **本「执行计划」**为后续迭代的操作母版；每完成一阶段，在 baseline #2 小节下追加 **#2a / #3** 等新行并更新「计划内退出标准核对」表即可。
+
+#### 建议的下一步迭代（仍未实现）
+
+- 已并入上文 **阶段 A–D**；优先执行 **阶段 A → 阶段 B（P0）**。
 
 ## 评测记录 (Eval log)
 
@@ -100,11 +219,9 @@ into `tmp/writer_skill_eval/<timestamp>/` by default.
 | speech 顺序通过率 ≥60% | **是**（83.3%） |
 | speech 硬覆盖 ≥80% | **否**（66.7%） |
 
-#### 建议的下一步迭代（仍未实现）
+#### 与执行计划的对照
 
-- **speech_verbatim**：对「输出语言」与「不得长于原文（除 patch 外）」加硬约束或后处理，避免 `sam_altman` / `jensen` 类 **ratio>1** 污染指标与产品体验。
-- **长度**：在中文子集上继续 **patch round**（按 `source_chars * 0.45` 触发）或加强用户提示；表观 0.54 不能当作「已达成 tiered」。
-- **复验**：固定 key 再跑 1–2 次，区分方差与真回归。
+- 具体改法见上文 **「写作 Agent 执行计划」**；本表保留为 baseline #2 历史对照，不再重复列 bullet。
 
 #### 历史：单次 SSL 失败 run（仅供参考）
 
