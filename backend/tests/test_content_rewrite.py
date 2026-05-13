@@ -46,7 +46,7 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
             json={"message": {"content": "这是改写后的内容。"}},
         )
 
-    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
 
     result = rewrite_content(
         source_text="原始内容第一句。原始内容第二句。",
@@ -62,7 +62,7 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
     assert "中文第三视角改写助手" in captured["json"]["messages"][0]["content"]
     assert captured["json"]["messages"][1]["role"] == "system"
     assert "【场景模板】" in captured["json"]["messages"][1]["content"]
-    assert "场景模板片段" in captured["json"]["messages"][1]["content"]
+    assert "场景模板片段" not in captured["json"]["messages"][1]["content"]
     assert "【通用一页模板】" in captured["json"]["messages"][1]["content"]
     assert "文章模板片段" in captured["json"]["messages"][1]["content"]
     assert "内容方法论片段" in captured["json"]["messages"][1]["content"]
@@ -95,7 +95,7 @@ def test_rewrite_content_defaults_to_speech_verbatim_without_references(
             json={"message": {"content": "这是口吻整理后的内容。"}},
         )
 
-    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
 
     result = rewrite_content(
         source_text="原始内容第一句。原始内容第二句。",
@@ -116,6 +116,28 @@ def test_rewrite_content_defaults_to_speech_verbatim_without_references(
     )
 
 
+def test_rewrite_content_reports_language_mismatch_for_english_output(
+    monkeypatch,
+) -> None:
+    def fake_post(*args, **kwargs):
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", "http://127.0.0.1:11434/api/chat"),
+            json={"message": {"content": "This is an English rewrite with no Chinese main body."}},
+        )
+
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
+
+    result = rewrite_content(
+        source_text="Original source text.",
+        rewrite_focus="Please keep it concise.",
+        rewrite_style="speech_verbatim",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+    )
+
+    assert any("简体中文" in issue for issue in result.quality_issues)
+
+
 def test_rewrite_content_speech_verbatim_includes_detail_ledger(
     monkeypatch,
 ) -> None:
@@ -129,7 +151,7 @@ def test_rewrite_content_speech_verbatim_includes_detail_ledger(
             json={"message": {"content": "这是口吻整理后的内容。"}},
         )
 
-    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
 
     result = rewrite_content(
         source_text="原始内容第一句。原始内容第二句。",
@@ -162,7 +184,7 @@ def test_rewrite_content_injects_transcript_into_full_skill_prompt(monkeypatch) 
             json={"message": {"content": "这是技能改写后的内容。"}},
         )
 
-    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
 
     result = rewrite_content(
         source_text="这是原始转录内容。",
@@ -263,10 +285,14 @@ def test_content_rewrite_endpoint_returns_detail_coverage_issues(monkeypatch) ->
         "缺失细节：专有名词 NASA",
     ]
     assert body["quality_issues"] == ["段落重复"]
+    assert captured["rewrite_style"] == "speech_verbatim"
     assert captured["rewrite_detail_coverage_issues"] == [
         "缺失细节：数字 3",
         "缺失细节：专有名词 NASA",
     ]
+    assert captured["writer_trace_id"] == ""
+    assert captured["writer_policy_version"] == ""
+    assert captured["writer_prompt_version"] == ""
     assert captured["rewrite_quality_issues"] == ["段落重复"]
 
 
@@ -416,6 +442,54 @@ def test_select_rewrite_template_routes_product_review_by_keywords() -> None:
     assert selected.body == "评测模板"
 
 
+def test_select_rewrite_template_uses_generic_fallback_for_unknown_material() -> None:
+    references = RewriteReferences(
+        article_template="一页版模板",
+        content_methodology="方法论",
+        style_examples="示例",
+        skill_guide="规则",
+        category_templates={
+            "09_interview_transcript_sync": "逐字稿模板",
+            "03_product_review": "评测模板",
+            "06_infra_cloud_model_platform": "平台模板",
+            "01_big_company_war": "公司战役模板",
+        },
+        section_title_rules="标题规则",
+    )
+
+    selected = _select_rewrite_template(
+        source_text="这是一个没有明显题材信号的普通素材。",
+        rewrite_focus="整理成中文稿。",
+        references=references,
+    )
+
+    assert selected.key == "generic"
+    assert selected.label == "通用素材报道稿"
+    assert selected.body == "一页版模板"
+
+
+def test_select_rewrite_template_routes_strategic_fallback_by_explicit_signals() -> None:
+    references = RewriteReferences(
+        article_template="一页版模板",
+        content_methodology="方法论",
+        style_examples="示例",
+        skill_guide="规则",
+        category_templates={
+            "01_big_company_war": "公司战役模板",
+        },
+        section_title_rules="标题规则",
+    )
+
+    selected = _select_rewrite_template(
+        source_text="这场竞争和入口之争正在推动资源重排。",
+        rewrite_focus="改写成晚点风格。",
+        references=references,
+    )
+
+    assert selected.key == "01_big_company_war"
+    assert selected.body == "公司战役模板"
+
+
 def test_validate_rewrite_prompt_classifies_modes() -> None:
     full_prompt = validate_rewrite_prompt(
         "请根据以下内容写文章。\n\n视频内容：\n{{transcript}}"
@@ -457,7 +531,7 @@ def test_rewrite_content_attaches_quality_issues(monkeypatch) -> None:
             },
         )
 
-    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
 
     result = rewrite_content(
         source_text="原始内容。",

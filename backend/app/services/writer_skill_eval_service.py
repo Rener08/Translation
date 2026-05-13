@@ -12,22 +12,26 @@ from app.services.caption_service import CaptionServiceError
 from app.services.content_rewrite_service import (
     ARTICLE_LONGFORM_DEFAULT_FOCUS,
     RewriteStyle,
-    _select_rewrite_template,
+)
+from app.services.rewrite_template_service import (
     load_rewrite_references,
+    select_rewrite_template,
 )
 from app.services.video_source_service import fetch_video_source
+from app.services.rewrite_quality_service import guess_output_language
 from app.services.writer_agent_service import (
     ARTICLE_LONGFORM_FIRST_PERSON_MARKERS,
     MaterialPackage,
     WriterAgent,
-    _analyze_detail_coverage,
-    _build_detail_ledger,
-    _format_detail_coverage_issues,
+    analyze_detail_coverage,
+    build_detail_ledger,
+    format_detail_coverage_issues,
     _strip_quoted_spans,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_LASTPOST_SKILL_DIR = Path.home() / ".hermes" / "skills" / "creative" / "lastpost-skill"
+PINNED_LASTPOST_SKILL_DIR = REPO_ROOT / "references"
+_LEGACY_LASTPOST_SKILL_DIR = Path.home() / ".hermes" / "skills" / "creative" / "lastpost-skill"
 DEFAULT_MANIFEST_PATH = (
     REPO_ROOT / "backend" / "tests" / "fixtures" / "writer_skill_eval" / "samples.json"
 )
@@ -45,6 +49,12 @@ AI_SLOP_MARKERS = (
     "免责声明",
     "我是一个ai",
     "ai语言模型",
+)
+ZH_SUBSET_SAMPLE_IDS = (
+    "nasa_force_talent",
+    "steve_jobs_stanford",
+    "tim_cook_mit",
+    "vision_pro_review",
 )
 
 
@@ -81,6 +91,8 @@ class WriterSkillEvalModeResult:
     validation_ok: bool
     revised_once: bool
     paragraph_count: int
+    output_language_guess: str = ""
+    compression_anomaly: bool = False
     route_key: str | None = None
     route_label: str | None = None
     route_reason: str | None = None
@@ -105,6 +117,7 @@ class WriterSkillEvalModeSummary:
     first_person_failures: int
     ai_slop_hits: int
     error_count: int
+    zh_subset_compression_avg: float | None = None
 
 
 @dataclass(frozen=True)
@@ -207,11 +220,14 @@ def resolve_lastpost_skill_root() -> Path:
         if configured_root.exists():
             return configured_root
 
-    if DEFAULT_LASTPOST_SKILL_DIR.exists():
-        return DEFAULT_LASTPOST_SKILL_DIR
+    if PINNED_LASTPOST_SKILL_DIR.exists():
+        return PINNED_LASTPOST_SKILL_DIR
+
+    if _LEGACY_LASTPOST_SKILL_DIR.exists():
+        return _LEGACY_LASTPOST_SKILL_DIR
 
     raise FileNotFoundError(
-        "lastpost-skill not found. Set LASTPOST_SKILL_DIR or install ~/.hermes/skills/creative/lastpost-skill."
+        "写作参考资料未找到。请确认 references/ 目录存在，或设置 LASTPOST_SKILL_DIR 环境变量。"
     )
 
 
@@ -366,8 +382,8 @@ def writer_skill_eval_report_to_markdown(report: WriterSkillEvalReport) -> str:
             "",
             "## 总览",
             "",
-            "| mode | 样本数 | 硬细节覆盖率 | 第三视角通过率 | 顺序通过率 | 平均压缩比 | 第一人称失败 | AI/免责声明命中 | 错误数 |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| mode | 样本数 | 硬细节覆盖率 | 第三视角通过率 | 顺序通过率 | 平均压缩比 | 中文子集压缩 | 第一人称失败 | AI/免责声明命中 | 错误数 |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for summary in report.summaries:
@@ -381,6 +397,7 @@ def writer_skill_eval_report_to_markdown(report: WriterSkillEvalReport) -> str:
                     _format_rate(summary.third_person_ok_rate),
                     _format_rate(summary.ordering_ok_rate),
                     f"{summary.avg_compression_ratio:.2f}",
+                    _format_optional_rate(summary.zh_subset_compression_avg),
                     str(summary.first_person_failures),
                     str(summary.ai_slop_hits),
                     str(summary.error_count),
@@ -415,9 +432,9 @@ def writer_skill_eval_report_to_markdown(report: WriterSkillEvalReport) -> str:
         )
 
         lines.append(
-            "| mode | rewrite_style | 硬覆盖 | 第三视角 | 顺序 | 压缩比 | revised_once | 错误 |"
+            "| mode | rewrite_style | 硬覆盖 | 第三视角 | 顺序 | 压缩比 | 语言 | 压缩异常 | revised_once | 错误 |"
         )
-        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- |")
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- | --- |")
         for mode in sample.modes:
             hard_total = mode.hard_detail_total or 0
             hard_covered = mode.hard_detail_covered or 0
@@ -432,6 +449,8 @@ def writer_skill_eval_report_to_markdown(report: WriterSkillEvalReport) -> str:
                         "否" if mode.error else ("是" if not mode.first_person_hits else "否"),
                         "否" if mode.error else ("是" if mode.ordering_ok else "否"),
                         f"{mode.compression_ratio:.2f}",
+                        mode.output_language_guess or "无",
+                        "是" if mode.compression_anomaly else "否",
                         "是" if mode.revised_once else "否",
                         "无" if not mode.error else mode.error,
                     ]
@@ -454,6 +473,10 @@ def writer_skill_eval_report_to_markdown(report: WriterSkillEvalReport) -> str:
                 lines.append("  - 第一人称命中：" + "、".join(mode.first_person_hits))
             if mode.ai_slop_hits:
                 lines.append("  - AI/免责声明命中：" + "、".join(mode.ai_slop_hits))
+            if mode.output_language_guess:
+                lines.append("  - 输出语言判定：" + mode.output_language_guess)
+            if mode.compression_anomaly:
+                lines.append("  - 压缩异常：是")
 
             lines.extend(
                 [
@@ -518,6 +541,11 @@ def writer_skill_eval_report_from_dict(value: dict[str, object]) -> WriterSkillE
                 first_person_failures=int(summary_value.get("first_person_failures") or 0),
                 ai_slop_hits=int(summary_value.get("ai_slop_hits") or 0),
                 error_count=int(summary_value.get("error_count") or 0),
+                zh_subset_compression_avg=(
+                    float(summary_value["zh_subset_compression_avg"])
+                    if summary_value.get("zh_subset_compression_avg") is not None
+                    else None
+                ),
             )
         )
 
@@ -549,7 +577,7 @@ def _run_mode(
     baseline_route = None
     if mode == "article_longform":
         focus_for_route = rewrite_focus or ARTICLE_LONGFORM_DEFAULT_FOCUS
-        selected_template = _select_rewrite_template(
+        selected_template = select_rewrite_template(
             source_text=source_text,
             rewrite_focus=focus_for_route,
             references=references,
@@ -592,23 +620,27 @@ def _run_mode(
             validation_ok=False,
             revised_once=False,
             paragraph_count=0,
+            output_language_guess="错误",
+            compression_anomaly=False,
             route_key=baseline_route.key if baseline_route else None,
             route_label=baseline_route.label if baseline_route else None,
             route_reason=baseline_route.route_reason if baseline_route else None,
             error=str(error),
         )
 
-    ledger = _build_detail_ledger(source_text)
-    coverage = _analyze_detail_coverage(ledger, rewritten_text)
-    detail_coverage_issues = _format_detail_coverage_issues(coverage)
+    ledger = build_detail_ledger(source_text)
+    coverage = analyze_detail_coverage(ledger, rewritten_text)
+    detail_coverage_issues = format_detail_coverage_issues(coverage)
     first_person_hits = _detect_first_person_hits(rewritten_text)
     ai_slop_hits = _detect_ai_slop_hits(rewritten_text)
+    output_language_guess = guess_output_language(rewritten_text)
     ordering_ok = _are_hard_items_in_source_order(ledger, rewritten_text)
     paragraph_count = _count_paragraphs(rewritten_text)
     output_chars = len(rewritten_text.strip())
     hard_total = len(ledger.coverage_items())
     hard_covered = hard_total - len(coverage.missing_items)
     compression_ratio = output_chars / max(1, len(source_text))
+    compression_anomaly = compression_ratio > 1.0
 
     return WriterSkillEvalModeResult(
         mode=mode,
@@ -631,6 +663,8 @@ def _run_mode(
         validation_ok=validation_ok,
         revised_once=revised_once,
         paragraph_count=paragraph_count,
+        output_language_guess=output_language_guess,
+        compression_anomaly=compression_anomaly,
         route_key=baseline_route.key if baseline_route else None,
         route_label=baseline_route.label if baseline_route else None,
         route_reason=baseline_route.route_reason if baseline_route else None,
@@ -653,9 +687,12 @@ def _summarize_modes(
     sample_results: Iterable[WriterSkillEvalSampleResult],
 ) -> tuple[WriterSkillEvalModeSummary, ...]:
     mode_buckets: dict[str, list[WriterSkillEvalModeResult]] = {}
+    subset_buckets: dict[str, list[float]] = {}
     for sample_result in sample_results:
         for mode in sample_result.modes:
             mode_buckets.setdefault(mode.mode, []).append(mode)
+            if sample_result.sample.sample_id in ZH_SUBSET_SAMPLE_IDS and not mode.error:
+                subset_buckets.setdefault(mode.mode, []).append(mode.compression_ratio)
 
     summaries: list[WriterSkillEvalModeSummary] = []
     for mode_name, results in mode_buckets.items():
@@ -684,6 +721,7 @@ def _summarize_modes(
         first_person_failures = sum(1 for result in results if result.first_person_hits)
         ai_slop_hits = sum(len(result.ai_slop_hits) for result in results)
         error_count = sum(1 for result in results if result.error)
+        subset_ratios = subset_buckets.get(mode_name) or []
         summaries.append(
             WriterSkillEvalModeSummary(
                 mode=mode_name,
@@ -695,6 +733,9 @@ def _summarize_modes(
                 first_person_failures=first_person_failures,
                 ai_slop_hits=ai_slop_hits,
                 error_count=error_count,
+                zh_subset_compression_avg=(
+                    sum(subset_ratios) / len(subset_ratios) if subset_ratios else None
+                ),
             )
         )
 
@@ -820,6 +861,12 @@ def _format_rate(value: float) -> str:
     return f"{value * 100:.1f}%"
 
 
+def _format_optional_rate(value: float | None) -> str:
+    if value is None:
+        return "-"
+    return _format_rate(value)
+
+
 def _mode_result_from_dict(value: dict[str, object]) -> WriterSkillEvalModeResult:
     return WriterSkillEvalModeResult(
         mode=str(value.get("mode") or ""),
@@ -839,6 +886,8 @@ def _mode_result_from_dict(value: dict[str, object]) -> WriterSkillEvalModeResul
         ordering_ok=bool(value.get("ordering_ok")),
         first_person_hits=tuple(value.get("first_person_hits") or ()),
         ai_slop_hits=tuple(value.get("ai_slop_hits") or ()),
+        output_language_guess=str(value.get("output_language_guess") or ""),
+        compression_anomaly=bool(value.get("compression_anomaly")),
         validation_ok=bool(value.get("validation_ok")),
         revised_once=bool(value.get("revised_once")),
         paragraph_count=int(value.get("paragraph_count") or 0),

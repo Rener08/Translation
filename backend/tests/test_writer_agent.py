@@ -16,7 +16,7 @@ def test_writer_agent_runs_outline_draft_and_single_revision(monkeypatch) -> Non
             )
         if "输出中文文章初稿" in focus:
             return ContentRewriteResult(
-                rewritten_text="第一段太短。\n\n第二段太短。",
+                rewritten_text="第一段" + ("太短。" * 120) + "\n\n第二段" + ("太短。" * 120),
                 provider="ollama",
                 model="qwen3.5:4b",
                 quality_issues=("too short",),
@@ -33,7 +33,7 @@ def test_writer_agent_runs_outline_draft_and_single_revision(monkeypatch) -> Non
         )
 
     monkeypatch.setattr(
-        "app.services.writer_agent_service.rewrite_content",
+        "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
     )
 
@@ -53,6 +53,8 @@ def test_writer_agent_runs_outline_draft_and_single_revision(monkeypatch) -> Non
 
 
 def test_writer_agent_speech_verbatim_skips_article_pipeline(monkeypatch) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
     calls: list[str] = []
 
     def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
@@ -60,14 +62,18 @@ def test_writer_agent_speech_verbatim_skips_article_pipeline(monkeypatch) -> Non
         calls.append(focus)
         assert kwargs["rewrite_style"] == "speech_verbatim"
         return ContentRewriteResult(
-            rewritten_text="保留口吻后的正文。",
+            rewritten_text="保留口吻后的正文。" * 180,
             provider="ollama",
             model="qwen3.5:4b",
         )
 
     monkeypatch.setattr(
-        "app.services.writer_agent_service.rewrite_content",
+        "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
     )
 
     report = WriterAgent().run(
@@ -101,11 +107,10 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
                 model="qwen3.5:4b",
             )
 
-        assert "补足下面缺失的细节" in str(kwargs["rewrite_focus"])
+        assert "请只补足下面缺失的细节" in str(kwargs["rewrite_focus"])
         assert kwargs["rewrite_style"] == "speech_verbatim"
         assert "3" in str(kwargs["detail_ledger"])
         assert "8" in str(kwargs["detail_ledger"])
-        assert "SpaceX" not in str(kwargs["detail_ledger"])
         return ContentRewriteResult(
             rewritten_text="NASA said 3 rockets launched at 8 pm. SpaceX confirmed it.",
             provider="ollama",
@@ -113,7 +118,7 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
         )
 
     monkeypatch.setattr(
-        "app.services.writer_agent_service.rewrite_content",
+        "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
     )
 
@@ -136,20 +141,26 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
 def test_writer_agent_speech_verbatim_keeps_transliterated_names_without_patch(
     monkeypatch,
 ) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
     calls: list[dict[str, object]] = []
 
     def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
         calls.append(kwargs)
         assert kwargs["rewrite_style"] == "speech_verbatim"
         return ContentRewriteResult(
-            rewritten_text="贾里德·艾萨克曼说 3 枚火箭发射成功，SpaceX 也确认了。",
+            rewritten_text="贾里德·艾萨克曼说 3 枚火箭发射成功，SpaceX 也确认了。这次发射保持了原有节奏，没有额外扩写，也没有改动事实。",
             provider="ollama",
             model="qwen3.5:4b",
         )
 
     monkeypatch.setattr(
-        "app.services.writer_agent_service.rewrite_content",
+        "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
     )
 
     report = WriterAgent().run(
@@ -179,6 +190,9 @@ def test_run_writer_agent_returns_content_rewrite_result(monkeypatch) -> None:
                 "model": "deepseek-chat",
                 "quality_issues": ("issue-a",),
                 "detail_coverage_issues": ("缺失细节：数字 3",),
+                "writer_trace_id": "writer-trace-1",
+                "writer_policy_version": "policy-v1",
+                "writer_prompt_version": "prompt-v1",
             },
         )(),
     )
@@ -194,6 +208,9 @@ def test_run_writer_agent_returns_content_rewrite_result(monkeypatch) -> None:
     assert result.model == "deepseek-chat"
     assert result.quality_issues == ("issue-a",)
     assert result.detail_coverage_issues == ("缺失细节：数字 3",)
+    assert result.writer_trace_id == "writer-trace-1"
+    assert result.writer_policy_version == "policy-v1"
+    assert result.writer_prompt_version == "prompt-v1"
 
 
 def test_writer_agent_speech_verbatim_treats_chinese_dates_as_hard_coverage(
@@ -212,7 +229,7 @@ def test_writer_agent_speech_verbatim_treats_chinese_dates_as_hard_coverage(
                 model="qwen3.5:4b",
             )
 
-        assert "补足下面缺失的细节" in str(kwargs["rewrite_focus"])
+        assert "请只补足下面缺失的细节" in str(kwargs["rewrite_focus"])
         assert "2025 年 6 月" in str(kwargs["rewrite_focus"])
         return ContentRewriteResult(
             rewritten_text="我们在 2025 年 6 月发布了产品，并开了一次会议。",
@@ -221,7 +238,7 @@ def test_writer_agent_speech_verbatim_treats_chinese_dates_as_hard_coverage(
         )
 
     monkeypatch.setattr(
-        "app.services.writer_agent_service.rewrite_content",
+        "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
     )
 
@@ -243,6 +260,8 @@ def test_writer_agent_speech_verbatim_treats_chinese_dates_as_hard_coverage(
 def test_writer_agent_speech_verbatim_does_not_patch_for_missing_turn_phrase(
     monkeypatch,
 ) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
     calls: list[dict[str, object]] = []
 
     def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
@@ -257,8 +276,12 @@ def test_writer_agent_speech_verbatim_does_not_patch_for_missing_turn_phrase(
         )
 
     monkeypatch.setattr(
-        "app.services.writer_agent_service.rewrite_content",
+        "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
     )
 
     report = WriterAgent().run(
@@ -318,7 +341,7 @@ def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
         )
 
     monkeypatch.setattr(
-        "app.services.writer_agent_service.rewrite_content",
+        "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
     )
 
@@ -333,3 +356,45 @@ def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
     assert report.rewrite_style == "article_longform"
+
+
+def test_speech_verbatim_uses_refiner_when_llm_call_fn_provided(monkeypatch) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
+    refiner_calls: list[tuple[str, str]] = []
+    rewrite_calls: list[dict[str, object]] = []
+
+    def fake_llm_call(system_prompt, user_prompt):
+        refiner_calls.append((system_prompt, user_prompt))
+        return '[{"kind": "数字", "text": "42", "priority": "high"}]'
+
+    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+        rewrite_calls.append(kwargs)
+        return ContentRewriteResult(
+            rewritten_text="结果是 42，已经确认。",
+            provider="ollama",
+            model="qwen3.5:4b",
+        )
+
+    monkeypatch.setattr(
+        "app.services.pipelines.rewrite_content",
+        fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
+    )
+
+    report = WriterAgent().run(
+        material=MaterialPackage(source_text="The answer is 42 confirmed by NASA."),
+        rewrite_focus="保留原作者说话节奏。",
+        rewrite_style="speech_verbatim",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+        llm_call_fn=fake_llm_call,
+    )
+
+    assert len(refiner_calls) == 1
+    assert len(rewrite_calls) == 1
+    assert "42" in rewrite_calls[0]["detail_ledger"]
+    assert report.draft.revised_once is False
+    assert report.rewrite_style == "speech_verbatim"

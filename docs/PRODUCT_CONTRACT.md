@@ -10,6 +10,9 @@ Primary product path:
 
 The default writing mode is `speech_verbatim`: it pins extracted facts (numbers, dates, names, quotes, turn/conclusion phrases) into a `DetailLedger`, generates the draft once, then runs a single coverage-driven patch when hard items are missing. The legacy `article_longform` mode (uses `ArticleSpec` length budgets and outline/draft/revise) is only used when the user explicitly selects it.
 
+The long-form `lastpost-skill` bundle is vendored in the repo under `references/` and is preferred before the home-directory fallback so the `article_longform` path stays reproducible across machines.
+Within `article_longform`, automatic routing is intentionally narrow: it prioritizes interview / product review / infra-model-platform material, treats `01_big_company_war` as a narrow strategic fallback, and falls back to a neutral generic article template when no strong signal matches.
+
 ## Hard Boundaries
 
 1. The ingest half is deterministic and tool-like:

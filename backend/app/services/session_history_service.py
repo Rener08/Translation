@@ -89,6 +89,7 @@ def upsert_job_session(
 def record_rewrite_result(
     *,
     content_context_id: str,
+    rewrite_style: str | None = None,
     rewrite_focus: str | None,
     rewrite_source_text: str,
     rewritten_text: str,
@@ -96,6 +97,9 @@ def record_rewrite_result(
     rewrite_detail_coverage_issues: list[str] | None = None,
     rewrite_provider: str,
     rewrite_model: str,
+    writer_trace_id: str | None = None,
+    writer_policy_version: str | None = None,
+    writer_prompt_version: str | None = None,
 ) -> None:
     normalized_id = _normalize_key(content_context_id)
     if not normalized_id:
@@ -107,6 +111,7 @@ def record_rewrite_result(
         payload["content_context_id"] = normalized_id
         payload["created_at"] = str(payload.get("created_at") or now)
         payload["updated_at"] = now
+        payload["rewrite_style"] = _normalize_optional_text(rewrite_style)
         payload["rewrite_focus"] = _normalize_optional_text(rewrite_focus)
         payload["rewrite_source_text"] = rewrite_source_text.strip()
         payload["rewritten_text"] = rewritten_text.strip()
@@ -116,6 +121,9 @@ def record_rewrite_result(
         )
         payload["rewrite_provider"] = _normalize_optional_text(rewrite_provider)
         payload["rewrite_model"] = _normalize_optional_text(rewrite_model)
+        payload["writer_trace_id"] = _normalize_optional_text(writer_trace_id)
+        payload["writer_policy_version"] = _normalize_optional_text(writer_policy_version)
+        payload["writer_prompt_version"] = _normalize_optional_text(writer_prompt_version)
         payload["chat_turns"] = _normalize_chat_turns(payload.get("chat_turns"))
 
         persistent_cache_service.store_json_cache(
@@ -235,6 +243,7 @@ def _normalize_session_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized["transcript_en_text"] = _normalize_text(normalized.get("transcript_en_text"))
     normalized["translation_zh_text"] = _normalize_text(normalized.get("translation_zh_text"))
     normalized["rewrite_focus"] = _normalize_optional_text(normalized.get("rewrite_focus"))
+    normalized["rewrite_style"] = _normalize_optional_text(normalized.get("rewrite_style"))
     normalized["rewrite_source_text"] = _normalize_text(normalized.get("rewrite_source_text"))
     normalized["rewritten_text"] = _normalize_text(normalized.get("rewritten_text"))
     normalized["rewrite_quality_issues"] = _normalize_text_list(
@@ -247,6 +256,13 @@ def _normalize_session_payload(payload: dict[str, Any]) -> dict[str, Any]:
         normalized.get("rewrite_provider")
     )
     normalized["rewrite_model"] = _normalize_optional_text(normalized.get("rewrite_model"))
+    normalized["writer_trace_id"] = _normalize_optional_text(normalized.get("writer_trace_id"))
+    normalized["writer_policy_version"] = _normalize_optional_text(
+        normalized.get("writer_policy_version")
+    )
+    normalized["writer_prompt_version"] = _normalize_optional_text(
+        normalized.get("writer_prompt_version")
+    )
     normalized["chat_turns"] = _normalize_chat_turns(normalized.get("chat_turns"))
     return normalized
 

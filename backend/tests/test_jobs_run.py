@@ -790,7 +790,7 @@ def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
         )
 
     monkeypatch.setattr("app.main.run_video_job_with_translation_config", fake_run)
-    monkeypatch.setattr("app.services.content_rewrite_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
 
     job_response = client.post(
         "/api/jobs/run",

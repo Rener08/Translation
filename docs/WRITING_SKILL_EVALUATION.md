@@ -14,6 +14,9 @@ This repo now includes a local evaluation harness for the writing layer.
 - third-person compliance
 - order preservation
 - compression ratio
+- output language guess
+- compression anomaly (`ratio > 1`)
+- Chinese subset compression average
 - AI/disclaimer/self-reference markers
 - backend-reported `quality_issues`
 - backend-reported `detail_coverage_issues`
@@ -43,6 +46,7 @@ Optional overrides:
 - `--model deepseek-v4-pro`（与当前 baseline #2 对齐；`deepseek-chat` 仍可用于本地冒烟）
 - `--refresh-samples`
 - `--sample-id <id>` to run a subset
+- `--fail-on-error` to exit non-zero when any mode errors out
 
 The script writes:
 
@@ -134,9 +138,15 @@ into `tmp/writer_skill_eval/<timestamp>/` by default.
 
 | 步骤 | 操作 | 验收 |
 | --- | --- | --- |
-| C1 | 盘点 `lastpost-skill` 中实际被 `writer_skill_eval` 与路由命中的模板；在仓库内增加 **pinned 副本**（例如 `references/lastpost-skill-pinned/`）或文档写明固定 `LASTPOST_SKILL_DIR` + commit，避免仅依赖 `~/.hermes` | 新同事 clone 后能跑同构 article 评测 |
+| C1 | 盘点 `lastpost-skill` 中实际被 `writer_skill_eval` 与路由命中的模板；在仓库内保留 **pinned 副本**（当前落在 `references/`），并继续保留 `LASTPOST_SKILL_DIR` override，避免仅依赖 `~/.hermes` | 新同事 clone 后能跑同构 article 评测 |
 | C2 | 删除或弱化与 YouTube 场景无关的晚点模板引用（改 `[backend/app/services/content_rewrite_service.py](backend/app/services/content_rewrite_service.py)` 路由或模板列表，**小步**） | 全量评测 `article_longform` 硬覆盖不劣于阶段 C 前一轮 |
 | C3 | 若需冲 P2：仅在 `article_longform` 增加 **第二轮**「人称 patch」（仍调用 `rewrite_content`，非新 agent），上限 1 次以控成本 | 记录 token/耗时；仍达不到 P2 则执行 **实验模式** 降级（前端 `[frontend/app/components/translation-settings-panel.tsx](frontend/app/components/translation-settings-panel.tsx)` 文案 + 本文件说明） |
+
+**路由收窄约定**
+
+- `article_longform` 的自动路由只优先考虑访谈 / 产品评测 / 基础设施-模型-平台三类。
+- `01_big_company_war` 仅在明确出现组织/战略/竞争/入口/资源重排信号时作为窄兜底，不再作为未知素材的默认 fallback。
+- 其余模板保留为参考资料和未来显式模式素材，不参与普通 YouTube 输入的默认路由。
 
 ---
 
@@ -148,7 +158,7 @@ into `tmp/writer_skill_eval/<timestamp>/` by default.
 | --- | --- | --- |
 | D1 | 定义常量 `WRITER_POLICY_VERSION` / `SPEECH_VERBATIM_PROMPT_VERSION`（例如放在 `content_rewrite_service.py` 或单独 `writer_versions.py`），写入日志与（可选）响应头 | 日志可筛版本 |
 | D2 | 在 `[backend/app/api/routers/content.py](backend/app/api/routers/content.py)` + `[backend/app/services/session_history_service.py](backend/app/services/session_history_service.py)` 增量持久化：至少 `rewrite_style`、`provider`、`model`、可选 `writer_policy_version`；**API 对外字段先与 Jack 确认再加**，避免破坏旧客户端 | 会话可回放 |
-| D3 | 仓库内维护 `docs/writer-failure-samples.md` 或在 `tmp/` 外另设 `eval_failures/`（**小**、脱敏）：分类（英文、ratio>1、人称泄漏、硬缺）各 1–2 条摘录 + sample_id | 每次改 prompt 前过一遍该清单 |
+| D3 | 仓库内维护 [`docs/writer-failure-samples.md`](docs/writer-failure-samples.md) 或在 `tmp/` 外另设 `eval_failures/`（**小**、脱敏）：分类（英文、ratio>1、人称泄漏、硬缺）各 1–2 条摘录 + sample_id | 每次改 prompt 前过一遍该清单 |
 
 ---
 

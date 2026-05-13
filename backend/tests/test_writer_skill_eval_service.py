@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from pathlib import Path
 
 from app.services.article_generation_service import ArticleValidationResult, resolve_article_spec
 from app.services.writer_agent_service import ArticleDraft, MaterialPackage, WriterRunReport
@@ -9,6 +10,7 @@ from app.services.writer_skill_eval_service import (
     build_full_prompt_from_skill_prompt,
     load_writer_skill_eval_manifest,
     run_writer_skill_eval,
+    resolve_lastpost_skill_root,
     writer_skill_eval_report_to_markdown,
 )
 
@@ -104,7 +106,7 @@ def test_run_writer_skill_eval_records_three_modes(monkeypatch, tmp_path) -> Non
         ),
     )
     monkeypatch.setattr(
-        "app.services.writer_skill_eval_service._select_rewrite_template",
+        "app.services.writer_skill_eval_service.select_rewrite_template",
         lambda **kwargs: SimpleNamespace(
             key="09_interview_transcript_sync",
             label="09 访谈 / 播客 / 字幕同步稿",
@@ -201,4 +203,16 @@ def test_run_writer_skill_eval_records_three_modes(monkeypatch, tmp_path) -> Non
         "full_prompt_baseline",
     }
     assert report.samples[0].modes[1].route_label == "09 访谈 / 播客 / 字幕同步稿"
+    assert report.samples[0].modes[0].output_language_guess == "英文主导"
+    assert report.samples[0].modes[0].compression_anomaly is False
+    assert "中文子集压缩" in writer_skill_eval_report_to_markdown(report)
     assert "决策提示" in writer_skill_eval_report_to_markdown(report)
+
+
+def test_resolve_lastpost_skill_root_prefers_repo_pinned_copy(monkeypatch) -> None:
+    monkeypatch.delenv("LASTPOST_SKILL_DIR", raising=False)
+    monkeypatch.delenv("REWRITE_SKILL_DIR", raising=False)
+
+    resolved = resolve_lastpost_skill_root()
+
+    assert resolved == Path(__file__).resolve().parents[2] / "references"

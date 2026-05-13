@@ -1,0 +1,161 @@
+from app.services.rewrite_template_service import RewriteReferences, select_rewrite_template
+
+SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
+你是一名中文口吻整理助手。
+
+任务：
+1. 基于用户提供的原始内容进行整理，不要凭空重写。
+2. 保留原作者的说话节奏、语气、观点顺序和关键信息，不编造新事实。
+3. 优先保留问答节奏、口头表达、停顿感和语气词，只做轻度润色和断句整理。
+4. 输出必须是简体中文稿；如果原文是英文，也要整理成简体中文，不要整篇保留英文。
+5. 不要总结化重写，不要改成公众号长文，不要加入标题前缀或分析过程。
+6. 只输出整理后的正文。
+""".strip()
+
+ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = """
+你是一名中文第三视角改写助手。
+
+任务：
+1. 基于用户提供的原始内容进行"改写"，不是凭空重写。
+2. 保留原文事实、观点顺序和关键信息，不编造新事实。
+3. 默认使用第三视角叙述，除原文直接引用外，不使用"我 / 我们 / 咱们 / 本人"等第一人称自述。
+4. 如果原文是访谈、自述或演讲稿，请改写成面向读者的文章表达，不要把正文写成第一人称口吻。
+5. 语言更顺畅、更有节奏、更像晚点风格的深度文章表达。
+6. 默认输出简体中文。
+7. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
+""".strip()
+
+DEFAULT_REWRITE_FOCUS = (
+    "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。"
+)
+
+ARTICLE_LONGFORM_DEFAULT_FOCUS = (
+    "改写成第三视角的中文文章，保留原意和事实，不删关键信息，不使用第一人称自述。"
+)
+
+
+def uses_full_skill_prompt(rewrite_focus: str) -> bool:
+    return "{{transcript}}" in rewrite_focus
+
+
+def build_rewrite_messages(
+    *,
+    source_text: str,
+    rewrite_focus: str,
+    rewrite_style: str,
+    references: RewriteReferences | None,
+    detail_ledger: str | None,
+) -> list[dict[str, str]]:
+    if uses_full_skill_prompt(rewrite_focus):
+        user_prompt = rewrite_focus.replace("{{transcript}}", source_text)
+        return [
+            {"role": "system", "content": "你是一个智能写作助手。请严格遵守用户的格式要求。"},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    if rewrite_style == "speech_verbatim":
+        return _build_speech_verbatim_messages(
+            source_text=source_text,
+            rewrite_focus=rewrite_focus,
+            detail_ledger=detail_ledger,
+        )
+
+    if references is None:
+        from app.services.content_rewrite_service import ContentRewriteConfigurationError
+
+        raise ContentRewriteConfigurationError(
+            "Rewrite references are required when no full skill prompt is provided."
+        )
+
+    selected_template = select_rewrite_template(
+        source_text=source_text,
+        rewrite_focus=rewrite_focus,
+        references=references,
+    )
+    reference_context = (
+        f"【参考来源】\n{references.reference_profile}\n\n"
+        "【晚点题材路由】\n"
+        f"模板：{selected_template.label}\n"
+        f"判定：{selected_template.route_reason}\n\n"
+        "【场景模板】\n"
+        f"{selected_template.body}\n\n"
+        "【通用一页模板】\n"
+        f"{references.article_template}\n\n"
+        "【标题与反向提示】\n"
+        f"{references.section_title_rules}\n\n"
+        "【内容方法论参考】\n"
+        f"{references.content_methodology}\n\n"
+        "【风格示例参考】\n"
+        f"{references.style_examples}\n\n"
+        "【写作规则参考】\n"
+        f"{references.skill_guide}\n\n"
+        "【质量流程参考】\n"
+        f"{references.quality_pipeline}"
+    )
+
+    user_prompt = (
+        "请改写以下内容。\n\n"
+        f"改写目标：{rewrite_focus}\n\n"
+        "限制要求：\n"
+        "- 不编造事实，不添加原文没有的关键结论。\n"
+        "- 保持原始信息。\n"
+        "- 使用第三视角成文，除原文直接引用外，不使用我/我们/咱们/本人作为叙述主语。\n"
+        "- 优先遵守场景模板、标题规则和质量流程。\n"
+        "- 输出只包含改写后的正文。\n\n"
+        "原始内容：\n"
+        f"{source_text}"
+    )
+
+    return [
+        {
+            "role": "system",
+            "content": ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS,
+        },
+        {"role": "system", "content": reference_context},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _build_speech_verbatim_messages(
+    *,
+    source_text: str,
+    rewrite_focus: str,
+    detail_ledger: str | None,
+) -> list[dict[str, str]]:
+    prompt_parts = [
+        "请将下面内容整理成自然、克制的中文稿件。",
+        "",
+        f"整理目标：{rewrite_focus}",
+        "",
+        "硬性要求：",
+        "- 保留原作者的说话节奏、语气、观点顺序和信息密度。",
+        "- 优先保留问答节奏、口头表达、停顿感和语气词，只做轻度断句与润色。",
+        "- 不要总结化，不要改写成公众号长文，不要重排成更抽象的提纲。",
+        "- 不要删掉有意义的重复、强调或转折，除非它们明显影响阅读。",
+        "- 不要新增原文没有的新事实，不要补充背景判断。",
+        "- 输出必须是简体中文稿；如果原文是英文，也要整理成简体中文，不要整篇保留英文。",
+        "- 只输出正文，不要标题、解释、项目符号说明或分析过程。",
+        "- 输出长度应在原文的 45%-60% 之间。如果整理后明显短于 45%，说明压缩过头，请补回口语化重复、停顿感、转折语气和具体例子。",
+        "- 如果输出明显长于原文，请压回信息密度，但不要删掉硬细节。",
+        "- 当原文超过 50000 字时不强求长度比例，但仍要避免大段省略；可适当保留更多原话与例子。",
+    ]
+    if detail_ledger:
+        prompt_parts.extend(
+            [
+                "",
+                "【细节清单（优先保留）】",
+                detail_ledger.strip(),
+            ]
+        )
+    prompt_parts.extend(
+        [
+            "",
+            "原始内容：",
+            source_text,
+        ]
+    )
+    user_prompt = "\n".join(prompt_parts)
+    return [
+        {"role": "system", "content": SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS},
+        {"role": "user", "content": user_prompt},
+    ]

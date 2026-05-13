@@ -95,6 +95,7 @@ async def content_rewrite(
             await run_in_threadpool(
                 record_rewrite_result,
                 content_context_id=request.content_context_id,
+                rewrite_style=request.rewrite_style,
                 rewrite_focus=request.rewrite_focus,
                 rewrite_source_text=request.source_text,
                 rewritten_text=result.rewritten_text,
@@ -102,6 +103,9 @@ async def content_rewrite(
                 rewrite_detail_coverage_issues=detail_coverage_issues,
                 rewrite_provider=result.provider,
                 rewrite_model=result.model,
+                writer_trace_id=getattr(result, "writer_trace_id", ""),
+                writer_policy_version=getattr(result, "writer_policy_version", ""),
+                writer_prompt_version=getattr(result, "writer_prompt_version", ""),
             )
         except Exception:
             logger.warning(

@@ -18,6 +18,23 @@ HALLUCINATION_MARKERS = (
 )
 
 
+def guess_output_language(text: str) -> str:
+    normalized = str(text or "").strip()
+    if not normalized:
+        return "混合"
+
+    chinese_chars = len(re.findall(r"[\u4e00-\u9fff]", normalized))
+    latin_chars = len(re.findall(r"[A-Za-z]", normalized))
+
+    if latin_chars >= 40 and latin_chars > chinese_chars * 2:
+        return "英文主导"
+    if chinese_chars >= 8 and chinese_chars >= latin_chars:
+        return "简中"
+    if chinese_chars == 0 and latin_chars > 0:
+        return "英文主导"
+    return "混合"
+
+
 def analyze_rewrite_quality(text: str) -> list[str]:
     normalized = str(text or "").strip()
     if not normalized:
@@ -28,6 +45,8 @@ def analyze_rewrite_quality(text: str) -> list[str]:
     issues.extend(_detect_repeated_paragraphs(normalized))
     issues.extend(_detect_hallucination_markers(normalized))
     issues.extend(_detect_malformed_headings(normalized))
+    if guess_output_language(normalized) == "英文主导":
+        issues.append("检测到输出疑似以英文为主，建议改为简体中文稿。")
 
     # 去重但保留顺序
     deduped: list[str] = []

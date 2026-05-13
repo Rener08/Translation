@@ -318,11 +318,15 @@ def test_session_history_writes_merge_atomically(monkeypatch, tmp_path: Path) ->
         name="rewrite-thread",
         kwargs={
             "content_context_id": content_context_id,
+            "rewrite_style": "speech_verbatim",
             "rewrite_focus": "请改成更口语化。",
             "rewrite_source_text": "大家好。\n欢迎回来。",
             "rewritten_text": "这是改写后的版本。",
             "rewrite_provider": "deepseek",
             "rewrite_model": "deepseek-chat",
+            "writer_trace_id": "writer-trace-merge-test",
+            "writer_policy_version": "policy-merge-test",
+            "writer_prompt_version": "prompt-merge-test",
         },
     )
     chat_thread = threading.Thread(
@@ -351,8 +355,12 @@ def test_session_history_writes_merge_atomically(monkeypatch, tmp_path: Path) ->
 
     detail = load_session_history(content_context_id)
     assert detail is not None
+    assert detail["rewrite_style"] == "speech_verbatim"
     assert detail["rewritten_text"] == "这是改写后的版本。"
     assert detail["rewrite_focus"] == "请改成更口语化。"
+    assert detail["writer_trace_id"] == "writer-trace-merge-test"
+    assert detail["writer_policy_version"] == "policy-merge-test"
+    assert detail["writer_prompt_version"] == "prompt-merge-test"
     assert len(detail["chat_turns"]) == 2
     assert detail["chat_turns"][0]["role"] == "user"
     assert detail["chat_turns"][1]["role"] == "assistant"

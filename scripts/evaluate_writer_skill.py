@@ -72,6 +72,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional rewrite API key override.",
     )
+    parser.add_argument(
+        "--fail-on-error",
+        action="store_true",
+        help="Exit with a non-zero status if any mode reports an error.",
+    )
     return parser.parse_args()
 
 
@@ -104,6 +109,8 @@ def main() -> int:
     print(f"report.json: {json_path}")
     print(f"report.md: {md_path}")
     print(report.decision_hint)
+    if args.fail_on_error and any(summary.error_count > 0 for summary in report.summaries):
+        return 1
     return 0
 
 
