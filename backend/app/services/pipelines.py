@@ -26,7 +26,11 @@ from app.services.detail_ledger import (
 )
 from app.services.detail_ledger_refiner import refine_detail_ledger_with_llm
 from app.services.prompt_validation import validate_rewrite_prompt
-from app.services.quality_check_service import check_article_quality, QualityReport
+from app.services.quality_check_service import (
+    QualityReport,
+    build_revision_prompt,
+    check_article_quality,
+)
 from app.services.skill_config_service import SkillConfig
 from app.services.writer_versions import (
     ARTICLE_LONGFORM_PROMPT_VERSION,
