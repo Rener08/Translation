@@ -1,10 +1,11 @@
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 import re
-
-from faster_whisper import WhisperModel
+from typing import TYPE_CHECKING
 
 from app.config import ROOT_DIR, get_env_str
 from app.services.persistent_cache_service import (
@@ -12,6 +13,9 @@ from app.services.persistent_cache_service import (
     load_json_cache,
     store_json_cache,
 )
+
+if TYPE_CHECKING:
+    from faster_whisper import WhisperModel
 
 WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"^[a-zA-Z]:[\\/]")
 
@@ -126,7 +130,15 @@ def _get_whisper_model() -> WhisperModel:
     compute_type = get_env_str("WHISPER_COMPUTE_TYPE") or "int8"
 
     try:
-        return WhisperModel(model_name, device=device, compute_type=compute_type)
+        from faster_whisper import WhisperModel as FasterWhisperModel
+    except ModuleNotFoundError as error:
+        raise TranscriptionConfigurationError(
+            "Missing optional dependency 'faster-whisper'. "
+            "Install backend requirements before enabling local transcription."
+        ) from error
+
+    try:
+        return FasterWhisperModel(model_name, device=device, compute_type=compute_type)
     except Exception as error:
         raise TranscriptionConfigurationError(
             "Failed to load local Whisper model "

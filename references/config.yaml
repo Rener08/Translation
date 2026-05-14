@@ -1,0 +1,47 @@
+style_name: "卡兹克"
+perspective: "first_person"
+
+output:
+  min_chars: 3000
+  target_chars: 5000
+  max_chars: 8000
+  sections:
+    min: 4
+    max: 8
+
+forbidden_words:
+  - "说白了"
+  - "本质上"
+  - "换句话说"
+  - "不可否认"
+  - "综上所述"
+  - "值得注意的是"
+  - "不难发现"
+  - "让我们来看看"
+  - "接下来让我们"
+
+forbidden_punctuation:
+  - char: "："
+    replace_with: "，"
+  - char: "——"
+    replace_with: "，"
+  - type: "double_quote"
+    replace_with: "「」"
+
+perspective_markers: []
+
+template_routing_enabled: false
+
+content_filters:
+  - "跳过广告和赞助内容"
+  - "跳过节目开场和结尾的固定口播"
+
+quality_layers:
+  - name: "L1 硬性规则"
+    checks: [forbidden_words, forbidden_punctuation, no_fabrication]
+  - name: "L2 风格一致性"
+    checks: [rhythm_variety, sentence_length_mix]
+  - name: "L3 内容深度"
+    checks: [evidence_support, detail_coverage]
+  - name: "L4 活人感"
+    checks: [temperature, colloquial_density]

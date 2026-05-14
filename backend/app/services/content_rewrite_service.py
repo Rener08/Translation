@@ -77,6 +77,7 @@ def rewrite_content(
     rewrite_style: RewriteStyle | None = None,
     rewrite_config: dict[str, object] | None = None,
     detail_ledger: str | None = None,
+    skill_config=None,
 ) -> ContentRewriteResult:
     normalized_source = str(source_text or "").strip()
     if not normalized_source:
@@ -110,6 +111,7 @@ def rewrite_content(
         rewrite_style=normalized_style,
         references=references,
         detail_ledger=detail_ledger,
+        skill_config=skill_config,
     )
 
     if config.provider == "ollama":

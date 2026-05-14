@@ -7,7 +7,6 @@ from typing import Literal, Protocol
 from app.services.article_generation_service import (
     ArticleSpec,
     ArticleValidationResult,
-    build_article_rewrite_prompt,
     resolve_article_spec,
     validate_generated_article,
 )
@@ -27,18 +26,14 @@ from app.services.detail_ledger import (
 )
 from app.services.detail_ledger_refiner import refine_detail_ledger_with_llm
 from app.services.prompt_validation import validate_rewrite_prompt
+from app.services.quality_check_service import check_article_quality, QualityReport
+from app.services.skill_config_service import SkillConfig
 from app.services.writer_versions import (
     ARTICLE_LONGFORM_PROMPT_VERSION,
     FULL_PROMPT_PROMPT_VERSION,
     SPEECH_VERBATIM_PROMPT_VERSION,
     WRITER_POLICY_VERSION,
     new_writer_trace_id,
-)
-
-
-ARTICLE_LONGFORM_FIRST_PERSON_MARKERS: tuple[str, ...] = (
-    "我想", "我会", "我认为", "我觉得", "我来", "我要", "我先", "我正在",
-    "我们", "我们先", "我们会", "我们认为", "我们觉得", "咱们", "本人",
 )
 
 
@@ -126,7 +121,8 @@ class FullPromptPipeline:
 class SpeechVerbatimPipeline:
     """Pipeline for speech_verbatim style: DetailLedger → draft → coverage → patch."""
 
-    def __init__(self, llm_call_fn=None):
+    def __init__(self, skill_config: SkillConfig, llm_call_fn=None):
+        self._skill_config = skill_config
         self._llm_call_fn = llm_call_fn
 
     def execute(
@@ -176,6 +172,23 @@ class SpeechVerbatimPipeline:
                 detail_ledger, final_result.rewritten_text,
             )
 
+        # Quality check after coverage patch
+        quality_report = check_article_quality(
+            final_result.rewritten_text,
+            normalized_source,
+            self._skill_config,
+            detail_ledger,
+        )
+        if not quality_report.passed:
+            revise_prompt = build_revision_prompt(quality_report)
+            final_result = rewrite_content(
+                source_text=normalized_source,
+                rewrite_focus=revise_prompt,
+                rewrite_style="speech_verbatim",
+                rewrite_config=rewrite_config,
+                skill_config=self._skill_config,
+            )
+
         spec = resolve_article_spec(normalized_source)
         validation = _build_soft_validation(final_result.rewritten_text)
         return WriterRunReport(
@@ -202,6 +215,9 @@ class SpeechVerbatimPipeline:
 class ArticleLongformPipeline:
     """Pipeline for article_longform style: outline → draft → validate → revise."""
 
+    def __init__(self, skill_config: SkillConfig):
+        self._skill_config = skill_config
+
     def execute(
         self,
         *,
@@ -212,10 +228,14 @@ class ArticleLongformPipeline:
         trace_id = new_writer_trace_id()
         normalized_source = material.source_text
         spec = resolve_article_spec(normalized_source)
+        detail_ledger = build_detail_ledger(normalized_source)
 
         planning_result = rewrite_content(
             source_text=normalized_source,
-            rewrite_focus=_build_outline_prompt(spec=spec, rewrite_focus=rewrite_focus),
+            rewrite_focus=_build_outline_prompt(
+                spec=spec, rewrite_focus=rewrite_focus,
+                detail_ledger_text=detail_ledger.to_prompt_text(),
+            ),
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
         )
@@ -225,30 +245,58 @@ class ArticleLongformPipeline:
             source_text=normalized_source,
             rewrite_focus=_build_draft_prompt(
                 spec=spec, rewrite_focus=rewrite_focus, outline=outline,
+                detail_ledger_text=detail_ledger.to_prompt_text(),
             ),
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
         )
         validation = validate_generated_article(draft_result.rewritten_text, spec)
-        style_issues = _detect_article_longform_style_issues(draft_result.rewritten_text)
+        quality_report = check_article_quality(
+            draft_result.rewritten_text,
+            normalized_source,
+            self._skill_config,
+            detail_ledger,
+        )
         final_result = draft_result
         revised_once = False
 
-        if not validation.ok or style_issues:
+        if not quality_report.passed:
             revised_once = True
-            revise_prompt = build_article_rewrite_prompt(
+            revise_prompt = _build_article_longform_revision_prompt(
                 previous_article=draft_result.rewritten_text,
                 spec=spec,
                 validation=validation,
-                style_issues=style_issues,
+                quality_report=quality_report,
             )
             final_result = rewrite_content(
-                source_text=normalized_source,
+                source_text=draft_result.rewritten_text,
                 rewrite_focus=revise_prompt,
                 rewrite_style="article_longform",
                 rewrite_config=rewrite_config,
+                skill_config=self._skill_config,
             )
             validation = validate_generated_article(final_result.rewritten_text, spec)
+            post_quality_report = check_article_quality(
+                final_result.rewritten_text,
+                normalized_source,
+                self._skill_config,
+                detail_ledger,
+            )
+            if not post_quality_report.passed:
+                second_revise_prompt = _build_article_longform_revision_prompt(
+                    previous_article=final_result.rewritten_text,
+                    spec=spec,
+                    validation=validation,
+                    quality_report=post_quality_report,
+                )
+                final_result = rewrite_content(
+                    source_text=final_result.rewritten_text,
+                    rewrite_focus=second_revise_prompt,
+                    rewrite_style="article_longform",
+                    rewrite_config=rewrite_config,
+                    skill_config=self._skill_config,
+                )
+                validation = validate_generated_article(final_result.rewritten_text, spec)
 
         return WriterRunReport(
             rewritten_text=final_result.rewritten_text,
@@ -294,34 +342,94 @@ def _build_soft_validation(text: str) -> ArticleValidationResult:
     )
 
 
-def _detect_article_longform_style_issues(text: str) -> tuple[str, ...]:
+def _validate_style_constraints(text: str, skill_config: SkillConfig) -> tuple[str, ...]:
     normalized_text = _strip_quoted_spans(text)
     if not normalized_text.strip():
         return ()
-    if any(marker in normalized_text for marker in ARTICLE_LONGFORM_FIRST_PERSON_MARKERS):
-        return (
-            "文章仍包含第一人称自述，请改成第三视角叙述，不要使用我/我们/咱们作为叙述主语。",
-        )
-    return ()
+    issues: list[str] = []
+    for c in skill_config.constraints:
+        if c.constraint_type == "forbidden_word" and c.enabled and c.pattern in normalized_text:
+            issues.append(f"发现禁用词「{c.pattern}」，{c.fix_hint or '请替换'}")
+    if skill_config.perspective == "third_person":
+        for marker in skill_config.perspective_markers:
+            if marker in normalized_text:
+                fix = next(
+                    (c.fix_hint for c in skill_config.constraints
+                     if c.constraint_type == "perspective_marker" and c.pattern == marker and c.fix_hint),
+                    "请改成第三视角叙述",
+                )
+                issues.append(f"发现第一人称标记「{marker}」，{fix}")
+                break
+    return tuple(issues)
 
 
-def _build_outline_prompt(*, spec: ArticleSpec, rewrite_focus: str | None) -> str:
-    focus_text = (rewrite_focus or "科技深度中文文章").strip()
+def _build_comprehensive_revise_prompt(
+    *, previous_article: str, spec: ArticleSpec, validation: ArticleValidationResult,
+    style_issues: tuple[str, ...], missing_details: tuple,
+) -> str:
+    parts = ["请修订以下问题，只改有问题的部分，保留其余内容。", ""]
+    if not validation.ok:
+        for issue in validation.issues:
+            parts.append(f"- 结构问题：{issue}")
+    for issue in style_issues:
+        parts.append(f"- 风格问题：{issue}")
+    for item in missing_details[:6]:
+        parts.append(f"- 缺失细节：{item.kind} {item.text}")
+    parts.extend(["", "要求：只输出修订后的正文，不要解释。"])
+    return "\n".join(parts)
+
+
+def _build_article_longform_revision_prompt(
+    *,
+    previous_article: str,
+    spec: ArticleSpec,
+    validation: ArticleValidationResult,
+    quality_report: QualityReport,
+) -> str:
+    style_issues = tuple(
+        issue.message for issue in quality_report.issues if getattr(issue, "check_type", "") == "perspective"
+    )
+    prompt = _build_comprehensive_revise_prompt(
+        previous_article=previous_article,
+        spec=spec,
+        validation=validation,
+        style_issues=style_issues,
+        missing_details=(),
+    )
     return (
+        prompt
+        + "\n\n"
+        "额外要求：\n"
+        "- 直接把全文重写成第三视角文章，不要保留问答式、逐字稿式或时间块同步式表达。\n"
+        "- 如果原文是访谈或播客，把对话内容融合成连续叙事，而不是拆成主持人/嘉宾轮流发言。\n"
+        "- 除原文直接引语外，不要再出现我/我们/咱们/本人作为叙述主语。\n"
+        "- 如果仍然像翻译稿，请重新组织段落结构，而不是只改几个句子。"
+    )
+
+
+def _build_outline_prompt(
+    *, spec: ArticleSpec, rewrite_focus: str | None, detail_ledger_text: str | None = None,
+) -> str:
+    focus_text = (rewrite_focus or "科技深度中文文章").strip()
+    prompt = (
         "请基于原始素材先给出写作规划。\n\n"
         f"写作目标：{focus_text}\n"
         f"目标字数：{spec.target_total_chars}（允许 {spec.min_total_chars}-{spec.max_total_chars}）\n"
         f"段落数：{spec.min_sections}-{spec.max_sections}（推荐 {spec.recommended_sections}）\n\n"
         "只输出一个简短大纲，每行一个要点。"
     )
+    if detail_ledger_text:
+        prompt += f"\n\n必须保留的关键细节：\n{detail_ledger_text}"
+    return prompt
 
 
 def _build_draft_prompt(
     *, spec: ArticleSpec, rewrite_focus: str | None, outline: tuple[str, ...],
+    detail_ledger_text: str | None = None,
 ) -> str:
     focus_text = (rewrite_focus or "保留原意并提升中文可读性").strip()
     outline_text = "\n".join(f"- {line}" for line in outline) if outline else "- 按素材主线组织段落"
-    return (
+    prompt = (
         "请按以下要求输出中文文章初稿。\n\n"
         f"写作目标：{focus_text}\n"
         f"总字数：{spec.min_total_chars}-{spec.max_total_chars}（目标 {spec.target_total_chars}）\n"
@@ -331,6 +439,9 @@ def _build_draft_prompt(
         f"{outline_text}\n\n"
         "要求：不编造事实，段落之间空行，只输出正文。"
     )
+    if detail_ledger_text:
+        prompt += f"\n\n必须保留的关键细节：\n{detail_ledger_text}"
+    return prompt
 
 
 def _extract_outline(text: str) -> tuple[str, ...]:

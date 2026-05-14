@@ -1,5 +1,11 @@
 from app.services.content_rewrite_service import ContentRewriteResult
+from app.services.quality_check_service import QualityReport
+from app.services.skill_config_service import SkillConfig, SkillOutputSpec, StyleConstraint
 from app.services.writer_agent_service import MaterialPackage, WriterAgent, run_writer_agent
+
+
+def _passing_quality_report(*args, **kwargs):
+    return QualityReport(passed=True, issues=(), layers_checked=0, layers_passed=0)
 
 
 def test_writer_agent_runs_outline_draft_and_single_revision(monkeypatch) -> None:
@@ -44,7 +50,7 @@ def test_writer_agent_runs_outline_draft_and_single_revision(monkeypatch) -> Non
         rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
     )
 
-    assert len(calls) == 3
+    assert len(calls) == 4
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
     assert report.provider == "ollama"
@@ -74,6 +80,10 @@ def test_writer_agent_speech_verbatim_skips_article_pipeline(monkeypatch) -> Non
     monkeypatch.setattr(
         "app.services.pipelines.analyze_detail_coverage_enhanced",
         lambda ledger, text: DetailCoverageResult(missing_items=()),
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
     )
 
     report = WriterAgent().run(
@@ -161,6 +171,10 @@ def test_writer_agent_speech_verbatim_keeps_transliterated_names_without_patch(
     monkeypatch.setattr(
         "app.services.pipelines.analyze_detail_coverage_enhanced",
         lambda ledger, text: DetailCoverageResult(missing_items=()),
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
     )
 
     report = WriterAgent().run(
@@ -283,6 +297,10 @@ def test_writer_agent_speech_verbatim_does_not_patch_for_missing_turn_phrase(
         "app.services.pipelines.analyze_detail_coverage_enhanced",
         lambda ledger, text: DetailCoverageResult(missing_items=()),
     )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
+    )
 
     report = WriterAgent().run(
         material=MaterialPackage(
@@ -305,6 +323,21 @@ def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
     monkeypatch,
 ) -> None:
     calls: list[dict[str, object]] = []
+
+    third_person_config = SkillConfig(
+        style_name="test",
+        perspective="third_person",
+        output=SkillOutputSpec(min_chars=1200, target_chars=1500, max_chars=1800, min_sections=2, max_sections=3),
+        constraints=(
+            StyleConstraint(constraint_type="perspective_marker", pattern="我", fix_hint="请改成第三视角叙述"),
+        ),
+        perspective_markers=("我", "我们"),
+        template_routing_enabled=False,
+        content_filters=(),
+        quality_layers=(
+            {"name": "L1 硬约束", "checks": ["perspective_consistent", "forbidden_words"]},
+        ),
+    )
 
     def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
         calls.append(kwargs)
@@ -329,7 +362,7 @@ def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
             )
 
         assert kwargs["rewrite_style"] == "article_longform"
-        assert "第三视角问题" in str(kwargs["rewrite_focus"])
+        assert "修订" in str(kwargs["rewrite_focus"])
         return ContentRewriteResult(
             rewritten_text=(
                 "这件事很重要。" + ("甲" * 450) + "\n\n"
@@ -350,6 +383,7 @@ def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
         rewrite_focus="改写成结构清晰的中文文章。",
         rewrite_style="article_longform",
         rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+        skill_config=third_person_config,
     )
 
     assert len(calls) == 3
@@ -383,6 +417,10 @@ def test_speech_verbatim_uses_refiner_when_llm_call_fn_provided(monkeypatch) -> 
     monkeypatch.setattr(
         "app.services.pipelines.analyze_detail_coverage_enhanced",
         lambda ledger, text: DetailCoverageResult(missing_items=()),
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
     )
 
     report = WriterAgent().run(

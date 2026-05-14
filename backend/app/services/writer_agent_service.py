@@ -16,10 +16,14 @@ from app.services.pipelines import (
     WriterRunReport,
 )
 from app.services.prompt_validation import validate_rewrite_prompt
+from app.services.skill_config_service import SkillConfig, load_default_skill_config
 
 # Re-export for backward compatibility
+ARTICLE_LONGFORM_FIRST_PERSON_MARKERS: tuple[str, ...] = (
+    "我想", "我会", "我认为", "我觉得", "我来", "我要", "我先", "我正在",
+    "我们", "我们先", "我们会", "我们认为", "我们觉得", "咱们", "本人",
+)
 from app.services.pipelines import (  # noqa: F401
-    ARTICLE_LONGFORM_FIRST_PERSON_MARKERS,
     _strip_quoted_spans,
 )
 from app.services.detail_ledger import (  # noqa: F401
@@ -40,6 +44,7 @@ class WriterAgent:
         rewrite_focus: str | None = None,
         rewrite_style: RewriteStyle | None = None,
         rewrite_config: dict[str, object] | None = None,
+        skill_config: SkillConfig | None = None,
         llm_call_fn=None,
     ) -> WriterRunReport:
         normalized_source = (material.source_text or "").strip()
@@ -47,6 +52,7 @@ class WriterAgent:
             raise ValueError("material.source_text must not be empty.")
 
         normalized_style = rewrite_style or DEFAULT_REWRITE_STYLE
+        config = skill_config or load_default_skill_config()
 
         # Validate rewrite_focus
         normalized_focus = None
@@ -65,14 +71,16 @@ class WriterAgent:
                 )
 
         return self._execute_pipeline(
-            self._select_strategy(normalized_style, llm_call_fn=llm_call_fn),
+            self._select_strategy(normalized_style, skill_config=config, llm_call_fn=llm_call_fn),
             material, normalized_focus, rewrite_config,
         )
 
-    def _select_strategy(self, style: RewriteStyle, *, llm_call_fn=None) -> PipelineStrategy:
+    def _select_strategy(
+        self, style: RewriteStyle, *, skill_config: SkillConfig, llm_call_fn=None,
+    ) -> PipelineStrategy:
         if style == "speech_verbatim":
-            return SpeechVerbatimPipeline(llm_call_fn=llm_call_fn)
-        return ArticleLongformPipeline()
+            return SpeechVerbatimPipeline(skill_config, llm_call_fn=llm_call_fn)
+        return ArticleLongformPipeline(skill_config)
 
     def _execute_pipeline(
         self,
@@ -94,6 +102,7 @@ def run_writer_agent(
     rewrite_focus: str | None = None,
     rewrite_style: RewriteStyle | None = None,
     rewrite_config: dict[str, object] | None = None,
+    skill_config: SkillConfig | None = None,
 ) -> ContentRewriteResult:
     agent = WriterAgent()
     material = MaterialPackage(source_text=source_text)
@@ -102,6 +111,7 @@ def run_writer_agent(
         rewrite_focus=rewrite_focus,
         rewrite_style=rewrite_style,
         rewrite_config=rewrite_config,
+        skill_config=skill_config,
     )
     return ContentRewriteResult(
         rewritten_text=report.rewritten_text,

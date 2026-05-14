@@ -1,0 +1,48 @@
+style_name: "晚点"
+perspective: "third_person"
+
+output:
+  min_chars: 2000
+  target_chars: 4000
+  max_chars: 6000
+  sections:
+    min: 3
+    max: 6
+
+forbidden_words:
+  - "说白了"
+  - "本质上"
+  - "这意味着"
+  - "意味着什么"
+
+forbidden_punctuation:
+  - char: "："
+    replace_with: "，"
+
+perspective_markers:
+  - "我想"
+  - "我会"
+  - "我认为"
+  - "我觉得"
+  - "我们先"
+  - "咱们"
+  - "本人"
+
+template_routing_enabled: true
+
+content_filters:
+  - "跳过广告和赞助内容"
+
+quality_layers:
+  - name: "L1 硬约束"
+    checks:
+      - type: perspective_consistent
+        fix_hint: "请改成第三视角叙述，不要使用我/我们/咱们作为叙述主语"
+      - type: no_fabrication
+      - type: detail_coverage
+  - name: "L2 风格一致性"
+    checks: [specific_subjects, forbidden_words]
+  - name: "L3 内容深度"
+    checks: [judgment_follows_fact, mechanism_explained, cost_and_boundary]
+  - name: "L4 读者体验"
+    checks: [opening_hook, closing_convergence]

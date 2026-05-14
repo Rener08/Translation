@@ -27,6 +27,7 @@ from app.services.speaker_identity_service import (
     apply_speaker_identities,
     resolve_speaker_identities,
 )
+from app.services.transcript_cleaner import clean_transcript
 from app.services.transcription_service import (
     TranscriptSegment,
     TranscriptionResult,
@@ -219,6 +220,17 @@ def run_video_job_with_translation_config(
         len(translations),
         video.video_id,
     )
+
+    # Clean transcript before persisting
+    raw_translation_text = _translation_segments_to_text(translations)
+    clean_result = clean_transcript(raw_translation_text)
+    logger.info(
+        "Cleaned transcript: %s fillers, %s markers, %s duplicates removed",
+        clean_result.removed_filler_count,
+        clean_result.removed_marker_count,
+        clean_result.removed_duplicate_count,
+    )
+
     content_context_id = create_content_context(
         video_id=video.video_id,
         video_url=url,
@@ -228,7 +240,7 @@ def run_video_job_with_translation_config(
         video_thumbnail=video.thumbnail,
         source_type=source.source_type,
         transcript_en=transcript.text,
-        translation_zh=_translation_segments_to_text(translations),
+        translation_zh=clean_result.cleaned_text,
     )
     _raise_if_cancelled(cancellation_checker)
 

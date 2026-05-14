@@ -9,6 +9,7 @@ from app.services.content_rewrite_service import (
     ContentRewriteEmptyOutputError,
     ContentRewriteProviderError,
 )
+from app.services.skill_config_service import resolve_skill_config
 from app.services.session_history_service import append_chat_exchange, record_rewrite_result
 from app.youtube import ContentChatRequest, ContentChatResponse, ContentRewriteRequest, ContentRewriteResponse
 
@@ -71,12 +72,14 @@ async def content_rewrite(
             if request.translation_config
             else None
         )
+        skill_config = resolve_skill_config(skill_dir=None, config_name=request.skill_config_name)
         result = await run_in_threadpool(
             run_writer_agent_fn,
             source_text=request.source_text,
             rewrite_focus=request.rewrite_focus,
             rewrite_style=request.rewrite_style,
             rewrite_config=rewrite_config,
+            skill_config=skill_config,
         )
     except ContentRewriteEmptyOutputError as error:
         raise_mapped_http_exception(error)

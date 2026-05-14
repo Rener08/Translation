@@ -13,16 +13,15 @@ SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
 """.strip()
 
 ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = """
-你是一名中文第三视角改写助手。
+你是一名中文文章改写助手。
 
 任务：
 1. 基于用户提供的原始内容进行"改写"，不是凭空重写。
 2. 保留原文事实、观点顺序和关键信息，不编造新事实。
-3. 默认使用第三视角叙述，除原文直接引用外，不使用"我 / 我们 / 咱们 / 本人"等第一人称自述。
-4. 如果原文是访谈、自述或演讲稿，请改写成面向读者的文章表达，不要把正文写成第一人称口吻。
-5. 语言更顺畅、更有节奏、更像晚点风格的深度文章表达。
-6. 默认输出简体中文。
-7. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
+3. 如果原始内容是访谈、播客、问答或字幕稿，必须把它改写成第三视角的文章，不要保留逐字同步、时间块列表或问答壳。
+4. 严格遵守用户给出的改写要求和约束。
+5. 默认输出简体中文。
+6. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
 """.strip()
 
 DEFAULT_REWRITE_FOCUS = (
@@ -45,6 +44,7 @@ def build_rewrite_messages(
     rewrite_style: str,
     references: RewriteReferences | None,
     detail_ledger: str | None,
+    skill_config=None,
 ) -> list[dict[str, str]]:
     if uses_full_skill_prompt(rewrite_focus):
         user_prompt = rewrite_focus.replace("{{transcript}}", source_text)
@@ -93,18 +93,45 @@ def build_rewrite_messages(
         f"{references.quality_pipeline}"
     )
 
+    constraint_lines = []
+    if skill_config is not None:
+        for c in skill_config.constraints:
+            if c.constraint_type == "forbidden_word" and c.enabled:
+                constraint_lines.append(f"- 禁用词：{c.pattern}")
+        if skill_config.perspective == "third_person":
+            constraint_lines.append(
+                "- 使用第三视角成文，除原文直接引用外，不使用我/我们/咱们/本人作为叙述主语。"
+            )
+            constraint_lines.append(
+                "- 如果原始内容是访谈、播客、问答或字幕稿，请改写成报道型文章，不要保留逐字同步、时间块列表或问答壳。"
+            )
+    else:
+        constraint_lines.append(
+            "- 使用第三视角成文，除原文直接引用外，不使用我/我们/咱们/本人作为叙述主语。"
+        )
+        constraint_lines.append(
+            "- 如果原始内容是访谈、播客、问答或字幕稿，请改写成报道型文章，不要保留逐字同步、时间块列表或问答壳。"
+        )
+    constraint_block = "\n".join(constraint_lines)
+
     user_prompt = (
         "请改写以下内容。\n\n"
         f"改写目标：{rewrite_focus}\n\n"
         "限制要求：\n"
         "- 不编造事实，不添加原文没有的关键结论。\n"
         "- 保持原始信息。\n"
-        "- 使用第三视角成文，除原文直接引用外，不使用我/我们/咱们/本人作为叙述主语。\n"
+        f"{constraint_block}\n"
         "- 优先遵守场景模板、标题规则和质量流程。\n"
+        "- 如果当前输出仍然像逐字稿或翻译稿，请重新组织段落，改成完整文章，而不是微调句子。\n"
         "- 输出只包含改写后的正文。\n\n"
         "原始内容：\n"
         f"{source_text}"
     )
+
+    if skill_config and skill_config.content_filters:
+        user_prompt += "\n\n内容过滤要求：\n"
+        for f in skill_config.content_filters:
+            user_prompt += f"- {f}\n"
 
     return [
         {

@@ -151,13 +151,22 @@ LASTPOST_TEMPLATE_SPECS: tuple[LastpostTemplateSpec, ...] = (
 )
 
 LASTPOST_ROUTABLE_TEMPLATE_KEYS: tuple[str, ...] = (
-    "09_interview_transcript_sync",
     "03_product_review",
     "06_infra_cloud_model_platform",
 )
 LASTPOST_STRATEGIC_FALLBACK_TEMPLATE_KEY = "01_big_company_war"
 # Backward-compatible alias: other modules and tests may still import the old name.
 LASTPOST_DEFAULT_TEMPLATE_KEY = LASTPOST_STRATEGIC_FALLBACK_TEMPLATE_KEY
+
+_EXPLICIT_TRANSCRIPT_SYNC_MARKERS: tuple[str, ...] = (
+    "逐字稿",
+    "同步稿",
+    "字幕同步",
+    "采访整理",
+    "播客整理",
+    "访谈整理",
+    "时间轴",
+)
 
 
 @lru_cache(maxsize=1)
@@ -216,6 +225,24 @@ def select_rewrite_template(
     combined_text = f"{rewrite_focus}\n{source_text}"
     normalized = combined_text.lower()
 
+    if _explicit_transcript_sync_requested(rewrite_focus=rewrite_focus, source_text=source_text):
+        transcript_spec = next(
+            (
+                spec
+                for spec in LASTPOST_TEMPLATE_SPECS
+                if spec.key == "09_interview_transcript_sync"
+            ),
+            None,
+        )
+        if transcript_spec is not None:
+            body = references.category_templates.get(transcript_spec.key, references.article_template)
+            return SelectedRewriteTemplate(
+                key=transcript_spec.key,
+                label=transcript_spec.label,
+                body=body,
+                route_reason="用户明确要求逐字稿/同步稿，按访谈同步模板处理。",
+            )
+
     routable_specs = tuple(
         spec for spec in LASTPOST_TEMPLATE_SPECS if spec.key in LASTPOST_ROUTABLE_TEMPLATE_KEYS
     )
@@ -261,6 +288,16 @@ def select_rewrite_template(
         body=references.article_template,
         route_reason="未命中可自动路由的题材信号，回退到中性通用模板。",
     )
+
+
+def _explicit_transcript_sync_requested(*, rewrite_focus: str, source_text: str) -> bool:
+    normalized_focus = (rewrite_focus or "").lower()
+    if any(marker in normalized_focus for marker in _EXPLICIT_TRANSCRIPT_SYNC_MARKERS):
+        return True
+    # Only treat an explicit request in the focus as a signal; source text often contains
+    # interview markers even when the desired output is a rewritten article.
+    _ = source_text
+    return False
 
 
 def _score_template_specs(

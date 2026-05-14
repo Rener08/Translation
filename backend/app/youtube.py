@@ -345,6 +345,7 @@ class ContentRewriteRequest(BaseModel):
     rewrite_style: RewriteStyle = "speech_verbatim"
     translation_config: TranslationConfigRequest | None = None
     content_context_id: str | None = None
+    skill_config_name: str | None = None  # "latepost" / "kazix" / None(默认卡兹克)
 
     @field_validator("source_text")
     @classmethod

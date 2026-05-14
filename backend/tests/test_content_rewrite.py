@@ -59,7 +59,7 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
     assert "Authorization" not in captured["headers"]
     assert captured["json"]["model"] == "qwen3.5:4b"
     assert captured["json"]["messages"][0]["role"] == "system"
-    assert "中文第三视角改写助手" in captured["json"]["messages"][0]["content"]
+    assert "中文文章改写助手" in captured["json"]["messages"][0]["content"]
     assert captured["json"]["messages"][1]["role"] == "system"
     assert "【场景模板】" in captured["json"]["messages"][1]["content"]
     assert "场景模板片段" not in captured["json"]["messages"][1]["content"]
@@ -395,7 +395,7 @@ def test_content_rewrite_endpoint_surfaces_empty_rewrite_output(monkeypatch) -> 
     }
 
 
-def test_select_rewrite_template_routes_transcript_first() -> None:
+def test_select_rewrite_template_routes_transcript_first_to_generic() -> None:
     references = RewriteReferences(
         article_template="一页版模板",
         content_methodology="方法论",
@@ -412,6 +412,30 @@ def test_select_rewrite_template_routes_transcript_first() -> None:
     selected = _select_rewrite_template(
         source_text="00:12 主持人：先问一个问题。\n00:33 嘉宾：我们先从组织调整说起。",
         rewrite_focus="整理成晚点风格中文稿。",
+        references=references,
+    )
+
+    assert selected.key == "generic"
+    assert selected.body == "一页版模板"
+
+
+def test_select_rewrite_template_routes_explicit_transcript_sync_request() -> None:
+    references = RewriteReferences(
+        article_template="一页版模板",
+        content_methodology="方法论",
+        style_examples="示例",
+        skill_guide="规则",
+        category_templates={
+            "09_interview_transcript_sync": "逐字稿模板",
+            "03_product_review": "评测模板",
+            "01_big_company_war": "公司战役模板",
+        },
+        section_title_rules="标题规则",
+    )
+
+    selected = _select_rewrite_template(
+        source_text="00:12 主持人：先问一个问题。\n00:33 嘉宾：我们先从组织调整说起。",
+        rewrite_focus="请整理成逐字稿/同步稿。",
         references=references,
     )
 
