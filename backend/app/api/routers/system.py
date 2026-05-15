@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import zipfile
 
 from fastapi import APIRouter, HTTPException
@@ -48,7 +48,7 @@ async def export_logs() -> SystemExportLogsResponse:
     export_dir = ROOT_DIR / "tmp" / "exports"
     export_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     archive_path = export_dir / f"translation-logs-{timestamp}.zip"
     settings = get_settings()
     source_files = [

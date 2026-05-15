@@ -235,6 +235,9 @@ def _run_background_job(job_id: str, target: Callable[[str], None]) -> None:
         )
         target(job_id)
     except Exception as error:  # pragma: no cover - defensive
+        from app.services.job_run_service import JobCancelledError  # lazy import avoids circular dependency
+        if isinstance(error, JobCancelledError):
+            return
         logger.exception("Job %s failed unexpectedly", job_id)
         update_job_progress(
             job_id,

@@ -144,10 +144,6 @@ def test_run_video_job_uses_caption_source_without_transcription(monkeypatch) ->
         "app.services.job_run_service._maybe_attach_speakers",
         lambda video, source, transcript: transcript,
     )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
-    )
 
     result = run_video_job("https://www.youtube.com/watch?v=abc123xyz")
 
@@ -155,7 +151,7 @@ def test_run_video_job_uses_caption_source_without_transcription(monkeypatch) ->
     assert result.source_type == "captions"
     assert result.transcript_en.text == "Hello everyone.\nWelcome back."
     assert len(result.transcript_en.segments) == 2
-    assert len(result.translation_zh_segments) == 2
+    assert result.translation_zh_segments == []
     assert result.content_context_id
 
 
@@ -376,10 +372,6 @@ def test_run_video_job_rejects_transcript_with_too_many_segments(
     monkeypatch.setattr(
         "app.services.job_run_service.fetch_video_source_from_info",
         fake_source,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fail_translate,
     )
 
     try:

@@ -183,7 +183,7 @@ class SpeechVerbatimPipeline:
         final_result = direct_result
         patched_once = False
 
-        if coverage.missing_items:
+        if coverage.missing_items and not _is_english_text(normalized_source):
             patched_once = True
             if callable(cancellation_checker) and cancellation_checker():
                 raise ContentRewriteInputError("Rewrite cancelled.")
@@ -538,3 +538,10 @@ def _strip_quoted_spans(text: str) -> str:
     normalized = re.sub(r"『[^』]*』", " ", normalized)
     normalized = re.sub(r"「[^」]*」", " ", normalized)
     return normalized
+
+
+def _is_english_text(text: str) -> bool:
+    if not text:
+        return False
+    ascii_count = sum(1 for c in text if ord(c) < 128)
+    return ascii_count / len(text) > 0.8

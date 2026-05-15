@@ -378,14 +378,22 @@ def _prepare_audio_for_diarization(file_path: Path) -> Path:
         "16000",
         str(converted_path),
     ]
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired:
+        if converted_path.exists():
+            converted_path.unlink(missing_ok=True)
+        raise SpeakerDiarizationRuntimeError(
+            "ffmpeg audio conversion timed out after 60 seconds"
+        )
     if completed.returncode != 0:
         message = (
             completed.stderr or completed.stdout or "ffmpeg conversion failed"

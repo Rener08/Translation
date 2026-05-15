@@ -23,6 +23,7 @@ MANAGED_SUBDIRS = (
     "captions",
     "video_info_cache",
 )
+_PERSISTENT_CACHE_MANAGED = frozenset({"material_transcript", "transcription", "translation"})
 
 
 def cleanup_stale_tmp_artifacts(
@@ -71,10 +72,14 @@ def _iter_managed_tmp_artifacts(root_dir: Path):
         if not entry.is_dir():
             continue
 
-        if entry.name not in MANAGED_SUBDIRS:
+        if entry.name in MANAGED_SUBDIRS:
+            yield from entry.rglob("*")
             continue
 
-        yield from entry.rglob("*")
+        if entry.name == "persistent_cache":
+            for sub in entry.iterdir():
+                if sub.is_dir() and sub.name in _PERSISTENT_CACHE_MANAGED:
+                    yield from sub.rglob("*")
 
 
 def _should_manage_root_file(path: Path) -> bool:

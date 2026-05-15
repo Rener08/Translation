@@ -40,6 +40,8 @@ def build_endpoint_url(base_url: str, suffix: str) -> str:
     normalized_suffix = str(suffix or "").strip()
     if not normalized_suffix.startswith("/"):
         normalized_suffix = f"/{normalized_suffix}"
+    if normalized_base.endswith(normalized_suffix):
+        return normalized_base
     return f"{normalized_base}{normalized_suffix}"
 
 

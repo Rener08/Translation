@@ -16,6 +16,7 @@ async def session_history(
     request: Request,
     limit: int = 20,
 ) -> SessionHistoryListResponse:
+    limit = min(max(1, limit), 100)
     account_id = str(getattr(request.state, "account_id", "") or "").strip()
     return SessionHistoryListResponse(
         ok=True,

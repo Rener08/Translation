@@ -4,7 +4,7 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from queue import Empty
 from typing import Callable, TypeVar
@@ -39,10 +39,7 @@ from app.services.transcription_service import (
     LocalTranscriptionError,
     transcribe_audio_file,
 )
-from app.services.translation_service import (
-    TranslationSegment,
-    translate_segments_to_chinese,
-)
+from app.services.translation_service import TranslationSegment
 from app.services.video_source_service import (
     SOURCE_MODE_SUBTITLE_FIRST,
     SourceMode,
@@ -113,8 +110,8 @@ class JobRunResult:
     video: VideoMetadata
     source_type: Literal["captions", "audio"]
     transcript_en: TranscriptionResult
-    translation_zh_segments: list[TranslationSegment]
     content_context_id: str
+    translation_zh_segments: list[TranslationSegment] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -135,8 +132,6 @@ class JobRunPipelineState:
     video: VideoMetadata | None = None
     source: VideoSourceResult | None = None
     transcript: TranscriptionResult | None = None
-    translation_zh_segments: list[TranslationSegment] | None = None
-    translation_zh_text: str | None = None
     content_context_id: str | None = None
 
 
@@ -157,12 +152,6 @@ class TranscribeStageOutput:
 
 
 @dataclass(frozen=True)
-class TranslateStageOutput:
-    translation_zh_segments: list[TranslationSegment]
-    translation_zh_text: str
-
-
-@dataclass(frozen=True)
 class PersistStageOutput:
     content_context_id: str
 
@@ -180,15 +169,11 @@ class JobRunStageMachine:
         state = self._run_inspect_stage(state)
         state = self._run_fetch_source_stage(state)
         state = self._run_transcribe_stage(state)
-        state = self._run_translate_stage(state)
         state = self._run_persist_stage(state)
 
         video = _require_stage_value(state.video, "video")
         source = _require_stage_value(state.source, "source")
         transcript = _require_stage_value(state.transcript, "transcript")
-        translation_zh_segments = _require_stage_value(
-            state.translation_zh_segments, "translation_zh_segments"
-        )
         content_context_id = _require_stage_value(
             state.content_context_id, "content_context_id"
         )
@@ -197,7 +182,6 @@ class JobRunStageMachine:
             video=video,
             source_type=source.source_type,
             transcript_en=transcript,
-            translation_zh_segments=translation_zh_segments,
             content_context_id=content_context_id,
         )
 
@@ -309,53 +293,6 @@ class JobRunStageMachine:
         )
         return TranscribeStageOutput(transcript=transcript)
 
-    def _run_translate_stage(self, state: JobRunPipelineState) -> JobRunPipelineState:
-        transcript = _require_stage_value(state.transcript, "transcript")
-        output = self._run_stage(
-            stage="translate",
-            progress_value=70,
-            progress_text="正在翻译中文字幕...",
-            timeout_sec=self._context.stage_timeouts.translate,
-            func=lambda: self._translate_stage(transcript),
-        )
-        return replace(
-            state,
-            translation_zh_segments=output.translation_zh_segments,
-            translation_zh_text=output.translation_zh_text,
-        )
-
-    def _translate_stage(self, transcript: TranscriptionResult) -> TranslateStageOutput:
-        _raise_if_cancelled(self._context.cancellation_checker)
-        translations = translate_segments_to_chinese(
-            [
-                {
-                    "index": segment.index,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text,
-                }
-                for segment in transcript.segments
-            ],
-            translation_config=self._context.translation_config,
-        )
-        logger.info(
-            "Translated %s segments for %s",
-            len(translations),
-            self._context.url,
-        )
-        raw_translation_text = _translation_segments_to_text(translations)
-        clean_result = clean_transcript(raw_translation_text)
-        logger.info(
-            "Cleaned translation: %s fillers, %s markers, %s duplicates removed",
-            clean_result.removed_filler_count,
-            clean_result.removed_marker_count,
-            clean_result.removed_duplicate_count,
-        )
-        return TranslateStageOutput(
-            translation_zh_segments=translations,
-            translation_zh_text=clean_result.cleaned_text,
-        )
-
     def _run_persist_stage(self, state: JobRunPipelineState) -> JobRunPipelineState:
         output = self._run_stage(
             stage="persist",
@@ -370,9 +307,6 @@ class JobRunStageMachine:
         video = _require_stage_value(state.video, "video")
         source = _require_stage_value(state.source, "source")
         transcript = _require_stage_value(state.transcript, "transcript")
-        translation_zh_text = _require_stage_value(
-            state.translation_zh_text, "translation_zh_text"
-        )
         content_context_id = create_content_context(
             video_id=video.video_id,
             video_url=self._context.url,
@@ -382,7 +316,7 @@ class JobRunStageMachine:
             video_thumbnail=video.thumbnail,
             source_type=source.source_type,
             transcript_en=transcript.text,
-            translation_zh=translation_zh_text,
+            translation_zh="",
             account_id=self._context.account_id,
         )
         return PersistStageOutput(content_context_id=content_context_id)
@@ -683,21 +617,6 @@ def _require_stage_value(value: StageValueT | None, name: str) -> StageValueT:
     return value
 
 
-def _build_english_transcript(source: VideoSourceResult) -> TranscriptionResult:
-    if source.source_type == "captions":
-        return _transcript_from_caption_text(source.text)
-
-    if source.source_type == "audio":
-        if not source.audio_file_path:
-            raise JobRunError("Audio source did not include an audio_file_path.")
-        transcript = transcribe_audio_file(source.audio_file_path)
-        return _ensure_transcript_segments(transcript)
-
-    raise JobRunError(
-        f"Unsupported source_type returned by source service: {source.source_type}"
-    )
-
-
 def _transcript_from_caption_text(text: str | None) -> TranscriptionResult:
     normalized_text = (text or "").strip()
     if not normalized_text:
@@ -913,7 +832,6 @@ def _get_positive_float_env(name: str, default: float) -> float:
     return parsed if parsed > 0 else default
 
 
-CAPTION_SENTENCE_END_PATTERN = re.compile(r"[.!?。！？…][\"')\]]*$")
 CAPTION_CONTINUATION_HINT_PATTERN = re.compile(r"^[a-z0-9\"'(<\\[]")
 
 
@@ -953,7 +871,7 @@ def _merge_caption_lines(lines: list[str]) -> list[str]:
 
 
 def _caption_line_ends_sentence(value: str) -> bool:
-    return bool(CAPTION_SENTENCE_END_PATTERN.search(value.strip()))
+    return bool(SENTENCE_END_PATTERN.search(value.strip()))
 
 
 def _looks_like_caption_continuation(value: str) -> bool:
@@ -961,14 +879,6 @@ def _looks_like_caption_continuation(value: str) -> bool:
     if not normalized:
         return False
     return bool(CAPTION_CONTINUATION_HINT_PATTERN.match(normalized))
-
-
-def _translation_segments_to_text(segments: list[TranslationSegment]) -> str:
-    return "\n".join(
-        segment.translated_text.strip()
-        for segment in segments
-        if segment.translated_text.strip()
-    ).strip()
 
 
 def _load_cached_material_transcript(

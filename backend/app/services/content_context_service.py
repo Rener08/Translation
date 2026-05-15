@@ -93,7 +93,7 @@ def load_content_context(
 
     transcript_en = str(payload.get("transcript_en") or "").strip()
     translation_zh = str(payload.get("translation_zh") or "").strip()
-    if not transcript_en or not translation_zh:
+    if not transcript_en:
         return None
 
     video_id = str(payload.get("video_id") or "").strip() or None

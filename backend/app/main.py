@@ -1,3 +1,4 @@
+import asyncio
 from collections import deque
 from contextlib import asynccontextmanager
 import hmac
@@ -46,11 +47,23 @@ _RATE_LIMIT_BUCKETS: dict[str, deque[float]] = {}
 MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
+async def _periodic_cleanup():
+    while True:
+        await asyncio.sleep(3600)
+        await run_in_threadpool(cleanup_stale_tmp_artifacts)
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await run_in_threadpool(cleanup_stale_tmp_artifacts)
     _log_runtime_summary()
+    cleanup_task = asyncio.create_task(_periodic_cleanup())
     yield
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
 
 
 app = FastAPI(title="YouTube Translator MVP API", lifespan=lifespan)

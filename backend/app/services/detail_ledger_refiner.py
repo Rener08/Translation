@@ -10,12 +10,15 @@ Only used in article_longform mode for cost control.
 
 from dataclasses import dataclass
 import json
+import logging
 import re
 
 from app.services.detail_ledger import (
     DetailLedger,
     DetailLedgerItem,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -92,8 +95,8 @@ def refine_detail_ledger_with_llm(
         raw_response = llm_call_fn(_REFINE_SYSTEM_PROMPT, user_prompt)
         items = _parse_refine_response(raw_response)
         return RefinedDetailLedger(items=tuple(items))
-    except Exception:
-        # On any failure, fall back to coarse ledger with all items as high priority
+    except Exception as error:
+        logger.warning("LLM detail ledger refinement failed, using coarse ledger: %s", error)
         return RefinedDetailLedger(items=tuple(
             RefinedDetailItem(
                 kind=item.kind,

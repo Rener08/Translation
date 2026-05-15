@@ -179,12 +179,12 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
         calls.append(kwargs)
         if len(calls) == 1:
             assert kwargs["rewrite_style"] == "speech_verbatim"
-            assert kwargs["source_text"] == "NASA said 3 rockets launched at 8 pm. SpaceX confirmed it."
+            assert kwargs["source_text"] == "NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。"
             assert "NASA" in str(kwargs["detail_ledger"])
             assert "3" in str(kwargs["detail_ledger"])
             assert "SpaceX" in str(kwargs["detail_ledger"])
             return ContentRewriteResult(
-                rewritten_text="NASA said rockets launched. SpaceX confirmed it.",
+                rewritten_text="NASA表示，火箭发射了。SpaceX对此进行了确认。",
                 provider="ollama",
                 model="qwen3.5:4b",
             )
@@ -193,11 +193,11 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
         assert "当前完整草稿" in str(kwargs["rewrite_focus"])
         assert "必须输出修订后的完整正文" in str(kwargs["rewrite_focus"])
         assert kwargs["rewrite_style"] == "speech_verbatim"
-        assert kwargs["source_text"] == "NASA said rockets launched. SpaceX confirmed it."
+        assert kwargs["source_text"] == "NASA表示，火箭发射了。SpaceX对此进行了确认。"
         assert "3" in str(kwargs["detail_ledger"])
         assert "8" in str(kwargs["detail_ledger"])
         return ContentRewriteResult(
-            rewritten_text="NASA said 3 rockets launched at 8 pm. SpaceX confirmed it.",
+            rewritten_text="NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。",
             provider="ollama",
             model="qwen3.5:4b",
         )
@@ -213,7 +213,7 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
 
     report = WriterAgent().run(
         material=MaterialPackage(
-            source_text="NASA said 3 rockets launched at 8 pm. SpaceX confirmed it.",
+            source_text="NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。",
         ),
         rewrite_focus="保留原作者说话节奏。",
         rewrite_style="speech_verbatim",
@@ -223,7 +223,7 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
     assert len(calls) == 2
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
-    assert report.rewritten_text == "NASA said 3 rockets launched at 8 pm. SpaceX confirmed it."
+    assert report.rewritten_text == "NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。"
     assert report.rewrite_style == "speech_verbatim"
     assert report.detail_coverage_issues == ()
 
@@ -236,7 +236,7 @@ def test_writer_agent_speech_verbatim_rejects_truncated_patch_output(monkeypatch
         if len(calls) == 1:
             assert kwargs["rewrite_style"] == "speech_verbatim"
             return ContentRewriteResult(
-                rewritten_text="NASA said rockets launched. SpaceX confirmed it.",
+                rewritten_text="NASA表示，火箭发射了。SpaceX对此进行了确认。",
                 provider="ollama",
                 model="qwen3.5:4b",
             )
@@ -245,7 +245,7 @@ def test_writer_agent_speech_verbatim_rejects_truncated_patch_output(monkeypatch
         assert "必须输出修订后的完整正文" in str(kwargs["rewrite_focus"])
         assert kwargs["rewrite_style"] == "speech_verbatim"
         return ContentRewriteResult(
-            rewritten_text="补充：3 rockets at 8 pm.",
+            rewritten_text="补充：3枚火箭，晚上8点。",
             provider="ollama",
             model="qwen3.5:4b",
         )

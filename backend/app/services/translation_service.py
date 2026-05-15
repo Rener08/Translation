@@ -1333,7 +1333,7 @@ def _segment_to_chunk_item(segment: dict[str, object]) -> TranslationChunkItem:
     source_text = str(segment.get("text") or "").strip()
 
     if not source_text:
-        raise TranslationProviderError(
+        raise ValueError(
             f"Segment {index} is missing source text and cannot be translated."
         )
 

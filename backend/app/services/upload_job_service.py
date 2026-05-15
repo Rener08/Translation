@@ -18,7 +18,7 @@ from app.services.job_run_service import (
 )
 from app.services.transcript_cleaner import clean_transcript
 from app.services.transcription_service import TranscriptionResult
-from app.services.translation_service import TranslationSegment, translate_segments_to_chinese
+from app.services.translation_service import TranslationSegment
 from app.services.upload_audio_service import build_upload_title
 from app.services.yt_dlp_service import VideoMetadata
 
@@ -74,17 +74,6 @@ def run_uploaded_audio_job_with_translation_config(
         ),
     )
 
-    progress("translate", 70, "正在翻译中文字幕...")
-    translation_segments = _run_stage_with_timeout(
-        stage="translate",
-        timeout_sec=timeouts.translate,
-        cancellation_checker=cancellation_checker,
-        func=lambda: _translate_transcript(
-            transcript=transcript,
-            translation_config=translation_config,
-        ),
-    )
-
     progress("persist", 85, "正在生成内容上下文...")
     content_context_id = _run_stage_with_timeout(
         stage="persist",
@@ -93,7 +82,6 @@ def run_uploaded_audio_job_with_translation_config(
         func=lambda: _persist_content_context(
             video=video,
             transcript=transcript,
-            translation_segments=translation_segments,
             account_id=account_id,
         ),
     )
@@ -102,8 +90,8 @@ def run_uploaded_audio_job_with_translation_config(
         video=video,
         source_type="audio",
         transcript_en=transcript,
-        translation_zh_segments=translation_segments,
         content_context_id=content_context_id,
+        translation_zh_segments=[],
     )
 
 
@@ -128,38 +116,12 @@ def _build_upload_metadata(*, audio_file_path: str, title: str) -> VideoMetadata
     )
 
 
-def _translate_transcript(
-    *,
-    transcript: TranscriptionResult,
-    translation_config: dict[str, object] | None,
-) -> list[TranslationSegment]:
-    return translate_segments_to_chinese(
-        [
-            {
-                "index": segment.index,
-                "start": segment.start,
-                "end": segment.end,
-                "text": segment.text,
-            }
-            for segment in transcript.segments
-        ],
-        translation_config=translation_config,
-    )
-
-
 def _persist_content_context(
     *,
     video: VideoMetadata,
     transcript: TranscriptionResult,
-    translation_segments: list[TranslationSegment],
     account_id: str | None,
 ) -> str:
-    raw_translation_text = "\n".join(
-        item.translated_text.strip()
-        for item in translation_segments
-        if item.translated_text.strip()
-    )
-    clean_result = clean_transcript(raw_translation_text)
     return create_content_context(
         video_id=video.video_id,
         video_url=None,
@@ -169,7 +131,7 @@ def _persist_content_context(
         video_thumbnail=video.thumbnail,
         source_type="audio",
         transcript_en=transcript.text,
-        translation_zh=clean_result.cleaned_text,
+        translation_zh="",
         account_id=account_id,
     )
 

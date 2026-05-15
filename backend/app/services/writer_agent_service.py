@@ -70,6 +70,7 @@ class WriterAgent:
             if validation.has_transcript_placeholder:
                 return self._execute_pipeline(
                     FullPromptPipeline(), material, normalized_focus, rewrite_config,
+                    cancellation_checker=cancellation_checker,
                 )
 
         normalized_style = self._normalize_rewrite_style_for_skill(
@@ -80,6 +81,7 @@ class WriterAgent:
             self._select_strategy(normalized_style, skill_config=config, llm_call_fn=llm_call_fn),
             self._with_reference_text(material, reference_text),
             normalized_focus, rewrite_config,
+            cancellation_checker=cancellation_checker,
         )
 
     def _select_strategy(
@@ -95,11 +97,13 @@ class WriterAgent:
         material: MaterialPackage,
         rewrite_focus: str | None,
         rewrite_config: dict[str, object] | None,
+        cancellation_checker=None,
     ) -> WriterRunReport:
         return strategy.execute(
             material=material,
             rewrite_focus=rewrite_focus,
             rewrite_config=rewrite_config,
+            cancellation_checker=cancellation_checker,
         )
 
     @staticmethod
@@ -137,6 +141,7 @@ def run_writer_agent(
     rewrite_style: RewriteStyle | None = None,
     rewrite_config: dict[str, object] | None = None,
     skill_config: SkillConfig | None = None,
+    cancellation_checker=None,
 ) -> ContentRewriteResult:
     agent = WriterAgent()
     material = MaterialPackage(source_text=source_text, reference_text=(reference_text or "").strip())
@@ -147,6 +152,7 @@ def run_writer_agent(
         rewrite_style=rewrite_style,
         rewrite_config=rewrite_config,
         skill_config=skill_config,
+        cancellation_checker=cancellation_checker,
     )
     return ContentRewriteResult(
         rewritten_text=report.rewritten_text,

@@ -162,7 +162,7 @@ def test_jobs_run_persists_session_history(monkeypatch, tmp_path: Path) -> None:
     assert detail_body["source_mode"] == "subtitle_first"
     assert detail_body["source_type"] == "captions"
     assert detail_body["transcript_en_text"] == "Hello everyone.\nWelcome back."
-    assert detail_body["translation_zh_text"] == "大家好。\n欢迎回来。"
+    assert detail_body["translation_zh_text"] == ""
     assert detail_body["chat_turns"] == []
 
 

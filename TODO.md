@@ -91,6 +91,30 @@ This page is the post-run workspace.
 - Copy and export controls are aligned with the main content header.
 - Translation output and chat content share one main result surface.
 
+## In Progress（当前未完成）
+
+架构改造：主流水线移除翻译步骤，WriterAgent 直接处理英文输入。后端代码已完成，测试修复未完成。
+
+### 测试修复（在 Mac 上继续）
+
+- [ ] `tests/test_jobs_run.py` — 9 个测试仍有 `monkeypatch.setattr("app.services.job_run_service.translate_segments_to_chinese", ...)` 需要删除，对应断言改为 `assert result.translation_zh_segments == []`：
+  - `test_run_video_job_transcribes_audio_source`
+  - `test_run_video_job_with_translation_config_forwards_force_audio_mode`
+  - `test_run_video_job_falls_back_to_single_segment_when_transcript_has_no_segments`
+  - `test_run_video_job_forwards_translation_config`
+  - `test_run_video_job_can_attach_speakers_when_enabled`
+  - `test_run_video_job_merges_caption_lines_before_translation`（改为检查 `result.transcript_en.segments`）
+  - `test_run_video_job_emits_stage_progress_in_order`（删除 `translate` stage）
+  - `test_run_video_job_cancels_at_stage_boundary_before_translate`（改为在 `persist` 阶段取消）
+  - `test_run_video_job_reuses_material_transcript_cache`
+- [ ] `tests/test_writer_agent.py::test_writer_agent_speech_verbatim_rejects_truncated_patch_output` — `MaterialPackage(source_text=...)` 还是英文，需改为中文（`"NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。"`）
+
+### 前端更新（Phase 4）
+
+- [ ] 移除"翻译中"进度步骤，改写流程直接显示"改写中"
+- [ ] 历史记录里 `translation_zh_text` 为空时前端不崩溃（加 fallback）
+- [ ] 可选：加"查看逐段翻译"按钮（按需触发 `/api/translate`）
+
 ## Done
 
 - [x] Local FastAPI backend for inspect -> fetch source -> transcribe -> translate
