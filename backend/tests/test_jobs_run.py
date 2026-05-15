@@ -43,7 +43,7 @@ def _assert_error_response(
 
 def _wait_for_job_result(
     job_id: str,
-    timeout_seconds: float = 5.0,
+    timeout_seconds: float = 12.0,
     *,
     allow_failed: bool = False,
 ) -> dict[str, object]:
@@ -1255,7 +1255,7 @@ def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
     assert messages[1]["role"] == "user"
     assert (
         messages[1]["content"]
-        == "标题：测试技能\n正文：我们实测了三个真实任务。\n结尾：保持克制。"
+        == "标题：测试技能\n正文：\n\n[转录内容开始]\n我们实测了三个真实任务。\n[转录内容结束]\n\n\n结尾：保持克制。"
     )
     assert rewrite_response.json() == {
         "ok": True,

@@ -47,6 +47,7 @@ class WriterAgent:
         rewrite_config: dict[str, object] | None = None,
         skill_config: SkillConfig | None = None,
         llm_call_fn=None,
+        cancellation_checker=None,
     ) -> WriterRunReport:
         normalized_source = (material.source_text or "").strip()
         if not normalized_source:

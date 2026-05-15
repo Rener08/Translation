@@ -91,6 +91,7 @@ class PipelineStrategy(Protocol):
         material: MaterialPackage,
         rewrite_focus: str | None,
         rewrite_config: dict[str, object] | None,
+        cancellation_checker=None,
     ) -> WriterRunReport: ...
 
 
@@ -103,14 +104,18 @@ class FullPromptPipeline:
         material: MaterialPackage,
         rewrite_focus: str | None,
         rewrite_config: dict[str, object] | None,
+        cancellation_checker=None,
     ) -> WriterRunReport:
         trace_id = new_writer_trace_id()
         focus = (rewrite_focus or "").strip()
+        if callable(cancellation_checker) and cancellation_checker():
+            raise ContentRewriteInputError("Rewrite cancelled.")
         result = rewrite_content(
             source_text=material.source_text,
             rewrite_focus=focus,
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
+            cancellation_checker=cancellation_checker,
         )
         spec = resolve_article_spec(material.source_text)
         draft_validation = validate_generated_article(result.rewritten_text, spec)
@@ -147,6 +152,7 @@ class SpeechVerbatimPipeline:
         material: MaterialPackage,
         rewrite_focus: str | None,
         rewrite_config: dict[str, object] | None,
+        cancellation_checker=None,
     ) -> WriterRunReport:
         trace_id = new_writer_trace_id()
         normalized_source = material.source_text
@@ -162,12 +168,15 @@ class SpeechVerbatimPipeline:
         else:
             detail_ledger = coarse_ledger
 
+        if callable(cancellation_checker) and cancellation_checker():
+            raise ContentRewriteInputError("Rewrite cancelled.")
         direct_result = rewrite_content(
             source_text=normalized_source,
             rewrite_focus=rewrite_focus,
             rewrite_style="speech_verbatim",
             rewrite_config=rewrite_config,
             detail_ledger=detail_ledger.to_prompt_text(),
+            cancellation_checker=cancellation_checker,
         )
 
         coverage = analyze_detail_coverage_enhanced(detail_ledger, direct_result.rewritten_text)
@@ -176,6 +185,8 @@ class SpeechVerbatimPipeline:
 
         if coverage.missing_items:
             patched_once = True
+            if callable(cancellation_checker) and cancellation_checker():
+                raise ContentRewriteInputError("Rewrite cancelled.")
             patch_result = rewrite_content(
                 source_text=direct_result.rewritten_text,
                 rewrite_focus=build_detail_patch_prompt(
@@ -186,6 +197,7 @@ class SpeechVerbatimPipeline:
                 rewrite_style="speech_verbatim",
                 rewrite_config=rewrite_config,
                 detail_ledger=build_detail_patch_ledger(coverage.missing_items),
+                cancellation_checker=cancellation_checker,
             )
             if self._patch_output_is_safe(direct_result.rewritten_text, patch_result.rewritten_text):
                 final_result = patch_result
@@ -202,6 +214,8 @@ class SpeechVerbatimPipeline:
         )
         if not quality_report.passed:
             revise_prompt = build_revision_prompt(quality_report)
+            if callable(cancellation_checker) and cancellation_checker():
+                raise ContentRewriteInputError("Rewrite cancelled.")
             final_result = rewrite_content(
                 source_text=normalized_source,
                 rewrite_focus=revise_prompt,
@@ -209,6 +223,7 @@ class SpeechVerbatimPipeline:
                 rewrite_config=rewrite_config,
                 detail_ledger=detail_ledger.to_prompt_text(),
                 skill_config=self._skill_config,
+                cancellation_checker=cancellation_checker,
             )
 
         spec = resolve_article_spec(normalized_source)
@@ -272,6 +287,7 @@ class ArticleLongformPipeline:
         material: MaterialPackage,
         rewrite_focus: str | None,
         rewrite_config: dict[str, object] | None,
+        cancellation_checker=None,
     ) -> WriterRunReport:
         trace_id = new_writer_trace_id()
         normalized_source = material.source_text
@@ -281,6 +297,8 @@ class ArticleLongformPipeline:
         topic_ledger = build_longform_topic_ledger(article_source)
         longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
 
+        if callable(cancellation_checker) and cancellation_checker():
+            raise ContentRewriteInputError("Rewrite cancelled.")
         planning_result = rewrite_content(
             source_text=article_source,
             rewrite_focus=_build_outline_prompt(
@@ -290,9 +308,12 @@ class ArticleLongformPipeline:
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
             skill_config=self._skill_config,
+            cancellation_checker=cancellation_checker,
         )
         outline = _extract_outline(planning_result.rewritten_text)
 
+        if callable(cancellation_checker) and cancellation_checker():
+            raise ContentRewriteInputError("Rewrite cancelled.")
         draft_result = rewrite_content(
             source_text=article_source,
             rewrite_focus=_build_draft_prompt(
@@ -302,6 +323,7 @@ class ArticleLongformPipeline:
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
             skill_config=self._skill_config,
+            cancellation_checker=cancellation_checker,
         )
         validation = validate_generated_article(draft_result.rewritten_text, spec)
         quality_report = check_article_quality(
@@ -321,12 +343,15 @@ class ArticleLongformPipeline:
                 validation=validation,
                 quality_report=quality_report,
             )
+            if callable(cancellation_checker) and cancellation_checker():
+                raise ContentRewriteInputError("Rewrite cancelled.")
             final_result = rewrite_content(
                 source_text=draft_result.rewritten_text,
                 rewrite_focus=revise_prompt,
                 rewrite_style="article_longform",
                 rewrite_config=rewrite_config,
                 skill_config=self._skill_config,
+                cancellation_checker=cancellation_checker,
             )
             validation = validate_generated_article(final_result.rewritten_text, spec)
             post_quality_report = check_article_quality(
@@ -342,12 +367,15 @@ class ArticleLongformPipeline:
                     validation=validation,
                     quality_report=post_quality_report,
                 )
+                if callable(cancellation_checker) and cancellation_checker():
+                    raise ContentRewriteInputError("Rewrite cancelled.")
                 final_result = rewrite_content(
                     source_text=final_result.rewritten_text,
                     rewrite_focus=second_revise_prompt,
                     rewrite_style="article_longform",
                     rewrite_config=rewrite_config,
                     skill_config=self._skill_config,
+                    cancellation_checker=cancellation_checker,
                 )
                 validation = validate_generated_article(final_result.rewritten_text, spec)
 

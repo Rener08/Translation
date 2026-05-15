@@ -128,6 +128,7 @@ def rewrite_with_openai_compatible(
     messages: list[dict[str, str]],
     *,
     rewrite_style: str,
+    cancellation_checker=None,
 ) -> str:
     temperature, max_tokens = rewrite_generation_settings(rewrite_style)
     payload = {
@@ -143,6 +144,7 @@ def rewrite_with_openai_compatible(
         headers=_build_headers(config),
         payload=payload,
         provider=config.provider,
+        cancellation_checker=cancellation_checker,
     )
 
     try:
@@ -190,6 +192,7 @@ def rewrite_with_ollama(
     messages: list[dict[str, str]],
     *,
     rewrite_style: str,
+    cancellation_checker=None,
 ) -> str:
     temperature, max_tokens = rewrite_generation_settings(rewrite_style)
     payload = {
@@ -208,6 +211,7 @@ def rewrite_with_ollama(
         headers=_build_headers(config),
         payload=payload,
         provider=config.provider,
+        cancellation_checker=cancellation_checker,
     )
 
     try:
@@ -250,9 +254,12 @@ def _post_json(
     headers: dict[str, str],
     payload: dict[str, object],
     provider: str,
+    cancellation_checker: object = None,
 ) -> httpx.Response:
     last_error_message = ""
     for attempt in range(1, MAX_REWRITE_REQUEST_ATTEMPTS + 1):
+        if callable(cancellation_checker) and cancellation_checker():
+            _raise_provider_error("Rewrite cancelled.")
         try:
             response = httpx.post(
                 url,

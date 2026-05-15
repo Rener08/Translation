@@ -199,7 +199,7 @@ def check_article_quality(
             handler = _CHECK_DISPATCH.get(check_name)
             if handler:
                 if check_name == "detail_coverage":
-                    layer_issues.extend(handler(text, skill_config, detail_ledger))
+                    layer_issues.extend(_check_detail_coverage(text, source_text, detail_ledger))
                 else:
                     layer_issues.extend(handler(text, skill_config, detail_ledger))
         if not layer_issues:

@@ -78,6 +78,7 @@ def rewrite_content(
     rewrite_config: dict[str, object] | None = None,
     detail_ledger: str | None = None,
     skill_config=None,
+    cancellation_checker=None,
 ) -> ContentRewriteResult:
     normalized_source = str(source_text or "").strip()
     if not normalized_source:
@@ -119,12 +120,14 @@ def rewrite_content(
             config,
             messages,
             rewrite_style=normalized_style,
+            cancellation_checker=cancellation_checker,
         )
     else:
         rewritten_text = rewrite_with_openai_compatible(
             config,
             messages,
             rewrite_style=normalized_style,
+            cancellation_checker=cancellation_checker,
         )
 
     cleaned = clean_model_output_text(rewritten_text).strip()

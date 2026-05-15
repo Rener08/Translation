@@ -543,16 +543,25 @@ def _run_transcription_process_with_timeout(
     )
     process.start()
     started_at = time.monotonic()
-    while process.is_alive():
-        _raise_if_cancelled(cancellation_checker)
-        if (time.monotonic() - started_at) >= float(timeout_sec):
+    try:
+        while process.is_alive():
+            _raise_if_cancelled(cancellation_checker)
+            if (time.monotonic() - started_at) >= float(timeout_sec):
+                process.terminate()
+                process.join(timeout=5)
+                if process.is_alive():
+                    process.kill()
+                    process.join(timeout=1)
+                raise JobStageTimeoutError(stage="transcribe", timeout_sec=timeout_sec)
+            process.join(timeout=0.25)
+    except (JobCancelledError, JobStageTimeoutError):
+        if process.is_alive():
             process.terminate()
             process.join(timeout=5)
             if process.is_alive():
                 process.kill()
                 process.join(timeout=1)
-            raise JobStageTimeoutError(stage="transcribe", timeout_sec=timeout_sec)
-        process.join(timeout=0.25)
+        raise
 
     try:
         result = result_queue.get_nowait()

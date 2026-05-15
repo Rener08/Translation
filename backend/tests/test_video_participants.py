@@ -110,7 +110,7 @@ def test_video_participants_endpoint_returns_yt_dlp_failure(monkeypatch) -> None
     _assert_error_response(
         response,
         status_code=502,
-        error_code="UPSTREAM_ERROR",
+        error_code="VIDEO_UNAVAILABLE",
         retryable=True,
         detail="Failed to inspect video metadata: Video unavailable",
     )

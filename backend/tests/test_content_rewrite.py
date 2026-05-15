@@ -212,7 +212,10 @@ def test_rewrite_content_injects_transcript_into_full_skill_prompt(monkeypatch) 
     )
 
     assert captured["json"]["messages"][0]["content"] == "你是一个智能写作助手。请严格遵守用户的格式要求。"
-    assert captured["json"]["messages"][1]["content"] == "标题：测试技能\n正文：这是原始转录内容。\n结尾：保持克制。"
+    assert (
+        captured["json"]["messages"][1]["content"]
+        == "标题：测试技能\n正文：\n\n[转录内容开始]\n这是原始转录内容。\n[转录内容结束]\n\n\n结尾：保持克制。"
+    )
     assert result == ContentRewriteResult(
         rewritten_text="这是技能改写后的内容。",
         provider="ollama",

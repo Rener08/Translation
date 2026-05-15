@@ -77,7 +77,7 @@ def test_parse_youtube_endpoint_rejects_invalid_url() -> None:
     _assert_error_response(
         response,
         status_code=400,
-        error_code="INVALID_INPUT",
+        error_code="YOUTUBE_URL_INVALID",
         retryable=False,
         detail="URL must be a valid YouTube link.",
     )

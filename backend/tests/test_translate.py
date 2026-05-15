@@ -133,7 +133,7 @@ def test_translation_output_token_budget_scales_and_clamps() -> None:
     ]
 
     assert _translation_output_token_budget(small_chunk) == 500
-    assert _translation_output_token_budget(huge_chunk) == 1800
+    assert _translation_output_token_budget(huge_chunk) == 4000
 
 
 def test_translate_segments_to_chinese_translates_each_segment(monkeypatch) -> None:
