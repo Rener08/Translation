@@ -89,22 +89,38 @@ def load_skill_config(path: Path) -> SkillConfig:
 
 
 BACKEND_ROOT = Path(__file__).resolve().parent.parent.parent  # backend/
-REFERENCES_DIR = BACKEND_ROOT.parent / "references"
+WRITER_SKILL_DIR = BACKEND_ROOT.parent / "writer-skill"
+KAZIX_SKILL_DIR = WRITER_SKILL_DIR / "kazix" / "references"
+LATEPOST_SKILL_DIR = WRITER_SKILL_DIR / "latepost" / "references"
 
 
 def load_default_skill_config() -> SkillConfig:
-    return load_skill_config(REFERENCES_DIR / "config.yaml")
+    return load_skill_config(KAZIX_SKILL_DIR / "config.yaml")
 
 
 def resolve_skill_config(skill_dir: Path | None = None, config_name: str | None = None) -> SkillConfig:
     if skill_dir is not None:
-        config_path = skill_dir / "config.yaml"
-        if config_path.exists():
-            return load_skill_config(config_path)
+        candidate_dirs = (
+            skill_dir,
+            skill_dir / "references",
+        )
+        for candidate_dir in candidate_dirs:
+            config_path = candidate_dir / "config.yaml"
+            if config_path.exists():
+                return load_skill_config(config_path)
 
     if config_name is not None:
-        config_path = REFERENCES_DIR / f"config_{config_name}.yaml"
-        if config_path.exists():
-            return load_skill_config(config_path)
+        normalized_name = str(config_name).strip().lower()
+        if normalized_name == "latepost":
+            config_path = LATEPOST_SKILL_DIR / "config.yaml"
+            if config_path.exists():
+                return load_skill_config(config_path)
+        if normalized_name == "kazix":
+            config_path = KAZIX_SKILL_DIR / "config.yaml"
+            if config_path.exists():
+                return load_skill_config(config_path)
+        legacy_config_path = WRITER_SKILL_DIR / f"config_{normalized_name}.yaml"
+        if legacy_config_path.exists():
+            return load_skill_config(legacy_config_path)
 
     return load_default_skill_config()

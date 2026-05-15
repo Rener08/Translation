@@ -48,7 +48,8 @@ def build_rewrite_messages(
     skill_config=None,
 ) -> list[dict[str, str]]:
     if uses_full_skill_prompt(rewrite_focus):
-        user_prompt = rewrite_focus.replace("{{transcript}}", source_text)
+        wrapped_source = f"\n\n[转录内容开始]\n{source_text}\n[转录内容结束]\n\n"
+        user_prompt = rewrite_focus.replace("{{transcript}}", wrapped_source)
         return [
             {"role": "system", "content": "你是一个智能写作助手。请严格遵守用户的格式要求。"},
             {"role": "user", "content": user_prompt},
@@ -80,13 +81,11 @@ def build_rewrite_messages(
         f"判定：{selected_template.route_reason}\n\n"
         "【场景模板】\n"
         f"{selected_template.body}\n\n"
-        "【通用一页模板】\n"
-        f"{references.article_template}\n\n"
         "【标题与反向提示】\n"
         f"{references.section_title_rules}\n\n"
-        "【内容方法论参考】\n"
+        "【方法论参考】\n"
         f"{references.content_methodology}\n\n"
-        "【风格示例参考】\n"
+        "【风格示例】\n"
         f"{references.style_examples}\n\n"
         "【写作规则参考】\n"
         f"{references.skill_guide}\n\n"

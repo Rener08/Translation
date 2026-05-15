@@ -97,10 +97,11 @@ Current local setup uses:
 - `WHISPER_DEVICE`: local Whisper device, default `cpu`
 - `WHISPER_COMPUTE_TYPE`: local Whisper compute type, default `int8`
 - `YTDLP_COOKIES_FROM_BROWSER`: optional browser cookies source for yt-dlp, for example `edge` or `chrome`
-- `YTDLP_COOKIES_FILE`: optional cookies.txt path for yt-dlp
-- `YTDLP_ENABLE_DEFAULT_COOKIES_FILE`: whether backend auto-loads repo `youtube-cookies.txt` (default `0`)
+- `YTDLP_COOKIES_FILE`: preferred absolute `cookies.txt` path for yt-dlp
+- `YTDLP_ENABLE_DEFAULT_COOKIES_FILE`: whether backend auto-loads repo `youtube-cookies.txt` (default `0`, keep `0` for the stable dev workflow)
 - `YTDLP_REMOTE_COMPONENTS`: optional `yt-dlp` remote components flag, for example `ejs:github`
 - `YTDLP_SUBPROCESS_TIMEOUT_SEC`: timeout for yt-dlp audio and subtitle subprocesses
+- `YTDLP_CONCURRENT_FRAGMENTS`: yt-dlp fragment concurrency for audio downloads; defaults to `1` for a more conservative YouTube access profile
 - `MAX_VIDEO_DURATION_SEC`: reject videos longer than this before job ingest continues
 - `MAX_AUDIO_BYTES`: reject downloaded audio files above this size before transcription
 - `MAX_TRANSCRIPT_CHARS`: reject transcript text above this length before translation
@@ -165,15 +166,20 @@ WHISPER_DEVICE=cpu
 WHISPER_COMPUTE_TYPE=int8
 YTDLP_COOKIES_FROM_BROWSER=
 YTDLP_COOKIES_FILE=
+YTDLP_YOUTUBE_PLAYER_CLIENTS=
 YTDLP_REMOTE_COMPONENTS=
+YTDLP_JS_RUNTIMES=
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
 ## yt-dlp Installation
 
 The backend uses `yt-dlp` for video inspection and audio download.
+Install the Python package with the `default` extra so the `yt-dlp-ejs` YouTube JS challenge bundle is included: `python -m pip install -U "yt-dlp[default]"`.
+`YTDLP_JS_RUNTIMES` can point at `deno`, `node`, `bun`, or `quickjs`; the backend also auto-detects a runtime fallback when available.
+`YTDLP_YOUTUBE_PLAYER_CLIENTS` is optional and maps to yt-dlp's `--extractor-args "youtube:player-client=..."` for advanced YouTube fallback tuning.
 Remote components are opt-in through `YTDLP_REMOTE_COMPONENTS`; leave it empty unless you explicitly need them.
-Audio and subtitle fallback subprocesses use `YTDLP_SUBPROCESS_TIMEOUT_SEC`, while the main job flow enforces the `MAX_*` limits above before Whisper or translation work starts.
+Audio and subtitle fallback subprocesses use `YTDLP_SUBPROCESS_TIMEOUT_SEC`, while the main job flow enforces the `MAX_*` limits above before Whisper or translation work starts. Audio download fragment concurrency defaults to `1`; raise `YTDLP_CONCURRENT_FRAGMENTS` only if your network and YouTube access are stable.
 
 Install backend dependencies inside the project virtual environment:
 
@@ -205,6 +211,8 @@ If YouTube returns `Sign in to confirm you're not a bot`, first retry the normal
 - `YTDLP_COOKIES_FROM_BROWSER=chrome`
 - `YTDLP_COOKIES_FILE=C:\path\to\cookies.txt`
 
+The recommended stable setup is an absolute `YTDLP_COOKIES_FILE` path outside the repo. Avoid relying on the repo root `youtube-cookies.txt` unless `YTDLP_ENABLE_DEFAULT_COOKIES_FILE=1` is intentionally enabled.
+
 The backend forwards those settings to every `yt-dlp` metadata and audio request.
 
 ## Backend
@@ -228,6 +236,13 @@ Run backend in background:
 ./start-backend.sh --daemon
 ```
 
+Recommended local workflow:
+
+```bash
+./scripts/dev-doctor.sh
+./start-dev.sh
+```
+
 ### Test
 
 Open [http://localhost:8000/health](http://localhost:8000/health)
@@ -245,6 +260,8 @@ Expected response:
 | `GET /health` | Process is up |
 | `GET /livez` | Same as health for local MVP |
 | `GET /readyz` | Checks `tmp/` writable and job-queue SQLite path reachable |
+
+`/readyz` also reports runtime details such as cookie mode and YAML availability for easier local diagnosis.
 
 Example:
 
@@ -462,6 +479,8 @@ From the project root:
 ```
 
 This starts FastAPI and Next.js in the background.
+The frontend dev runner also watches the local backend health endpoint and will
+restart the backend automatically if it exits during development.
 
 Check status:
 
@@ -486,14 +505,6 @@ docker compose up --build
 
 - frontend: [http://localhost:3000](http://localhost:3000)
 - backend: [http://localhost:8000/health](http://localhost:8000/health)
-
-### Desktop Legacy
-
-The PyQt desktop client is frozen and deprecated.
-
-- Legacy files moved to `archive/desktop-legacy/`
-- New features are Web + FastAPI only
-- Root `./start-desktop.sh` now exits with a deprecation message
 
 Writing styles are local prompt files in `skills/`.
 

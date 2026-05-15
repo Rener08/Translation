@@ -9,6 +9,7 @@ from app.services.job_run_service import run_video_job_with_translation_config
 from app.services.speaker_diarization_service import diarize_audio_file
 from app.services.transcription_service import transcribe_audio_file
 from app.services.translation_service import discover_provider_models, translate_segments_to_chinese
+from app.services.upload_job_service import run_uploaded_audio_job_with_translation_config
 from app.services.video_source_service import fetch_video_source
 from app.services.writer_agent_service import run_writer_agent
 from app.services.yt_dlp_service import inspect_video_metadata
@@ -25,6 +26,7 @@ class ServiceBindings:
     run_writer_agent: Any
     discover_provider_models: Any
     run_video_job_with_translation_config: Any
+    run_uploaded_audio_job_with_translation_config: Any
     rewrite_content: Any
 
 
@@ -38,6 +40,7 @@ service_bindings = ServiceBindings(
     run_writer_agent=run_writer_agent,
     discover_provider_models=discover_provider_models,
     run_video_job_with_translation_config=run_video_job_with_translation_config,
+    run_uploaded_audio_job_with_translation_config=run_uploaded_audio_job_with_translation_config,
     rewrite_content=rewrite_content,
 )
 

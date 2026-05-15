@@ -7,7 +7,7 @@ from app.config import get_env_str
 
 REFERENCE_FILE_CHAR_BUDGET = 8000
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PINNED_LASTPOST_SKILL_DIR = REPO_ROOT / "references"
+PINNED_LASTPOST_SKILL_DIR = REPO_ROOT / "writer-skill" / "latepost" / "references"
 _LEGACY_LASTPOST_SKILL_DIR = Path.home() / ".hermes" / "skills" / "creative" / "lastpost-skill"
 
 
@@ -18,7 +18,7 @@ class RewriteReferences:
     style_examples: str
     skill_guide: str
     quality_pipeline: str = ""
-    reference_profile: str = "lastpost-skill"
+    reference_profile: str = "latepost-skill"
     category_templates: dict[str, str] = field(default_factory=dict)
     section_title_rules: str = ""
 
@@ -71,39 +71,6 @@ LASTPOST_TEMPLATE_SPECS: tuple[LastpostTemplateSpec, ...] = (
         priority=1,
     ),
     LastpostTemplateSpec(
-        key="02_person_organization_friction",
-        label="02 人物 / 组织 / 风波",
-        filename="02_person_organization_friction.md",
-        keywords=(
-            "离职", "加入", "任命", "高管", "创始人", "ceo", "裁员",
-            "汇报线", "组织调整", "架构调整", "风波", "分歧", "权力", "组织问题",
-        ),
-        strong_keywords=("连夜开会", "提交离职", "组织重组", "权力结构"),
-        priority=2,
-    ),
-    LastpostTemplateSpec(
-        key="04_industry_adoption",
-        label="04 行业落地 / 场景改造",
-        filename="04_industry_adoption.md",
-        keywords=(
-            "落地", "场景", "流程", "客户", "企业", "医院", "教育",
-            "金融", "工厂", "门店", "部署", "提效", "改造", "省了",
-        ),
-        strong_keywords=("旧流程", "新流程", "嵌入", "决策质量"),
-        priority=3,
-    ),
-    LastpostTemplateSpec(
-        key="05_hardware_robotics",
-        label="05 硬件 / 机器人 / 制造 / 终端",
-        filename="05_hardware_robotics.md",
-        keywords=(
-            "机器人", "硬件", "终端", "芯片", "眼镜", "汽车", "量产",
-            "供应链", "传感器", "制造", "设备", "具身", "整机", "bom",
-        ),
-        strong_keywords=("量产", "供应链", "工程化", "可靠性"),
-        priority=4,
-    ),
-    LastpostTemplateSpec(
         key="06_infra_cloud_model_platform",
         label="06 基础设施 / 云 / 模型 / 平台",
         filename="06_infra_cloud_model_platform.md",
@@ -113,28 +80,6 @@ LASTPOST_TEMPLATE_SPECS: tuple[LastpostTemplateSpec, ...] = (
         ),
         strong_keywords=("推理成本", "系统性", "平台化", "商业化关系"),
         priority=5,
-    ),
-    LastpostTemplateSpec(
-        key="07_startup_funding_ipo",
-        label="07 创业 / 融资 / 估值 / 路径对比",
-        filename="07_startup_funding_ipo.md",
-        keywords=(
-            "融资", "估值", "ipo", "上市", "投资人", "基金", "轮融资",
-            "a轮", "b轮", "c轮", "pre-ipo", "并购", "现金流", "营收",
-        ),
-        strong_keywords=("估值", "融资", "ipo", "投资机构"),
-        priority=6,
-    ),
-    LastpostTemplateSpec(
-        key="08_risk_bubble_safety_accident",
-        label="08 风险 / 泡沫 / 对齐 / 事故",
-        filename="08_risk_bubble_safety_accident.md",
-        keywords=(
-            "风险", "泡沫", "安全", "对齐", "事故", "泄露", "幻觉",
-            "监管", "封禁", "违规", "灾难", "隐私", "误判", "攻击",
-        ),
-        strong_keywords=("安全事故", "数据泄露", "监管调查", "泡沫"),
-        priority=7,
     ),
     LastpostTemplateSpec(
         key="01_big_company_war",
@@ -150,10 +95,13 @@ LASTPOST_TEMPLATE_SPECS: tuple[LastpostTemplateSpec, ...] = (
     ),
 )
 
-LASTPOST_ROUTABLE_TEMPLATE_KEYS: tuple[str, ...] = (
+# 晚点默认表只保留三类主场景，其他题材不参与默认自动路由。
+LASTPOST_CORE_TEMPLATE_KEYS: tuple[str, ...] = (
+    "09_interview_transcript_sync",
     "03_product_review",
     "06_infra_cloud_model_platform",
 )
+LASTPOST_ROUTABLE_TEMPLATE_KEYS: tuple[str, ...] = LASTPOST_CORE_TEMPLATE_KEYS
 LASTPOST_STRATEGIC_FALLBACK_TEMPLATE_KEY = "01_big_company_war"
 # Backward-compatible alias: other modules and tests may still import the old name.
 LASTPOST_DEFAULT_TEMPLATE_KEY = LASTPOST_STRATEGIC_FALLBACK_TEMPLATE_KEY
@@ -176,25 +124,21 @@ def load_rewrite_references() -> RewriteReferences:
     skill_root = resolve_lastpost_skill_root()
     if skill_root is None:
         raise ContentRewriteConfigurationError(
-            "写作参考资料未找到。请确认 references/ 目录存在，或设置 LASTPOST_SKILL_DIR 环境变量。"
+            "写作参考资料未找到。请确认 writer-skill/latepost/references 目录存在，或设置 LATEPOST_SKILL_DIR / LASTPOST_SKILL_DIR 环境变量。"
         )
 
+    skill_guide = _read_skill_bundle_file(skill_root.parent, "SKILL.md")
     content_methodology = _read_skill_bundle_file(skill_root, "content_methodology.md")
     style_examples = _read_skill_bundle_file(skill_root, "style_examples.md")
-    skill_guide = _read_skill_bundle_file(skill_root, "SKILL.md")
-    article_template = _read_skill_bundle_file(skill_root, "latepost_prompt_templates_onepage.md")
+    article_template = _read_skill_bundle_file(skill_root, "article_template.md")
     quality_pipeline = _read_skill_bundle_file(skill_root, "quality_pipeline.md")
     section_title_rules = _read_skill_bundle_file(
-        skill_root, "11_section_titles_and_reverse_prompt.md"
+        skill_root, "prompts/11_section_titles_and_reverse_prompt.md"
     )
     category_templates = _load_lastpost_category_templates(skill_root)
 
     if article_template.startswith("[缺失参考文件"):
-        article_template = _build_default_article_template(
-            content_methodology=content_methodology,
-            style_examples=style_examples,
-            skill_guide=skill_guide,
-        )
+        article_template = _build_default_article_template(skill_guide=skill_guide)
 
     return RewriteReferences(
         article_template=article_template,
@@ -202,7 +146,7 @@ def load_rewrite_references() -> RewriteReferences:
         style_examples=style_examples,
         skill_guide=skill_guide,
         quality_pipeline=quality_pipeline,
-        reference_profile="lastpost-skill",
+        reference_profile="latepost-skill",
         category_templates=category_templates,
         section_title_rules=section_title_rules,
     )
@@ -214,7 +158,7 @@ def select_rewrite_template(
     rewrite_focus: str,
     references: RewriteReferences,
 ) -> SelectedRewriteTemplate:
-    if references.reference_profile != "lastpost-skill" or not references.category_templates:
+    if references.reference_profile != "latepost-skill" or not references.category_templates:
         return SelectedRewriteTemplate(
             key="generic",
             label="通用模板",
@@ -347,12 +291,16 @@ def _find_strategic_fallback_hits(
 
 
 def resolve_lastpost_skill_root() -> Path | None:
-    configured_path = get_env_str("LASTPOST_SKILL_DIR") or get_env_str(
-        "REWRITE_SKILL_DIR"
+    configured_path = (
+        get_env_str("LATEPOST_SKILL_DIR")
+        or get_env_str("LASTPOST_SKILL_DIR")
+        or get_env_str("REWRITE_SKILL_DIR")
     )
     if configured_path:
         configured_root = Path(configured_path).expanduser()
         if configured_root.exists():
+            if (configured_root / "references").exists() and not (configured_root / "prompts").exists():
+                return configured_root / "references"
             return configured_root
 
     if PINNED_LASTPOST_SKILL_DIR.exists():
@@ -368,7 +316,6 @@ def resolve_lastpost_skill_root() -> Path | None:
 def _read_skill_bundle_file(skill_root: Path, filename: str) -> str:
     candidates = (
         skill_root / filename,
-        skill_root / "references" / filename,
         skill_root / "prompts" / filename,
     )
     for path in candidates:
@@ -404,13 +351,8 @@ def _read_reference_file(path: Path) -> str:
     )
 
 
-def _build_default_article_template(
-    *,
-    content_methodology: str,
-    style_examples: str,
-    skill_guide: str,
-) -> str:
-    _ = (content_methodology, style_examples, skill_guide)
+def _build_default_article_template(*, skill_guide: str) -> str:
+    _ = skill_guide
     return (
         "# 文章改写模板\n"
         "## 1. 开头（1-2段）\n"

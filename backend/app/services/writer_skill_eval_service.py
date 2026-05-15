@@ -30,7 +30,7 @@ from app.services.writer_agent_service import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-PINNED_LASTPOST_SKILL_DIR = REPO_ROOT / "references"
+PINNED_LASTPOST_SKILL_DIR = REPO_ROOT / "writer-skill" / "latepost" / "references"
 _LEGACY_LASTPOST_SKILL_DIR = Path.home() / ".hermes" / "skills" / "creative" / "lastpost-skill"
 DEFAULT_MANIFEST_PATH = (
     REPO_ROOT / "backend" / "tests" / "fixtures" / "writer_skill_eval" / "samples.json"
@@ -214,10 +214,16 @@ def resolve_writer_skill_eval_transcript_path(
 
 
 def resolve_lastpost_skill_root() -> Path:
-    configured_path = os.environ.get("LASTPOST_SKILL_DIR") or os.environ.get("REWRITE_SKILL_DIR")
+    configured_path = (
+        os.environ.get("LATEPOST_SKILL_DIR")
+        or os.environ.get("LASTPOST_SKILL_DIR")
+        or os.environ.get("REWRITE_SKILL_DIR")
+    )
     if configured_path:
         configured_root = Path(configured_path).expanduser()
         if configured_root.exists():
+            if (configured_root / "references").exists() and not (configured_root / "prompts").exists():
+                return configured_root / "references"
             return configured_root
 
     if PINNED_LASTPOST_SKILL_DIR.exists():
@@ -227,7 +233,7 @@ def resolve_lastpost_skill_root() -> Path:
         return _LEGACY_LASTPOST_SKILL_DIR
 
     raise FileNotFoundError(
-        "写作参考资料未找到。请确认 references/ 目录存在，或设置 LASTPOST_SKILL_DIR 环境变量。"
+        "写作参考资料未找到。请确认 writer-skill/latepost/references 目录存在，或设置 LATEPOST_SKILL_DIR / LASTPOST_SKILL_DIR 环境变量。"
     )
 
 
@@ -257,6 +263,8 @@ def run_writer_skill_eval(
         samples = tuple(sample for sample in samples if sample.sample_id in sample_id_set)
     manifest_dir = manifest_file.parent
     resolved_skill_root = Path(skill_root).expanduser() if skill_root else resolve_lastpost_skill_root()
+    if (resolved_skill_root / "references").exists() and not (resolved_skill_root / "prompts").exists():
+        resolved_skill_root = resolved_skill_root / "references"
 
     skill_prompt_cache: dict[str, str] = {}
     references = load_rewrite_references()
@@ -768,7 +776,7 @@ def _build_decision_hint(summaries: tuple[WriterSkillEvalModeSummary, ...]) -> s
             reasons.append("article_longform 细节保真率偏低")
         if baseline_better_coverage:
             reasons.append("全量 prompt 基线在硬细节覆盖上明显更稳")
-        return "；".join(reasons) + "。建议先收缩 lastpost-skill，再决定是否抽通用 runner。"
+        return "；".join(reasons) + "。建议先收缩 latepost-skill，再决定是否抽通用 runner。"
 
     if speech_coverage_ok and not article_first_person:
         return "当前两条主线都能跑通，但 article_longform 没显示出足够优势。建议先保留现有结构，只继续修具体失败样本。"

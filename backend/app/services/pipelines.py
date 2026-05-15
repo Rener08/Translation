@@ -178,15 +178,20 @@ class SpeechVerbatimPipeline:
             patched_once = True
             patch_result = rewrite_content(
                 source_text=direct_result.rewritten_text,
-                rewrite_focus=build_detail_patch_prompt(coverage.missing_items),
+                rewrite_focus=build_detail_patch_prompt(
+                    coverage.missing_items,
+                    original_source=normalized_source,
+                    previous_draft=direct_result.rewritten_text,
+                ),
                 rewrite_style="speech_verbatim",
                 rewrite_config=rewrite_config,
                 detail_ledger=build_detail_patch_ledger(coverage.missing_items),
             )
-            final_result = patch_result
-            coverage = analyze_detail_coverage_enhanced(
-                detail_ledger, final_result.rewritten_text,
-            )
+            if self._patch_output_is_safe(direct_result.rewritten_text, patch_result.rewritten_text):
+                final_result = patch_result
+                coverage = analyze_detail_coverage_enhanced(
+                    detail_ledger, final_result.rewritten_text,
+                )
 
         # Quality check after coverage patch
         quality_report = check_article_quality(
@@ -202,6 +207,7 @@ class SpeechVerbatimPipeline:
                 rewrite_focus=revise_prompt,
                 rewrite_style="speech_verbatim",
                 rewrite_config=rewrite_config,
+                detail_ledger=detail_ledger.to_prompt_text(),
                 skill_config=self._skill_config,
             )
 
@@ -227,6 +233,32 @@ class SpeechVerbatimPipeline:
             writer_prompt_version=SPEECH_VERBATIM_PROMPT_VERSION,
         )
 
+    @staticmethod
+    def _paragraph_count(text: str) -> int:
+        normalized_text = (text or "").strip()
+        if not normalized_text:
+            return 0
+        paragraphs = [
+            block.strip()
+            for block in re.split(r"\n\s*\n+", normalized_text)
+            if block.strip()
+        ]
+        return len(paragraphs) if paragraphs else 1
+
+    @classmethod
+    def _patch_output_is_safe(cls, previous: str, patched: str) -> bool:
+        previous_text = (previous or "").strip()
+        patched_text = (patched or "").strip()
+        if not previous_text or not patched_text:
+            return bool(patched_text)
+        if len(patched_text) < len(previous_text) * 0.7:
+            return False
+        previous_paragraphs = cls._paragraph_count(previous_text)
+        patched_paragraphs = cls._paragraph_count(patched_text)
+        if patched_paragraphs < max(1, previous_paragraphs // 2):
+            return False
+        return True
+
 
 class ArticleLongformPipeline:
     """Pipeline for article_longform style: outline → draft → validate → revise."""
@@ -250,24 +282,26 @@ class ArticleLongformPipeline:
         longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
 
         planning_result = rewrite_content(
-            source_text=normalized_source,
+            source_text=article_source,
             rewrite_focus=_build_outline_prompt(
                 spec=spec, rewrite_focus=rewrite_focus,
                 detail_ledger_text=longform_ledger.to_prompt_text(),
             ),
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
+            skill_config=self._skill_config,
         )
         outline = _extract_outline(planning_result.rewritten_text)
 
         draft_result = rewrite_content(
-            source_text=normalized_source,
+            source_text=article_source,
             rewrite_focus=_build_draft_prompt(
                 spec=spec, rewrite_focus=rewrite_focus, outline=outline,
                 detail_ledger_text=longform_ledger.to_prompt_text(),
             ),
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
+            skill_config=self._skill_config,
         )
         validation = validate_generated_article(draft_result.rewritten_text, spec)
         quality_report = check_article_quality(

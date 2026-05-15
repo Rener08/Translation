@@ -47,6 +47,40 @@ def test_job_repository_persists_and_loads_records(
     assert [record.job_id for record in dispatchable] == ["job-one"]
 
 
+def test_job_repository_recreates_schema_if_database_is_deleted(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    db_path = tmp_path / "job_queue.sqlite"
+    monkeypatch.setenv("JOB_QUEUE_DB_PATH", str(db_path))
+    get_settings.cache_clear()
+
+    repo = JobRepository()
+    repo.upsert_record(
+        JobRecord(
+            job_id="job-one",
+            status="queued",
+            progress_value=0,
+            progress_text="已加入队列",
+            task_type="video_job_v1",
+        )
+    )
+
+    db_path.unlink()
+
+    repo.upsert_record(
+        JobRecord(
+            job_id="job-two",
+            status="queued",
+            progress_value=0,
+            progress_text="已加入队列",
+            task_type="video_job_v1",
+        )
+    )
+
+    assert repo.load_record("job-two") is not None
+
+
 def test_job_repository_prunes_finished_records(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,

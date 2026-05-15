@@ -70,18 +70,25 @@ class AccountQuotaService:
         *,
         headers: Mapping[str, Any],
         client_ip: str | None,
+        settings: AppSettings | None = None,
     ) -> AccountIdentity:
         return resolve_account_identity(
             headers=headers,
             client_ip=client_ip,
+            settings=settings,
         )
 
-    def resolve_identity_from_request(self, request: Request) -> AccountIdentity:
+    def resolve_identity_from_request(
+        self,
+        request: Request,
+        *,
+        settings: AppSettings | None = None,
+    ) -> AccountIdentity:
         existing_identity = getattr(request.state, "account_identity", None)
         if isinstance(existing_identity, AccountIdentity):
             return existing_identity
 
-        identity = resolve_account_identity_from_request(request)
+        identity = resolve_account_identity_from_request(request, settings=settings)
         request.state.account_identity = identity
         return identity
 
@@ -149,9 +156,14 @@ def resolve_account_identity(
     *,
     headers: Mapping[str, Any],
     client_ip: str | None,
+    settings: AppSettings | None = None,
 ) -> AccountIdentity:
-    user_id = _normalize_identity_part(headers.get("x-user-id"))
-    workspace_id = _normalize_identity_part(headers.get("x-workspace-id"))
+    resolved_settings = settings or get_settings()
+    trust_account_headers = bool(resolved_settings.trust_account_headers)
+    user_id = _normalize_identity_part(headers.get("x-user-id")) if trust_account_headers else ""
+    workspace_id = (
+        _normalize_identity_part(headers.get("x-workspace-id")) if trust_account_headers else ""
+    )
     token = _extract_api_token(headers)
 
     if user_id and workspace_id:
@@ -196,11 +208,16 @@ def resolve_account_identity(
     )
 
 
-def resolve_account_identity_from_request(request: Request) -> AccountIdentity:
+def resolve_account_identity_from_request(
+    request: Request,
+    *,
+    settings: AppSettings | None = None,
+) -> AccountIdentity:
     client_ip = request.client.host if request.client else None
     return resolve_account_identity(
         headers=request.headers,
         client_ip=client_ip,
+        settings=settings or get_settings(),
     )
 
 

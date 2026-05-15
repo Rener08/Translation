@@ -178,10 +178,22 @@ def test_answer_content_question_uses_cached_context_when_id_is_provided(
 
 
 def test_content_chat_endpoint_accepts_content_context_id(monkeypatch) -> None:
+    def fake_load(content_context_id: str, *, account_id: str | None = None) -> ContentContext | None:
+        assert content_context_id == "ctx_demo"
+        assert account_id == "user:alice"
+        return ContentContext(
+            content_context_id="ctx_demo",
+            account_id="user:alice",
+            video_title="Demo video",
+            transcript_en="Hello everyone. Today we talk about Claude Code.",
+            translation_zh="大家好。今天我们来讲 Claude Code。",
+        )
+
     def fake_answer_content_question(**kwargs) -> ContentChatResult:
-        assert kwargs["content_context_id"] == "ctx_demo"
-        assert kwargs["transcript_en"] is None
-        assert kwargs["translation_zh"] is None
+        assert kwargs["content_context_id"] is None
+        assert kwargs["video_title"] == "Demo video"
+        assert kwargs["transcript_en"] == "Hello everyone. Today we talk about Claude Code."
+        assert kwargs["translation_zh"] == "大家好。今天我们来讲 Claude Code。"
         assert kwargs["question"] == "请总结这条视频。"
         return ContentChatResult(
             answer="这是缓存上下文版本的总结。",
@@ -189,10 +201,12 @@ def test_content_chat_endpoint_accepts_content_context_id(monkeypatch) -> None:
             model="qwen3.5:4b",
         )
 
+    monkeypatch.setattr("app.api.routers.content.load_content_context", fake_load)
     monkeypatch.setattr("app.main.answer_content_question", fake_answer_content_question)
 
     response = client.post(
         "/api/content-chat",
+        headers={"x-user-id": "alice"},
         json={
             "content_context_id": "ctx_demo",
             "question": "请总结这条视频。",
@@ -202,6 +216,41 @@ def test_content_chat_endpoint_accepts_content_context_id(monkeypatch) -> None:
 
     assert response.status_code == 200
     assert response.json()["answer"] == "这是缓存上下文版本的总结。"
+
+
+def test_content_chat_endpoint_rejects_cross_account_context(monkeypatch) -> None:
+    def fake_load(content_context_id: str, *, account_id: str | None = None) -> ContentContext | None:
+        assert content_context_id == "ctx_demo"
+        assert account_id == "user:bob"
+        return None
+
+    monkeypatch.setattr("app.api.routers.content.load_content_context", fake_load)
+    monkeypatch.setattr(
+        "app.main.answer_content_question",
+        lambda **kwargs: ContentChatResult(
+            answer="不该返回。",
+            provider="ollama",
+            model="qwen3.5:4b",
+        ),
+    )
+
+    response = client.post(
+        "/api/content-chat",
+        headers={"x-user-id": "bob"},
+        json={
+            "content_context_id": "ctx_demo",
+            "question": "请总结这条视频。",
+            "chat_config": {"provider": "ollama", "model": "qwen3.5:4b"},
+        },
+    )
+
+    _assert_error_response(
+        response,
+        status_code=404,
+        error_code="NOT_FOUND",
+        retryable=False,
+        detail="Content context not found.",
+    )
 
 
 def test_content_chat_endpoint_rejects_empty_question() -> None:

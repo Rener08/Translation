@@ -1,5 +1,5 @@
 from app.services.skill_config_service import (
-    REFERENCES_DIR,
+    LATEPOST_SKILL_DIR,
     SkillConfig,
     load_default_skill_config,
     load_skill_config,
@@ -17,7 +17,7 @@ def test_load_default_skill_config():
 
 
 def test_load_latepost_config():
-    cfg = load_skill_config(REFERENCES_DIR / "config_latepost.yaml")
+    cfg = load_skill_config(LATEPOST_SKILL_DIR / "config.yaml")
     assert cfg.style_name == "晚点"
     assert cfg.perspective == "third_person"
 
@@ -38,7 +38,7 @@ def test_perspective_markers():
     kz = load_default_skill_config()
     assert len(kz.perspective_markers) == 0
 
-    lp = load_skill_config(REFERENCES_DIR / "config_latepost.yaml")
+    lp = load_skill_config(LATEPOST_SKILL_DIR / "config.yaml")
     assert len(lp.perspective_markers) == 7
     marker_constraints = [c for c in lp.constraints if c.constraint_type == "perspective_marker"]
     assert len(marker_constraints) == 7

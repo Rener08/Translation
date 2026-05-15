@@ -179,6 +179,7 @@ export function useRewriteChat({
           source_text: source,
           translation_config: translationConfig,
           rewrite_style: settings.rewriteStyle,
+          skill_config_name: settings.skillConfigName,
           content_context_id: jobResult?.content_context_id || undefined,
           rewrite_focus: rewriteFocus.trim() || undefined,
         }),
@@ -246,15 +247,22 @@ export function useRewriteChat({
     patchAbortRef.current = controller;
     const missingLines = detailCoverageIssues.map((issue) => `- ${issue}`).join("\n");
     const patchFocus = [
-      "请只补足下面缺失的细节，不要重写整篇，不要压缩，不要新增事实。",
+      "你将修订一篇已经生成的中文正文。",
       "",
-      "已有草稿：",
+      "原始素材：",
+      sourceText,
+      "",
+      "当前完整草稿：",
       currentRewrite,
       "",
       "缺失细节：",
       missingLines,
       "",
-      "要求：把这些细节自然补回正文中，保留原作者口吻和顺序，只输出正文。",
+      "要求：",
+      "1. 只把缺失细节自然补回正文。",
+      "2. 不新增事实。",
+      "3. 不改写成摘要。",
+      "4. 必须输出修订后的完整正文，不要只输出补充段落。",
     ].join("\n");
 
     setDetailPatchLoading(true);
@@ -268,6 +276,7 @@ export function useRewriteChat({
           source_text: sourceText,
           translation_config: translationConfig,
           rewrite_style: settings.rewriteStyle,
+          skill_config_name: settings.skillConfigName,
           content_context_id: jobResult?.content_context_id || undefined,
           rewrite_focus: patchFocus,
         }),
@@ -314,11 +323,42 @@ export function useRewriteChat({
       return;
     }
     try {
-      await navigator.clipboard.writeText(text);
+      const copied = await writeTextToClipboard(text);
+      if (!copied) {
+        throw new Error("Clipboard write is unavailable.");
+      }
       setRewriteCopied(true);
       window.setTimeout(() => setRewriteCopied(false), 1200);
     } catch {
       setRewriteCopied(false);
+    }
+  }
+
+  async function writeTextToClipboard(text: string): Promise<boolean> {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // Fall through to the legacy selection-based path.
+      }
+    }
+
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "true");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const copied = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return copied;
+    } catch {
+      return false;
     }
   }
 

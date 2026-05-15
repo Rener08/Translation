@@ -124,7 +124,7 @@ def test_download_audio_returns_downloaded_file_path(
     assert "--cookies-from-browser" not in captured_command
     assert "--remote-components" not in captured_command
     assert "--concurrent-fragments" in captured_command
-    assert captured_command[captured_command.index("--concurrent-fragments") + 1] == "3"
+    assert captured_command[captured_command.index("--concurrent-fragments") + 1] == "1"
     assert "--extract-audio" not in captured_command
     assert "--audio-format" not in captured_command
     assert (
@@ -204,6 +204,34 @@ def test_download_audio_uses_browser_cookies(monkeypatch, tmp_path: Path) -> Non
 
     assert "--cookies-from-browser" in captured_command
     assert "edge" in captured_command
+    assert result.audio_file_path.endswith("abc123xyz.m4a")
+
+
+def test_download_audio_uses_player_client_extractor_args(
+    monkeypatch, tmp_path: Path
+) -> None:
+    audio_file = tmp_path / "abc123xyz.m4a"
+    audio_file.write_text("audio")
+    captured_command: list[str] = []
+    monkeypatch.setenv("YTDLP_YOUTUBE_PLAYER_CLIENTS", "web,mweb")
+
+    def fake_run(*args, **kwargs):
+        captured_command.extend(args[0])
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout=str(audio_file),
+            stderr="",
+        )
+
+    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+
+    result = download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
+
+    assert "--extractor-args" in captured_command
+    assert captured_command[captured_command.index("--extractor-args") + 1] == (
+        "youtube:player-client=web,mweb"
+    )
     assert result.audio_file_path.endswith("abc123xyz.m4a")
 
 

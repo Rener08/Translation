@@ -5,7 +5,10 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request, status
 
 from app.api.error_mapping import classify_service_error, raise_mapped_http_exception
-from app.api.runtime_deps import get_run_video_job_runner
+from app.api.runtime_deps import (
+    get_run_uploaded_audio_job_runner,
+    get_run_video_job_runner,
+)
 from app.config import get_env_str
 from app.services.job_queue_service import (
     get_job_record,
@@ -17,6 +20,7 @@ from app.services.job_queue_service import (
 )
 from app.services.job_run_service import JobCancelledError
 from app.services.session_history_service import upsert_job_session
+from app.services.upload_job_service import UPLOAD_SOURCE_MODE
 from app.youtube import (
     JobRunRequest,
     JobRunResponse,
@@ -26,6 +30,7 @@ from app.youtube import (
     JobVideoResponse,
     TranscriptSegmentResponse,
     TranslateItemResponse,
+    UploadJobRunRequest,
     parse_youtube_url,
 )
 
@@ -33,6 +38,7 @@ from app.youtube import (
 logger = logging.getLogger(__name__)
 router = APIRouter()
 VIDEO_JOB_TASK_TYPE = "video_job_v1"
+UPLOAD_JOB_TASK_TYPE = "upload_job_v1"
 
 
 @router.post(
@@ -58,6 +64,42 @@ async def run_job(request: Request, job_request: JobRunRequest) -> JobRunStatusR
         {
             "normalized_url": parsed.normalized_url,
             "source_mode": job_request.source_mode,
+            "translation_config": translation_config,
+            "stage_timeouts": stage_timeouts,
+            "account_id": account_id,
+        },
+    )
+    return JobRunStatusResponse(
+        ok=True,
+        job_id=job_id,
+        status="queued",
+        progress_value=0,
+        progress_text="已加入队列",
+    )
+
+
+@router.post(
+    "/api/jobs/run-upload",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=JobRunStatusResponse,
+    response_model_exclude_none=True,
+)
+async def run_upload_job(
+    request: Request,
+    job_request: UploadJobRunRequest,
+) -> JobRunStatusResponse:
+    account_id = str(getattr(request.state, "account_id", "") or "").strip()
+    translation_config = (
+        job_request.translation_config.model_dump()
+        if job_request.translation_config
+        else None
+    )
+    stage_timeouts = _resolve_job_stage_timeouts_from_env()
+    job_id = submit_persistent_job(
+        UPLOAD_JOB_TASK_TYPE,
+        {
+            "audio_file_path": job_request.audio_file_path,
+            "title": str(job_request.title or "").strip(),
             "translation_config": translation_config,
             "stage_timeouts": stage_timeouts,
             "account_id": account_id,
@@ -202,6 +244,27 @@ def _run_video_job_task(job_id: str, payload: dict[str, object]) -> None:
     )
 
 
+def _run_upload_job_task(job_id: str, payload: dict[str, object]) -> None:
+    audio_file_path = str(payload.get("audio_file_path") or "").strip()
+    title = str(payload.get("title") or "").strip()
+    translation_config = payload.get("translation_config")
+    account_id = str(payload.get("account_id") or "").strip()
+    if not isinstance(translation_config, dict):
+        translation_config = None
+    stage_timeouts = payload.get("stage_timeouts")
+    if not isinstance(stage_timeouts, dict):
+        stage_timeouts = _resolve_job_stage_timeouts_from_env()
+
+    _run_upload_job_background(
+        job_id,
+        audio_file_path=audio_file_path,
+        title=title,
+        translation_config=translation_config,
+        account_id=account_id,
+        stage_timeouts=stage_timeouts,
+    )
+
+
 def _persist_job_session(
     *,
     result,
@@ -261,6 +324,66 @@ def _persist_job_session(
         )
     except Exception:
         logger.warning("Failed to persist session history for %s", normalized_url)
+
+
+def _persist_upload_job_session(
+    *,
+    result,
+    title: str,
+    translation_config: dict[str, object] | None,
+    account_id: str,
+) -> None:
+    try:
+        upsert_job_session(
+            content_context_id=result.content_context_id,
+            account_id=account_id or None,
+            video_id=result.video.video_id,
+            video_url="",
+            video_title=result.video.title or title or "Uploaded audio",
+            video_duration_sec=result.video.duration_sec,
+            video_uploader=result.video.uploader,
+            video_thumbnail=result.video.thumbnail,
+            source_mode=UPLOAD_SOURCE_MODE,
+            source_type=result.source_type,
+            translation_provider=(
+                str(translation_config.get("provider"))
+                if translation_config and translation_config.get("provider")
+                else None
+            ),
+            translation_model=(
+                str(translation_config.get("model"))
+                if translation_config and translation_config.get("model")
+                else None
+            ),
+            transcript_en_text=result.transcript_en.text,
+            transcript_en_segments=[
+                {
+                    "index": segment.index,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                    "speaker": segment.speaker,
+                }
+                for segment in result.transcript_en.segments
+            ],
+            translation_zh_text="\n".join(
+                item.translated_text.strip()
+                for item in result.translation_zh_segments
+                if item.translated_text.strip()
+            ),
+            translation_zh_segments=[
+                {
+                    "index": item.index,
+                    "start": item.start,
+                    "end": item.end,
+                    "source_text": item.source_text,
+                    "translated_text": item.translated_text,
+                }
+                for item in result.translation_zh_segments
+            ],
+        )
+    except Exception:
+        logger.warning("Failed to persist upload session for %s", title or result.video.video_id)
 
 
 def _build_job_run_response(result) -> JobRunResponse:
@@ -380,9 +503,127 @@ def _invoke_job_runner(
     return run_callable(normalized_url, **kwargs)
 
 
+def _invoke_upload_job_runner(
+    run_callable,
+    *,
+    audio_file_path: str,
+    title: str,
+    translation_config: dict[str, object] | None,
+    stage_timeouts: dict[str, int],
+    cancellation_checker,
+    progress_callback,
+    account_id: str | None = None,
+):
+    kwargs: dict[str, object] = {
+        "title": title,
+        "translation_config": translation_config,
+    }
+    try:
+        signature = inspect.signature(run_callable)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        parameters = signature.parameters
+        if "stage_timeout_seconds" in parameters:
+            kwargs["stage_timeout_seconds"] = stage_timeouts
+        if "progress_callback" in parameters:
+            kwargs["progress_callback"] = progress_callback
+        if "cancellation_checker" in parameters:
+            kwargs["cancellation_checker"] = cancellation_checker
+        if "account_id" in parameters and account_id is not None:
+            kwargs["account_id"] = account_id
+
+    return run_callable(audio_file_path, **kwargs)
+
+
+def _run_upload_job_background(
+    job_id: str,
+    *,
+    audio_file_path: str,
+    title: str,
+    translation_config: dict[str, object] | None,
+    account_id: str,
+    stage_timeouts: dict[str, int],
+) -> None:
+    try:
+        _raise_if_job_cancelled(job_id)
+        update_job_progress(
+            job_id,
+            status="running",
+            progress_value=8,
+            stage="inspect",
+            timeout_sec=stage_timeouts["inspect"],
+            progress_text="正在校验上传文件...",
+        )
+
+        result = _invoke_upload_job_runner(
+            get_run_uploaded_audio_job_runner(),
+            audio_file_path=audio_file_path,
+            title=title,
+            translation_config=translation_config,
+            stage_timeouts=stage_timeouts,
+            account_id=account_id,
+            cancellation_checker=lambda: is_job_cancel_requested(job_id),
+            progress_callback=lambda stage, value, text: update_job_progress(
+                job_id,
+                status="running",
+                stage=stage,
+                progress_value=value,
+                timeout_sec=stage_timeouts.get(stage),
+                progress_text=text,
+            ),
+        )
+
+        _raise_if_job_cancelled(job_id)
+        update_job_progress(
+            job_id,
+            status="running",
+            stage="persist",
+            progress_value=90,
+            timeout_sec=stage_timeouts["persist"],
+            progress_text="正在保存会话...",
+        )
+        _persist_upload_job_session(
+            result=result,
+            title=title,
+            translation_config=translation_config,
+            account_id=account_id,
+        )
+        _raise_if_job_cancelled(job_id)
+        response = _build_job_run_response(result)
+        update_job_progress(
+            job_id,
+            status="done",
+            stage="persist",
+            progress_value=100,
+            timeout_sec=stage_timeouts["persist"],
+            progress_text="处理完成",
+            result=response.model_dump(mode="json"),
+            error_code=None,
+            retryable=None,
+        )
+    except JobCancelledError:
+        logger.info("Upload job %s cancelled by user", job_id)
+        return
+    except Exception as error:
+        classification = classify_service_error(error)
+        logger.exception("Upload job failed for %s", audio_file_path)
+        update_job_progress(
+            job_id,
+            status="failed",
+            progress_value=100,
+            progress_text="处理失败",
+            error=str(error),
+            error_code=classification.error_code,
+            retryable=classification.retryable,
+        )
+
+
 def _raise_if_job_cancelled(job_id: str) -> None:
     if is_job_cancel_requested(job_id):
         raise JobCancelledError("Job was cancelled by user.")
 
 
 register_job_task_handler(VIDEO_JOB_TASK_TYPE, _run_video_job_task)
+register_job_task_handler(UPLOAD_JOB_TASK_TYPE, _run_upload_job_task)

@@ -1,9 +1,14 @@
 import subprocess
-from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.config import get_yt_dlp_auth_args, get_yt_dlp_remote_components
+from app.config import (
+    get_settings,
+    get_yt_dlp_auth_args,
+    get_yt_dlp_js_runtime_args,
+    get_yt_dlp_remote_components,
+    get_yt_dlp_youtube_extractor_args,
+)
 from app.main import app
 from app.services.yt_dlp_service import (
     _video_info_cache_path,
@@ -65,6 +70,7 @@ def test_inspect_video_metadata_extracts_fields(monkeypatch) -> None:
     metadata = inspect_video_metadata("https://www.youtube.com/watch?v=abc123xyz")
 
     assert "--cookies-from-browser" not in captured_command
+    assert "--extractor-args" not in captured_command
     assert metadata == VideoMetadata(
         video_id="abc123xyz",
         title="Demo title",
@@ -80,6 +86,31 @@ def test_inspect_video_metadata_extracts_fields(monkeypatch) -> None:
         chapters=[VideoChapter(start_time=0.0, end_time=12.5, title="Intro")],
         subtitles=["en", "en-US"],
         automatic_captions=["en"],
+    )
+
+
+def test_inspect_video_metadata_uses_player_client_extractor_args(monkeypatch) -> None:
+    captured_command: list[str] = []
+    monkeypatch.setenv("YTDLP_YOUTUBE_PLAYER_CLIENTS", "web,mweb")
+    monkeypatch.setattr("app.services.yt_dlp_service._load_cached_video_info", lambda _url: None)
+    monkeypatch.setattr("app.services.yt_dlp_service._store_cached_video_info", lambda *args, **kwargs: None)
+
+    def fake_run(*args, **kwargs):
+        captured_command.extend(args[0])
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout='{"id":"abc123xyz","title":"Demo title"}',
+            stderr="",
+        )
+
+    monkeypatch.setattr("app.services.yt_dlp_service.subprocess.run", fake_run)
+
+    inspect_video_metadata("https://www.youtube.com/watch?v=abc123xyz")
+
+    assert "--extractor-args" in captured_command
+    assert captured_command[captured_command.index("--extractor-args") + 1] == (
+        "youtube:player-client=web,mweb"
     )
 
 
@@ -164,11 +195,33 @@ def test_inspect_video_metadata_rejects_unexpected_payload(monkeypatch) -> None:
         raise AssertionError("Expected VideoInspectError")
 
 
-def test_get_yt_dlp_auth_args_prefers_cookie_file(monkeypatch) -> None:
-    monkeypatch.setenv("YTDLP_COOKIES_FILE", "C:/tmp/youtube.txt")
+def test_get_yt_dlp_auth_args_prefers_cookie_file(monkeypatch, tmp_path) -> None:
+    get_settings.cache_clear()
+    cookie_file = tmp_path / "youtube.txt"
+    cookie_file.write_text("cookie", encoding="utf-8")
+    monkeypatch.setenv("YTDLP_COOKIES_FILE", str(cookie_file))
     monkeypatch.setenv("YTDLP_COOKIES_FROM_BROWSER", "edge")
 
-    assert get_yt_dlp_auth_args() == ["--cookies", "C:/tmp/youtube.txt"]
+    assert get_yt_dlp_auth_args() == ["--cookies", str(cookie_file)]
+
+
+def test_get_yt_dlp_auth_args_resolves_relative_cookie_file(monkeypatch, tmp_path) -> None:
+    get_settings.cache_clear()
+    cookie_file = tmp_path / "cookies.txt"
+    cookie_file.write_text("cookie", encoding="utf-8")
+    monkeypatch.setattr("app.config.ROOT_DIR", tmp_path)
+    monkeypatch.setenv("YTDLP_COOKIES_FILE", "cookies.txt")
+
+    assert get_yt_dlp_auth_args() == ["--cookies", str(cookie_file)]
+
+
+def test_get_yt_dlp_auth_args_ignores_missing_cookie_file(monkeypatch, tmp_path) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setattr("app.config.ROOT_DIR", tmp_path)
+    monkeypatch.setenv("YTDLP_COOKIES_FILE", "missing-cookies.txt")
+    monkeypatch.setenv("YTDLP_COOKIES_FROM_BROWSER", "edge")
+
+    assert get_yt_dlp_auth_args() == ["--cookies-from-browser", "edge"]
 
 
 def test_get_yt_dlp_auth_args_supports_browser_cookies(monkeypatch) -> None:
@@ -176,6 +229,24 @@ def test_get_yt_dlp_auth_args_supports_browser_cookies(monkeypatch) -> None:
     monkeypatch.setenv("YTDLP_COOKIES_FROM_BROWSER", "edge")
 
     assert get_yt_dlp_auth_args() == ["--cookies-from-browser", "edge"]
+
+
+def test_get_yt_dlp_js_runtime_args_falls_back_to_node_when_configured_runtime_is_missing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv(
+        "YTDLP_JS_RUNTIMES",
+        "deno:C:/missing/deno.exe",
+    )
+
+    def fake_which(name: str) -> str | None:
+        if name == "node":
+            return "C:/tools/node.exe"
+        return None
+
+    monkeypatch.setattr("app.config.shutil.which", fake_which)
+
+    assert get_yt_dlp_js_runtime_args() == ["--js-runtimes", "node"]
 
 
 def test_get_yt_dlp_remote_components_is_opt_in(monkeypatch) -> None:
@@ -190,6 +261,15 @@ def test_get_yt_dlp_remote_components_uses_env_value(monkeypatch) -> None:
     assert get_yt_dlp_remote_components() == [
         "--remote-components",
         "ejs:github",
+    ]
+
+
+def test_get_yt_dlp_youtube_extractor_args_uses_env_value(monkeypatch) -> None:
+    monkeypatch.setenv("YTDLP_YOUTUBE_PLAYER_CLIENTS", "web,mweb")
+
+    assert get_yt_dlp_youtube_extractor_args() == [
+        "--extractor-args",
+        "youtube:player-client=web,mweb",
     ]
 
 
@@ -262,7 +342,7 @@ def test_inspect_video_endpoint_returns_install_error(monkeypatch) -> None:
     _assert_error_response(
         response,
         status_code=500,
-        error_code="CONFIGURATION_ERROR",
+        error_code="YTDLP_NOT_INSTALLED",
         retryable=False,
         detail="yt-dlp is not installed. Install it with `python -m pip install yt-dlp`.",
     )
@@ -282,7 +362,7 @@ def test_inspect_video_endpoint_returns_yt_dlp_failure(monkeypatch) -> None:
     _assert_error_response(
         response,
         status_code=502,
-        error_code="UPSTREAM_ERROR",
+        error_code="VIDEO_UNAVAILABLE",
         retryable=True,
         detail="Failed to inspect video metadata: Video unavailable",
     )

@@ -81,7 +81,7 @@ def test_run_writer_skill_eval_records_three_modes(monkeypatch, tmp_path) -> Non
     )
 
     skill_root = tmp_path / "skill"
-    prompt_dir = skill_root / "prompts"
+    prompt_dir = skill_root / "references" / "prompts"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     prompt_dir.joinpath("09_interview_transcript_sync.md").write_text(
         "标题：测试\n素材：\n[在这里贴入逐字稿 / 字幕 / 访谈内容]\n结尾。",
@@ -90,7 +90,7 @@ def test_run_writer_skill_eval_records_three_modes(monkeypatch, tmp_path) -> Non
 
     monkeypatch.setattr(
         "app.services.writer_skill_eval_service.resolve_lastpost_skill_root",
-        lambda: skill_root,
+        lambda: skill_root / "references",
     )
     monkeypatch.setattr(
         "app.services.writer_skill_eval_service.load_rewrite_references",
@@ -100,7 +100,7 @@ def test_run_writer_skill_eval_records_three_modes(monkeypatch, tmp_path) -> Non
             style_examples="示例",
             skill_guide="指南",
             quality_pipeline="质检",
-            reference_profile="lastpost-skill",
+            reference_profile="latepost-skill",
             category_templates={"09_interview_transcript_sync": "场景模板"},
             section_title_rules="标题规则",
         ),
@@ -210,9 +210,10 @@ def test_run_writer_skill_eval_records_three_modes(monkeypatch, tmp_path) -> Non
 
 
 def test_resolve_lastpost_skill_root_prefers_repo_pinned_copy(monkeypatch) -> None:
+    monkeypatch.delenv("LATEPOST_SKILL_DIR", raising=False)
     monkeypatch.delenv("LASTPOST_SKILL_DIR", raising=False)
     monkeypatch.delenv("REWRITE_SKILL_DIR", raising=False)
 
     resolved = resolve_lastpost_skill_root()
 
-    assert resolved == Path(__file__).resolve().parents[2] / "references"
+    assert resolved == Path(__file__).resolve().parents[2] / "writer-skill" / "latepost" / "references"

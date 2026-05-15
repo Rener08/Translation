@@ -71,6 +71,10 @@ class WriterAgent:
                     FullPromptPipeline(), material, normalized_focus, rewrite_config,
                 )
 
+        normalized_style = self._normalize_rewrite_style_for_skill(
+            normalized_style,
+            config,
+        )
         return self._execute_pipeline(
             self._select_strategy(normalized_style, skill_config=config, llm_call_fn=llm_call_fn),
             self._with_reference_text(material, reference_text),
@@ -113,6 +117,15 @@ class WriterAgent:
             source_language=material.source_language,
             translation_language=material.translation_language,
         )
+
+    @staticmethod
+    def _normalize_rewrite_style_for_skill(
+        style: RewriteStyle,
+        skill_config: SkillConfig,
+    ) -> RewriteStyle:
+        if (skill_config.style_name or "").strip() == "晚点":
+            return "article_longform"
+        return style
 
 
 def run_writer_agent(

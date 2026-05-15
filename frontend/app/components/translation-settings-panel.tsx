@@ -1,105 +1,112 @@
 import { useEffect, useState } from "react";
 
 import {
-  DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS,
-  DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
-  apiFetch,
-  extractApiErrorMessage,
+  clearYtDlpCookies,
+  DEEPSEEK_MODEL_OPTIONS,
   getProviderModelPlaceholder,
+  getDefaultSkillConfigNameForRewriteStyle,
   REWRITE_STYLE,
+  loadYtDlpCookies,
   normalizeTranslationModel,
-  parseHeadersJson,
+  saveYtDlpCookies,
   type TranslationProvider,
   type TranslationSettings,
 } from "../lib/job";
 
 type TranslationSettingsPanelProps = {
   settings: TranslationSettings;
-  rewriteFocus: string;
   onChange: (nextSettings: TranslationSettings) => void;
-  onRewriteFocusChange: (nextValue: string) => void;
 };
 
 export function TranslationSettingsPanel({
   settings,
-  rewriteFocus,
   onChange,
-  onRewriteFocusChange,
 }: TranslationSettingsPanelProps) {
   const modelPlaceholder = getProviderModelPlaceholder(settings.provider);
-  const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const [modelOptionsLoading, setModelOptionsLoading] = useState(false);
-  const [modelOptionsError, setModelOptionsError] = useState("");
+  const [cookiesText, setCookiesText] = useState("");
+  const [cookiesConfigured, setCookiesConfigured] = useState(false);
+  const [cookiesEffectivePath, setCookiesEffectivePath] = useState("");
+  const [cookiesLoading, setCookiesLoading] = useState(false);
+  const [cookiesSaving, setCookiesSaving] = useState(false);
+  const [cookiesError, setCookiesError] = useState("");
   const apiKeyPlaceholder =
     settings.provider === "deepseek"
       ? "粘贴 DeepSeek API Key"
       : settings.provider === "openai"
         ? "粘贴 OpenAI API Key"
         : "本地模型通常不需要 API Key";
-  const backendOffline =
-    modelOptionsError.length > 0 &&
-    /cannot connect to backend api|failed to fetch|network/i.test(
-      modelOptionsError.toLowerCase(),
-    );
+  const cookiesCanEdit = cookiesConfigured && Boolean(cookiesEffectivePath);
+
+  async function refreshCookies() {
+    setCookiesLoading(true);
+    setCookiesError("");
+
+    try {
+      const data = await loadYtDlpCookies();
+      const effectivePath = String(data.cookies_file || "").trim();
+      setCookiesText(data.exists ? data.cookies_text : "");
+      setCookiesConfigured(Boolean(data.configured));
+      setCookiesEffectivePath(effectivePath);
+    } catch (error) {
+      setCookiesError(error instanceof Error ? error.message : "Failed to load cookies.");
+    } finally {
+      setCookiesLoading(false);
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
-    const debounceId = window.setTimeout(() => {
-      async function loadModelOptions() {
-        setModelOptionsLoading(true);
-        setModelOptionsError("");
+    void refreshCookies();
+  }, []);
 
-        try {
-          const response = await apiFetch("/api/provider-models", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              provider: settings.provider,
-              base_url: settings.baseUrl.trim() || undefined,
-              api_key: settings.apiKey.trim() || undefined,
-              extra_headers: parseHeadersJson(settings.headersJson),
-            }),
-          });
+  const modelValue = normalizeTranslationModel(settings.provider, settings.model);
+  const isDeepseekProvider = settings.provider === "deepseek";
+  const modelOptions = isDeepseekProvider ? DEEPSEEK_MODEL_OPTIONS : [];
 
-          if (!response.ok) {
-            throw new Error(await extractApiErrorMessage(response));
-          }
+  async function handleSaveCookies() {
+    if (!cookiesCanEdit) {
+      setCookiesError("请先在 .env 中设置 YTDLP_COOKIES_FILE 的绝对路径，再保存 cookies。");
+      return;
+    }
+    setCookiesSaving(true);
+    setCookiesError("");
 
-          const data = (await response.json()) as { models?: string[] };
-          if (cancelled) {
-            return;
-          }
+    try {
+      const data = await saveYtDlpCookies(cookiesText);
+      setCookiesText(data.cookies_text);
+      setCookiesEffectivePath(String(data.cookies_file || "").trim());
+    } catch (error) {
+      setCookiesError(error instanceof Error ? error.message : "Failed to save cookies.");
+    } finally {
+      setCookiesSaving(false);
+    }
+  }
 
-          const models = Array.isArray(data.models)
-            ? data.models
-                .map((value) => value.trim())
-                .filter((value, index, array) => value && array.indexOf(value) === index)
-            : [];
-          setModelOptions(models);
-        } catch (error) {
-          if (!cancelled) {
-            setModelOptions([]);
-            setModelOptionsError(
-              error instanceof Error ? error.message : "Failed to load model options.",
-            );
-          }
-        } finally {
-          if (!cancelled) {
-            setModelOptionsLoading(false);
-          }
-        }
-      }
+  async function handleClearCookies() {
+    if (!cookiesCanEdit) {
+      setCookiesError("当前没有可编辑的 cookies 文件路径。");
+      return;
+    }
+    if (
+      !window.confirm(
+        "确定要清空 cookies 文件吗？清空后，受限视频可能需要重新导出 cookies。",
+      )
+    ) {
+      return;
+    }
 
-      void loadModelOptions();
-    }, 350);
+    setCookiesSaving(true);
+    setCookiesError("");
 
-    return () => {
-      cancelled = true;
-      window.clearTimeout(debounceId);
-    };
-  }, [settings.apiKey, settings.baseUrl, settings.headersJson, settings.provider]);
+    try {
+      const data = await clearYtDlpCookies();
+      setCookiesText("");
+      setCookiesEffectivePath(String(data.cookies_file || "").trim());
+    } catch (error) {
+      setCookiesError(error instanceof Error ? error.message : "Failed to clear cookies.");
+    } finally {
+      setCookiesSaving(false);
+    }
+  }
 
   return (
     <section className="settings-panel">
@@ -108,22 +115,6 @@ export function TranslationSettingsPanel({
       </div>
 
       <div className="settings-grid compact-settings-grid">
-        <label className="settings-field">
-          <span>内容来源</span>
-          <select
-            value={settings.sourceMode}
-            onChange={(event) =>
-              onChange({
-                ...settings,
-                sourceMode: event.target.value as TranslationSettings["sourceMode"],
-              })
-            }
-          >
-            <option value="subtitle_first">字幕优先</option>
-            <option value="force_audio">强制音频</option>
-          </select>
-        </label>
-
         <label className="settings-field">
           <span>翻译服务</span>
           <select
@@ -165,110 +156,109 @@ export function TranslationSettingsPanel({
         </label>
 
         <label className="settings-field">
-          <span>模型</span>
-          <input
-            type="text"
-            placeholder={modelPlaceholder}
-            value={settings.model}
-            onChange={(event) =>
-              onChange({
-                ...settings,
-                model: event.target.value,
-              })
-            }
-          />
-          {modelOptionsLoading ? (
-            <p className="settings-model-note">正在加载可选模型...</p>
-          ) : null}
-          {!modelOptionsLoading && modelOptions.length > 0 ? (
-            <div className="settings-model-pills" aria-label="可选模型">
-              {modelOptions.map((modelOption) => (
-                <button
-                  key={modelOption}
-                  className={`settings-model-pill${
-                    settings.model.trim() === modelOption ? " settings-model-pill-active" : ""
-                  }`}
-                  type="button"
-                  onClick={() =>
-                    onChange({
-                      ...settings,
-                      model: modelOption,
-                    })
-                  }
-                >
-                  {modelOption}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {!modelOptionsLoading && modelOptionsError ? (
-            <p
-              className={`settings-model-note${
-                backendOffline ? "" : " settings-model-error"
-              }`}
+          <span>模型档位</span>
+          {isDeepseekProvider ? (
+            <select
+              value={modelValue}
+              onChange={(event) =>
+                onChange({
+                  ...settings,
+                  model: event.target.value,
+                })
+              }
             >
-              {backendOffline
-                ? "后端未连接，模型列表暂不可用，可手动填写模型。"
-                : modelOptionsError}
-            </p>
-          ) : null}
+              {modelOptions.map((modelOption) => (
+                <option key={modelOption} value={modelOption}>
+                  {modelOption}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              placeholder={modelPlaceholder}
+              value={settings.model}
+              onChange={(event) =>
+                onChange({
+                  ...settings,
+                  model: event.target.value,
+                })
+              }
+            />
+          )}
         </label>
 
         <label className="settings-field">
-          <span>改写模式</span>
+          <span>写作风格</span>
           <select
             value={settings.rewriteStyle}
             onChange={(event) => {
               const nextRewriteStyle = event.target.value as TranslationSettings["rewriteStyle"];
-              const shouldResetRewriteFocus =
-                rewriteFocus.trim().length === 0 ||
-                rewriteFocus === DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS ||
-                rewriteFocus === DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS;
+              const nextSkillConfigName = getDefaultSkillConfigNameForRewriteStyle(
+                nextRewriteStyle,
+              );
 
               onChange({
                 ...settings,
                 rewriteStyle: nextRewriteStyle,
+                skillConfigName: nextSkillConfigName,
               });
-
-              if (shouldResetRewriteFocus) {
-                onRewriteFocusChange(
-                  nextRewriteStyle === REWRITE_STYLE.ARTICLE_LONGFORM
-                    ? DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS
-                    : DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
-                );
-              }
             }}
           >
             <option value={REWRITE_STYLE.SPEECH_VERBATIM}>
-              保留原口吻（推荐）
+              卡兹克（第一视角）
             </option>
             <option value={REWRITE_STYLE.ARTICLE_LONGFORM}>
-              第三视角文章（晚点风格）
-            </option>
-          </select>
-        </label>
-
-        <label className="settings-field">
-          <span>细化提示</span>
-          <select
-            value={rewriteFocus}
-            onChange={(event) => onRewriteFocusChange(event.target.value)}
-          >
-            <option value="保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。">
-              默认（保留口吻）
-            </option>
-            <option value="改写成第三视角的中文文章，保留原意和事实，不删关键信息，不使用第一人称自述。">
-              默认（第三视角文章）
-            </option>
-            <option value="保留访谈对话感：不合并不同人的发言段落，保留口语化表达和反问、停顿、追问，避免改写成总结。">
-              偏访谈整理
-            </option>
-            <option value="保留演讲稿节奏：保留段内推进感和强调句，可适当合并语气重复，但保留例子、数字和强结论。">
-              偏演讲稿
+              晚点（第三视角）
             </option>
           </select>
         </label>
       </div>
+
+      <section className="settings-subsection">
+        <div className="settings-subsection-header">
+          <h4 className="settings-subsection-title">YouTube Cookies</h4>
+        </div>
+
+        <label className="settings-field settings-cookie-field settings-cookie-field-compact">
+          <span>cookies.txt</span>
+          <textarea
+            className="settings-cookie-textarea"
+            placeholder={
+              cookiesCanEdit
+                ? "粘贴 Netscape 格式的 cookies.txt 内容。"
+                : "请先在 .env 中配置 YTDLP_COOKIES_FILE 绝对路径。"
+            }
+            value={cookiesText}
+            onChange={(event) => setCookiesText(event.target.value)}
+            spellCheck={false}
+            disabled={cookiesLoading || cookiesSaving || !cookiesCanEdit}
+          />
+        </label>
+
+        <div className="settings-cookie-actions">
+          <button
+            className="settings-cookie-button settings-cookie-button-primary"
+            type="button"
+            onClick={() => void handleSaveCookies()}
+            disabled={cookiesLoading || cookiesSaving || !cookiesCanEdit}
+          >
+            {cookiesSaving ? "保存中..." : "保存 cookies"}
+          </button>
+          <button
+            className="settings-cookie-button"
+            type="button"
+            onClick={() => void handleClearCookies()}
+            disabled={cookiesLoading || cookiesSaving || !cookiesCanEdit}
+          >
+            清空文件
+          </button>
+        </div>
+
+        {cookiesError ? (
+          <p className="settings-cookie-error">{cookiesError}</p>
+        ) : null}
+      </section>
     </section>
   );
 }

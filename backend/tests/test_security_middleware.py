@@ -168,6 +168,29 @@ def test_account_daily_request_quota_blocks_second_write_request(monkeypatch) ->
     )
 
 
+def test_account_daily_request_quota_does_not_count_get_polling(monkeypatch) -> None:
+    monkeypatch.setattr(
+        app_main,
+        "settings",
+        replace(
+            get_settings(),
+            api_auth_token="",
+            api_rate_limit_per_minute=120,
+            account_daily_request_limit=1,
+            account_max_concurrent_jobs=0,
+            account_max_history_sessions=0,
+        ),
+    )
+    with app_main._RATE_LIMIT_LOCK:
+        app_main._RATE_LIMIT_BUCKETS.clear()
+
+    first = client.get("/api/jobs/job-does-not-exist")
+    assert first.status_code == 404
+
+    second = client.get("/api/jobs/job-does-not-exist")
+    assert second.status_code == 404
+
+
 def test_account_concurrent_job_quota_blocks_job_submission(monkeypatch) -> None:
     monkeypatch.setattr(
         app_main,

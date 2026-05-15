@@ -217,6 +217,54 @@ def test_content_rewrite_updates_session_history(monkeypatch, tmp_path: Path) ->
     assert detail_body["rewrite_model"] == "deepseek-chat"
 
 
+def test_session_history_endpoints_filter_by_account_id(monkeypatch, tmp_path: Path) -> None:
+    _use_tmp_cache(monkeypatch, tmp_path)
+    content_context_id = create_content_context(
+        video_title="Test video",
+        transcript_en="Hello everyone.\nWelcome back.",
+        translation_zh="大家好。\n欢迎回来。",
+        account_id="user:alice",
+    )
+
+    upsert_job_session(
+        content_context_id=content_context_id,
+        account_id="user:alice",
+        video_id="abc123xyz",
+        video_url="https://www.youtube.com/watch?v=abc123xyz",
+        video_title="Test video",
+        source_mode="subtitle_first",
+        source_type="captions",
+        translation_provider="deepseek",
+        translation_model="deepseek-chat",
+        transcript_en_text="Hello everyone.\nWelcome back.",
+        transcript_en_segments=[],
+        translation_zh_text="大家好。\n欢迎回来。",
+        translation_zh_segments=[],
+    )
+
+    list_response = client.get("/api/session-history", headers={"x-user-id": "alice"})
+    assert list_response.status_code == 200
+    list_body = list_response.json()
+    assert len(list_body["items"]) == 1
+    assert list_body["items"][0]["content_context_id"] == content_context_id
+
+    empty_list_response = client.get("/api/session-history", headers={"x-user-id": "bob"})
+    assert empty_list_response.status_code == 200
+    assert empty_list_response.json()["items"] == []
+
+    alice_detail = client.get(
+        f"/api/session-history/{content_context_id}",
+        headers={"x-user-id": "alice"},
+    )
+    assert alice_detail.status_code == 200
+
+    bob_detail = client.get(
+        f"/api/session-history/{content_context_id}",
+        headers={"x-user-id": "bob"},
+    )
+    assert bob_detail.status_code == 404
+
+
 def test_content_chat_appends_turns_to_session_history(monkeypatch, tmp_path: Path) -> None:
     _use_tmp_cache(monkeypatch, tmp_path)
     content_context_id = create_content_context(
@@ -226,7 +274,8 @@ def test_content_chat_appends_turns_to_session_history(monkeypatch, tmp_path: Pa
     )
 
     def fake_answer_content_question(**kwargs):
-        assert kwargs["content_context_id"] == content_context_id
+        assert kwargs["content_context_id"] is None
+        assert kwargs["video_title"] == "Test video"
         return type(
             "ChatResult",
             (),

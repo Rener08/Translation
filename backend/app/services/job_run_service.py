@@ -125,6 +125,7 @@ class JobRunStageContext:
     stage_timeouts: JobStageTimeouts
     progress_callback: JobProgressCallback
     cancellation_checker: JobCancellationChecker | None
+    account_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -382,6 +383,7 @@ class JobRunStageMachine:
             source_type=source.source_type,
             transcript_en=transcript.text,
             translation_zh=translation_zh_text,
+            account_id=self._context.account_id,
         )
         return PersistStageOutput(content_context_id=content_context_id)
 
@@ -420,6 +422,7 @@ def run_video_job_with_translation_config(
     progress_callback: JobProgressCallback | None = None,
     stage_timeout_seconds: dict[str, int] | None = None,
     cancellation_checker: JobCancellationChecker | None = None,
+    account_id: str | None = None,
 ) -> JobRunResult:
     logger.info("Starting job run for %s", url)
     timeouts = _resolve_stage_timeouts(stage_timeout_seconds)
@@ -431,6 +434,7 @@ def run_video_job_with_translation_config(
             stage_timeouts=timeouts,
             progress_callback=progress_callback or _noop_progress,
             cancellation_checker=cancellation_checker,
+            account_id=account_id,
         )
     )
     return machine.run()

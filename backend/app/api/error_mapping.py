@@ -6,8 +6,8 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.services.audio_download_service import AudioDownloadError
-from app.services.caption_service import CaptionServiceError
+from app.services.audio_download_service import AudioDownloadError, AudioDownloadTimeoutError
+from app.services.caption_service import CaptionDownloadTimeoutError, CaptionServiceError
 from app.services.content_chat_service import ContentChatConfigurationError, ContentChatProviderError
 from app.services.content_rewrite_service import (
     ContentRewriteConfigurationError,
@@ -105,9 +105,17 @@ def classify_service_error(error: Exception) -> ErrorClassification:
     if isinstance(error, ContentRewriteInputError):
         return ErrorClassification(400, "REWRITE_INPUT_INVALID", False, message)
     if isinstance(error, ValueError):
+        if "youtube" in lowered and ("valid" in lowered or "video_id" in lowered):
+            return ErrorClassification(400, "YOUTUBE_URL_INVALID", False, message)
         return ErrorClassification(400, "INVALID_INPUT", False, message)
     if isinstance(error, AudioFileNotFoundError):
         return ErrorClassification(400, "AUDIO_FILE_NOT_FOUND", False, message)
+
+    if isinstance(error, YtDlpNotInstalledError):
+        return ErrorClassification(500, "YTDLP_NOT_INSTALLED", False, message)
+
+    if isinstance(error, (AudioDownloadTimeoutError, CaptionDownloadTimeoutError)):
+        return ErrorClassification(502, "YTDLP_TIMEOUT", True, message)
 
     if isinstance(
         error,
@@ -117,7 +125,6 @@ def classify_service_error(error: Exception) -> ErrorClassification:
             SpeakerDiarizationConfigurationError,
             ContentChatConfigurationError,
             ContentRewriteConfigurationError,
-            YtDlpNotInstalledError,
         ),
     ):
         return ErrorClassification(500, "CONFIGURATION_ERROR", False, message)
@@ -130,10 +137,39 @@ def classify_service_error(error: Exception) -> ErrorClassification:
             message,
         )
 
+    if "video unavailable" in lowered:
+        return ErrorClassification(502, "VIDEO_UNAVAILABLE", True, message)
+    if "private video" in lowered:
+        return ErrorClassification(502, "VIDEO_PRIVATE", False, message)
+    if (
+        "not available in your country" in lowered
+        or "not available in your region" in lowered
+        or "geo-restricted" in lowered
+    ):
+        return ErrorClassification(502, "VIDEO_REGION_BLOCKED", False, message)
     if "429" in lowered or "too many requests" in lowered:
-        return ErrorClassification(502, "YTDLP_429", True, message)
-    if "sign in to confirm you're not a bot" in lowered:
+        return ErrorClassification(502, "YOUTUBE_429", True, message)
+    if (
+        "provided youtube account cookies are no longer valid" in lowered
+        or "cookies are stale or no longer bound" in lowered
+    ):
         return ErrorClassification(502, "COOKIE_STALE", True, message)
+    if "could not copy chrome cookie database" in lowered:
+        return ErrorClassification(502, "BROWSER_COOKIE_LOCKED", True, message)
+    if "failed to decrypt with dpapi" in lowered:
+        return ErrorClassification(502, "COOKIE_DECRYPT_FAILED", False, message)
+    if "sign in to confirm you're not a bot" in lowered:
+        return ErrorClassification(502, "YOUTUBE_BOT_CHECK", True, message)
+    if (
+        "use --cookies-from-browser or --cookies" in lowered
+        or "signed-in browser session" in lowered
+    ):
+        return ErrorClassification(502, "COOKIE_REQUIRED", True, message)
+    if (
+        "timed out after" in lowered
+        and "yt-dlp" in lowered
+    ):
+        return ErrorClassification(502, "YTDLP_TIMEOUT", True, message)
 
     if isinstance(error, ContentRewriteEmptyOutputError):
         return ErrorClassification(502, "REWRITE_EMPTY", True, message)

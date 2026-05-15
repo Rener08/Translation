@@ -34,10 +34,19 @@ export type JobResult = {
   };
 };
 
+export type UploadAudioResponse = {
+  ok: boolean;
+  audio_file_path: string;
+  title: string;
+  original_filename: string;
+  media_type?: string | null;
+  byte_count: number;
+};
+
 /** Canonical watch URL for attribution footers and exports. */
 export function youtubeWatchUrl(videoId: string): string {
   const id = String(videoId || "").trim();
-  if (!id) {
+  if (!id || id.startsWith("upload-")) {
     return "";
   }
   return `https://www.youtube.com/watch?v=${encodeURIComponent(id)}`;
@@ -118,14 +127,35 @@ export const REWRITE_STYLE = {
 export type RewriteStyle =
   (typeof REWRITE_STYLE)[keyof typeof REWRITE_STYLE];
 
+export const SKILL_CONFIG_NAME = {
+  KAZIX: "kazix",
+  LATEPOST: "latepost",
+} as const;
+
+export type SkillConfigName =
+  (typeof SKILL_CONFIG_NAME)[keyof typeof SKILL_CONFIG_NAME];
+
 export const DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS =
   "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。";
 
 export const DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS =
   "改写成第三视角的中文文章，保留原意和事实，不删关键信息，不使用第一人称自述。";
 
+export const DEFAULT_LATEPOST_REWRITE_FOCUS =
+  "改写成晚点风格的第三视角中文报道文章，保留原意和事实，不删关键信息，不使用第一人称自述。";
+
 export const LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS =
   "保留原意和事实，不删关键信息，改写为更有节奏和可读性的中文内容。";
+
+export const DEEPSEEK_MODEL_OPTIONS = [
+  "deepseek-v4-flash",
+  "deepseek-v4-pro",
+] as const;
+
+export const OPENAI_MODEL_OPTIONS = [
+  "gpt-4.1-mini",
+  "gpt-4.1",
+] as const;
 
 export const SOURCE_MODE = {
   SUBTITLE_FIRST: "subtitle_first",
@@ -142,6 +172,7 @@ export type TranslationSettings = {
   model: string;
   headersJson: string;
   rewriteStyle: RewriteStyle;
+  skillConfigName: SkillConfigName;
 };
 
 export type TranslationConfigPayload = {
@@ -168,6 +199,40 @@ export type ContentRewriteResponse = {
   detail_coverage_issues?: string[];
 };
 
+export type SystemYtDlpCookiesResponse = {
+  ok: boolean;
+  mode: string;
+  configured: boolean;
+  active_for_yt_dlp: boolean;
+  cookies_file: string;
+  exists: boolean;
+  cookies_text: string;
+  byte_count: number;
+};
+
+export type YouTubeAccessStatusResponse = {
+  ok: boolean;
+  runtime_ok: boolean;
+  target_ok: boolean;
+  probe_url: string;
+  target_url?: string | null;
+  normalized_url?: string | null;
+  video_id?: string | null;
+  title?: string | null;
+  source_strategy?: "unknown" | "captions" | "audio" | null;
+  cookies_configured: boolean;
+  cookies_file_exists: boolean;
+  cookies_active_for_yt_dlp: boolean;
+  cookie_mode: string;
+  error_code?: string | null;
+  retryable?: boolean | null;
+  message: string;
+  recommended_action: string;
+  subtitles: string[];
+  automatic_captions: string[];
+  checks: Record<string, string>;
+};
+
 const configuredApiBaseUrl = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").trim();
 let resolvedApiBaseUrl: string | null = null;
 let lastKnownApiBaseUrl: string | null = null;
@@ -180,11 +245,11 @@ export const defaultTranslationProvider = resolveProvider(
 );
 
 const OPENAI_DEFAULT_MODEL = "gpt-4.1-mini";
-const DEEPSEEK_DEFAULT_MODEL = "deepseek-chat";
-const KNOWN_REMOTE_DEFAULT_MODELS = new Set([
-  OPENAI_DEFAULT_MODEL,
-  DEEPSEEK_DEFAULT_MODEL,
-]);
+const DEEPSEEK_DEFAULT_MODEL = DEEPSEEK_MODEL_OPTIONS[0];
+const LEGACY_DEEPSEEK_MODEL_MAP: Record<string, string> = {
+  "deepseek-chat": DEEPSEEK_MODEL_OPTIONS[0],
+  "deepseek-reasoner": DEEPSEEK_MODEL_OPTIONS[1],
+};
 
 export function getProviderDefaultModel(provider: TranslationProvider): string {
   if (provider === "openai") {
@@ -196,10 +261,22 @@ export function getProviderDefaultModel(provider: TranslationProvider): string {
   return "";
 }
 
+export function getProviderModelOptions(
+  provider: TranslationProvider,
+): string[] {
+  if (provider === "openai") {
+    return [...OPENAI_MODEL_OPTIONS];
+  }
+  if (provider === "deepseek") {
+    return [...DEEPSEEK_MODEL_OPTIONS];
+  }
+  return [];
+}
+
 export function getProviderModelPlaceholder(provider: TranslationProvider): string {
-  const defaultModel = getProviderDefaultModel(provider);
-  if (defaultModel) {
-    return defaultModel;
+  const options = getProviderModelOptions(provider);
+  if (options.length > 0) {
+    return options.join(" / ");
   }
   return "留空，后端自动探测";
 }
@@ -217,16 +294,30 @@ export function normalizeTranslationModel(
     if (trimmedModel === providerDefaultModel) {
       return trimmedModel;
     }
-    if (KNOWN_REMOTE_DEFAULT_MODELS.has(trimmedModel)) {
-      return providerDefaultModel;
+    const providerOptions = getProviderModelOptions(provider);
+    if (providerOptions.includes(trimmedModel)) {
+      return trimmedModel;
+    }
+    if (provider === "deepseek") {
+      const legacyMappedModel = LEGACY_DEEPSEEK_MODEL_MAP[trimmedModel];
+      if (legacyMappedModel) {
+        return legacyMappedModel;
+      }
+      if (trimmedModel.startsWith("gpt-")) {
+        return providerDefaultModel;
+      }
+      return trimmedModel;
+    }
+    if (provider === "openai") {
+      if (trimmedModel.startsWith("deepseek-")) {
+        return providerDefaultModel;
+      }
+      return trimmedModel;
     }
     return trimmedModel;
   }
 
   if (!trimmedModel) {
-    return "";
-  }
-  if (KNOWN_REMOTE_DEFAULT_MODELS.has(trimmedModel)) {
     return "";
   }
   return trimmedModel;
@@ -240,7 +331,30 @@ export const defaultSettings: TranslationSettings = {
   model: getProviderDefaultModel(defaultTranslationProvider),
   headersJson: "",
   rewriteStyle: REWRITE_STYLE.SPEECH_VERBATIM,
+  skillConfigName: SKILL_CONFIG_NAME.KAZIX,
 };
+
+export function getDefaultSkillConfigNameForRewriteStyle(
+  rewriteStyle: RewriteStyle,
+): SkillConfigName {
+  if (rewriteStyle === REWRITE_STYLE.ARTICLE_LONGFORM) {
+    return SKILL_CONFIG_NAME.LATEPOST;
+  }
+  return SKILL_CONFIG_NAME.KAZIX;
+}
+
+export function getDefaultRewriteFocusForSettings(
+  rewriteStyle: RewriteStyle,
+  skillConfigName?: SkillConfigName,
+): string {
+  if (
+    skillConfigName === SKILL_CONFIG_NAME.LATEPOST ||
+    rewriteStyle === REWRITE_STYLE.ARTICLE_LONGFORM
+  ) {
+    return DEFAULT_LATEPOST_REWRITE_FOCUS;
+  }
+  return DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS;
+}
 
 function normalizeApiBase(url: string): string {
   return url.replace(/\/+$/, "");
@@ -334,7 +448,10 @@ function parseApiErrorResponse(rawText: string): ParsedApiError | null {
 
 function formatParsedApiError(error: ParsedApiError): string {
   const parts: string[] = [];
-  const normalizedMessage = normalizeApiErrorMessage(error.message);
+  const normalizedMessage = normalizeApiErrorMessage(
+    error.message,
+    error.errorCode,
+  );
   if (error.errorCode) {
     parts.push(`[${error.errorCode}]`);
   }
@@ -374,7 +491,7 @@ async function resolveApiBase(): Promise<string> {
   }
 
   throw new Error(
-    "Cannot connect to backend API. Start backend on port 8000 or 8002, or set NEXT_PUBLIC_API_BASE_URL.",
+    "Cannot connect to backend API. Run ./start-dev.sh or ./start-backend.sh, or set NEXT_PUBLIC_API_BASE_URL.",
   );
 }
 
@@ -531,6 +648,69 @@ export async function extractApiErrorMessage(
   return `Request failed with status ${response.status}`;
 }
 
+export async function loadYtDlpCookies(): Promise<SystemYtDlpCookiesResponse> {
+  const response = await apiFetch("/api/system/yt-dlp-cookies");
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response));
+  }
+  return (await response.json()) as SystemYtDlpCookiesResponse;
+}
+
+export async function uploadAudioFile(file: File): Promise<UploadAudioResponse> {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await apiFetch("/api/uploads/audio", {
+    method: "POST",
+    body,
+  });
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response));
+  }
+  return (await response.json()) as UploadAudioResponse;
+}
+
+export async function loadYouTubeAccessStatus(
+  url: string,
+): Promise<YouTubeAccessStatusResponse> {
+  const response = await apiFetch("/api/system/youtube-access-status", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ url: url.trim() || null }),
+  });
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response));
+  }
+  return (await response.json()) as YouTubeAccessStatusResponse;
+}
+
+export async function saveYtDlpCookies(
+  cookiesText: string,
+): Promise<SystemYtDlpCookiesResponse> {
+  const response = await apiFetch("/api/system/yt-dlp-cookies", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ cookies_text: cookiesText }),
+  });
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response));
+  }
+  return (await response.json()) as SystemYtDlpCookiesResponse;
+}
+
+export async function clearYtDlpCookies(): Promise<SystemYtDlpCookiesResponse> {
+  const response = await apiFetch("/api/system/yt-dlp-cookies", {
+    method: "DELETE",
+  });
+  if (!response.ok) {
+    throw new Error(await extractApiErrorMessage(response));
+  }
+  return (await response.json()) as SystemYtDlpCookiesResponse;
+}
+
 export async function waitForJobResult(
   jobId: string,
   onStatus?: (status: JobRunStatusResponse) => void,
@@ -639,9 +819,65 @@ export function mapJobStageLabel(stage: string): string {
   return stage;
 }
 
-export function normalizeApiErrorMessage(message: string): string {
+export function normalizeApiErrorMessage(message: string, errorCode = ""): string {
   const normalized = message.replace(/\s+/g, " ").trim();
   const lowered = normalized.toLowerCase();
+  let normalizedCode = errorCode.trim().toUpperCase();
+  if (!normalizedCode) {
+    const bracketMatch = normalized.match(/^\[([A-Z0-9_]+)\]\s*(.*)$/);
+    if (bracketMatch) {
+      normalizedCode = bracketMatch[1];
+      return normalizeApiErrorMessage(bracketMatch[2] || normalized, normalizedCode);
+    }
+  }
+
+  if (normalizedCode === "YOUTUBE_URL_INVALID") {
+    return "请输入标准的 YouTube 视频链接。";
+  }
+
+  if (normalizedCode === "COOKIE_REQUIRED") {
+    return "这个视频需要有效的 YouTube 登录态。请更新 cookies.txt；如果仍失败，建议改走本地音频上传。";
+  }
+
+  if (normalizedCode === "COOKIE_STALE") {
+    return "当前 cookies 已失效。请重新导出并保存最新的 cookies.txt。";
+  }
+
+  if (normalizedCode === "YOUTUBE_BOT_CHECK") {
+    return "YouTube 要求登录或人机验证。请更新 cookies.txt；如果仍失败，建议改走本地音频上传。";
+  }
+
+  if (normalizedCode === "YOUTUBE_429") {
+    return "YouTube 当前限制了访问频率。请稍后重试，必要时切换网络。";
+  }
+
+  if (normalizedCode === "VIDEO_UNAVAILABLE") {
+    return "该视频当前不可访问，可能被删除、受限或需要登录。";
+  }
+
+  if (normalizedCode === "VIDEO_PRIVATE") {
+    return "该视频是私有内容，当前账号或 cookies 无法访问。";
+  }
+
+  if (normalizedCode === "VIDEO_REGION_BLOCKED") {
+    return "该视频在当前地区不可访问。必要时改走本地音频上传。";
+  }
+
+  if (normalizedCode === "YTDLP_TIMEOUT") {
+    return "YouTube 获取超时。请稍后重试；如果反复出现，优先检查 cookies 和网络状态。";
+  }
+
+  if (normalizedCode === "YTDLP_NOT_INSTALLED") {
+    return "后端缺少 yt-dlp 运行依赖，请先安装后再试。";
+  }
+
+  if (normalizedCode === "BROWSER_COOKIE_LOCKED") {
+    return "浏览器 cookies 数据库当前被占用。请先关闭浏览器，再重新导出 cookies.txt。";
+  }
+
+  if (normalizedCode === "COOKIE_DECRYPT_FAILED") {
+    return "浏览器 cookies 无法解密。请改用导出的 cookies.txt。";
+  }
 
   if (lowered.includes("could not copy chrome cookie database")) {
     return (

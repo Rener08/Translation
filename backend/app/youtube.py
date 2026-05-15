@@ -213,6 +213,21 @@ class JobRunRequest(BaseModel):
     translation_config: TranslationConfigRequest | None = None
 
 
+class UploadAudioResponse(BaseModel):
+    ok: bool
+    audio_file_path: str
+    title: str
+    original_filename: str
+    media_type: str | None = None
+    byte_count: int
+
+
+class UploadJobRunRequest(BaseModel):
+    audio_file_path: str
+    title: str | None = None
+    translation_config: TranslationConfigRequest | None = None
+
+
 class JobVideoResponse(BaseModel):
     video_id: str
     title: str
@@ -283,6 +298,39 @@ class ProviderTestConnectionResponse(BaseModel):
     selected_model: str | None = None
     discovered_models: list[str] = Field(default_factory=list)
     message: str
+
+
+class YouTubeAccessStatusRequest(BaseModel):
+    url: str | None = None
+
+    @field_validator("url")
+    @classmethod
+    def normalize_url(cls, value: str | None) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+
+class YouTubeAccessStatusResponse(BaseModel):
+    ok: bool
+    runtime_ok: bool
+    target_ok: bool
+    probe_url: str
+    target_url: str | None = None
+    normalized_url: str | None = None
+    video_id: str | None = None
+    title: str | None = None
+    source_strategy: Literal["unknown", "captions", "audio"] = "unknown"
+    cookies_configured: bool = False
+    cookies_file_exists: bool = False
+    cookies_active_for_yt_dlp: bool = False
+    cookie_mode: str = "none"
+    error_code: str | None = None
+    retryable: bool | None = None
+    message: str = ""
+    recommended_action: str = ""
+    subtitles: list[str] = Field(default_factory=list)
+    automatic_captions: list[str] = Field(default_factory=list)
+    checks: dict[str, str] = Field(default_factory=dict)
 
 
 class ContentChatMessageRequest(BaseModel):

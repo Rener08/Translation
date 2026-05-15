@@ -15,6 +15,18 @@ DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
 LMSTUDIO_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
 OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
 CUSTOM_PROVIDER_BASE_URLS_ENV = "ALLOW_CUSTOM_PROVIDER_BASE_URLS"
+PROVIDER_BASE_URL_ALLOWLIST_ENV = "PROVIDER_BASE_URL_ALLOWLIST"
+BLOCKED_PROVIDER_HEADERS = {
+    "authorization",
+    "connection",
+    "content-length",
+    "host",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "transfer-encoding",
+    "upgrade",
+}
 ALLOWED_REMOTE_PROVIDER_DOMAINS: dict[str, tuple[str, ...]] = {
     "openai": ("openai.com",),
     "deepseek": ("deepseek.com",),
@@ -40,15 +52,18 @@ def validate_provider_base_url(provider: str, base_url: str) -> str:
     parsed = urlsplit(normalized_base_url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("base_url must use http or https.")
+    if parsed.username or parsed.password:
+        raise ValueError("base_url must not include username or password.")
 
     host = str(parsed.hostname or "").strip().lower()
     if not host:
         raise ValueError("base_url must include a host.")
 
-    if _custom_provider_base_urls_enabled():
-        return normalized_base_url
-
     if normalized_provider in {"lmstudio", "ollama"}:
+        if _deployment_profile() == "production":
+            raise ValueError(
+                f"{normalized_provider} base_url is only allowed outside production."
+            )
         if not _is_loopback_host(host):
             raise ValueError(
                 f"{normalized_provider} base_url must point to localhost or 127.0.0.1 / ::1."
@@ -59,7 +74,21 @@ def validate_provider_base_url(provider: str, base_url: str) -> str:
     if not allowed_domains:
         return normalized_base_url
 
+    if normalized_provider in {"openai", "deepseek"} and parsed.scheme != "https":
+        raise ValueError(f"{normalized_provider} base_url must use https.")
+
+    if _is_loopback_host(host) or _is_ip_literal(host):
+        raise ValueError(
+            f"{normalized_provider} base_url must not use localhost, loopback, or an IP literal."
+        )
+
     if any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains):
+        return normalized_base_url
+
+    if _base_url_matches_allowlist(normalized_base_url):
+        return normalized_base_url
+
+    if _custom_provider_base_urls_enabled() and _deployment_profile() != "production":
         return normalized_base_url
 
     raise ValueError(
@@ -148,6 +177,8 @@ def coerce_provider_headers(value: object) -> dict[str, str]:
         normalized_value = str(raw_value or "").strip()
         if not normalized_key or not normalized_value:
             continue
+        if normalized_key.lower() in BLOCKED_PROVIDER_HEADERS:
+            continue
         headers[normalized_key] = normalized_value
     return headers
 
@@ -217,6 +248,68 @@ def _strip_markdown_code_fence(value: str) -> str:
 
 def _custom_provider_base_urls_enabled() -> bool:
     return get_env_str(CUSTOM_PROVIDER_BASE_URLS_ENV).lower() in {"1", "true", "yes", "on"}
+
+
+def _deployment_profile() -> str:
+    profile = get_env_str("DEPLOYMENT_PROFILE") or get_env_str("APP_ENV")
+    normalized = profile.strip().lower()
+    if normalized in {"production", "prod"}:
+        return "production"
+    if normalized in {"test", "testing"}:
+        return "test"
+    return "development"
+
+
+def _base_url_matches_allowlist(base_url: str) -> bool:
+    candidate = _normalize_policy_url(base_url)
+    if not candidate:
+        return False
+
+    for allowlist_entry in _provider_base_url_allowlist():
+        if candidate == allowlist_entry or candidate.startswith(f"{allowlist_entry}/"):
+            return True
+    return False
+
+
+def _provider_base_url_allowlist() -> tuple[str, ...]:
+    raw_value = get_env_str(PROVIDER_BASE_URL_ALLOWLIST_ENV)
+    if not raw_value:
+        return ()
+
+    entries: list[str] = []
+    seen: set[str] = set()
+    for raw_entry in raw_value.split(","):
+        normalized_entry = _normalize_policy_url(raw_entry)
+        if not normalized_entry or normalized_entry in seen:
+            continue
+        seen.add(normalized_entry)
+        entries.append(normalized_entry)
+    return tuple(entries)
+
+
+def _normalize_policy_url(value: str) -> str:
+    parsed = urlsplit(str(value or "").strip())
+    if parsed.scheme not in {"http", "https"}:
+        return ""
+    if not parsed.hostname:
+        return ""
+
+    normalized = f"{parsed.scheme}://{parsed.hostname.lower()}"
+    if parsed.port is not None:
+        normalized = f"{normalized}:{parsed.port}"
+
+    path = parsed.path.rstrip("/")
+    if path:
+        normalized = f"{normalized}{path}"
+    return normalized
+
+
+def _is_ip_literal(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return True
 
 
 def _is_loopback_host(host: str) -> bool:

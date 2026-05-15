@@ -44,7 +44,7 @@
 4. validate draft against the spec
 5. revise once if validation fails
 
-The long-form reference bundle is vendored in the repo under `references/` and is preferred before the home-directory `~/.hermes/skills/creative/lastpost-skill` fallback. This keeps the evaluation harness and article routing reproducible on a fresh clone.
+The long-form reference bundle is vendored in the repo under `writer-skill/latepost/references/` and is preferred before the home-directory `~/.hermes/skills/creative/lastpost-skill` fallback. This keeps the evaluation harness and article routing reproducible on a fresh clone.
 The automatic long-form template router is intentionally narrow: it auto-routes only interview / product review / infra-model-platform material, uses `01_big_company_war` only as a strategic fallback when explicit organizational signals appear, and otherwise falls back to the neutral one-page article template.
 
 External API response remains compatible. Existing fields (`rewritten_text`, `provider`, `model`, `quality_issues`) are unchanged. `detail_coverage_issues` is an additive field; old clients can ignore it.
@@ -59,5 +59,4 @@ External API response remains compatible. Existing fields (`rewritten_text`, `pr
 
 ## Legacy Boundary
 
-- PyQt desktop code moved to `archive/desktop-legacy`.
-- No new feature work should target the legacy desktop path.
+The old PyQt desktop path has been removed from this checkout.

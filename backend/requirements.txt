@@ -4,5 +4,7 @@ pytest==8.4.1
 httpx==0.28.1
 socksio==1.0.0
 python-dotenv==1.2.2
-yt-dlp==2026.03.03
+python-multipart==0.0.20
+yt-dlp[default]==2026.03.03
 faster-whisper==1.2.1
+PyYAML==6.0.2

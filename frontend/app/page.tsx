@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Lightbulb, Sparkles, SquarePen, WandSparkles } from "lucide-react";
 
 import { AppSidebar } from "./components/app-sidebar";
@@ -15,23 +15,22 @@ import {
 } from "./hooks/use-session-history";
 import { useRewriteChat } from "./hooks/use-rewrite-chat";
 import {
-  DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS,
-  DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
-  LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS,
   JobResult,
   TranslationSettings,
   defaultSettings,
+  getDefaultRewriteFocusForSettings,
+  getDefaultSkillConfigNameForRewriteStyle,
+  normalizeTranslationModel,
 } from "./lib/job";
 const TRANSLATION_SETTINGS_STORAGE_KEY = "translation-settings";
-const REWRITE_FOCUS_STORAGE_KEY = "translation-rewrite-focus";
 const TRANSLATION_PROVIDER_VALUES = new Set([
   "deepseek",
   "openai",
   "ollama",
   "lmstudio",
 ]);
-const SOURCE_MODE_VALUES = new Set(["subtitle_first", "force_audio"]);
 const REWRITE_STYLE_VALUES = new Set(["speech_verbatim", "article_longform"]);
+const SKILL_CONFIG_NAME_VALUES = new Set(["kazix", "latepost"]);
 
 const CHAT_SHORTCUTS = [
   {
@@ -62,11 +61,9 @@ const CHAT_SHORTCUTS = [
 
 export default function HomePage() {
   const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [uploadedAudioFile, setUploadedAudioFile] = useState<File | null>(null);
   const [jobResult, setJobResult] = useState<JobResult | null>(null);
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
-  const [rewriteFocus, setRewriteFocus] = useState(
-    DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
-  );
   const [restoredConversation, setRestoredConversation] =
     useState<RestoredConversationState | null>(null);
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
@@ -76,6 +73,10 @@ export default function HomePage() {
   const sidebarSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   const activeContextId = jobResult?.content_context_id ?? "";
+  const rewriteFocus = useMemo(
+    () => getDefaultRewriteFocusForSettings(settings.rewriteStyle, settings.skillConfigName),
+    [settings.rewriteStyle, settings.skillConfigName],
+  );
 
   const {
     historyLoading,
@@ -92,8 +93,9 @@ export default function HomePage() {
       jobResult: nextResult,
       restoredConversation: nextConversation,
     }) => {
-      invalidateCurrentRun();
+      invalidateCurrentRun({ cancelBackend: true });
       setYoutubeUrl(nextUrl);
+      setUploadedAudioFile(null);
       setRestoredConversation(nextConversation);
       setJobResult(nextResult);
       clearJobError();
@@ -107,15 +109,20 @@ export default function HomePage() {
     clearJobError,
     invalidateCurrentRun,
     runJob,
+    cancelJob,
   } = useJobRunner({
     settings,
     youtubeUrl,
+    uploadedAudioFile,
     onJobResult: (result) => {
+      setUploadedAudioFile(null);
       setRestoredConversation(null);
       setJobResult(result);
     },
     onJobSuccess: (result) => {
-      recordSearchHistory(youtubeUrl, result.video.title || youtubeUrl);
+      if (youtubeUrl.trim()) {
+        recordSearchHistory(youtubeUrl, result.video.title || youtubeUrl);
+      }
       void loadHistory();
     },
   });
@@ -158,29 +165,32 @@ export default function HomePage() {
       );
       let nextRewriteStyle: TranslationSettings["rewriteStyle"] =
         defaultSettings.rewriteStyle;
+      let nextSkillConfigName: TranslationSettings["skillConfigName"] =
+        defaultSettings.skillConfigName;
       if (rawSettings) {
         const parsed = JSON.parse(rawSettings) as Partial<TranslationSettings>;
         nextRewriteStyle = REWRITE_STYLE_VALUES.has(parsed.rewriteStyle ?? "")
           ? (parsed.rewriteStyle as TranslationSettings["rewriteStyle"])
           : defaultSettings.rewriteStyle;
+        nextSkillConfigName = SKILL_CONFIG_NAME_VALUES.has(parsed.skillConfigName ?? "")
+          ? (parsed.skillConfigName as TranslationSettings["skillConfigName"])
+          : getDefaultSkillConfigNameForRewriteStyle(nextRewriteStyle);
         const nextProvider = TRANSLATION_PROVIDER_VALUES.has(parsed.provider ?? "")
           ? (parsed.provider as TranslationSettings["provider"])
           : defaultSettings.provider;
-        const nextSourceMode = SOURCE_MODE_VALUES.has(parsed.sourceMode ?? "")
-          ? (parsed.sourceMode as TranslationSettings["sourceMode"])
-          : defaultSettings.sourceMode;
         const nextBaseUrl =
           typeof parsed.baseUrl === "string" ? parsed.baseUrl : defaultSettings.baseUrl;
         const nextModel =
           typeof parsed.model === "string" ? parsed.model : defaultSettings.model;
         const safeSettings: TranslationSettings = {
           provider: nextProvider,
-          sourceMode: nextSourceMode,
+          sourceMode: defaultSettings.sourceMode,
           apiKey: "",
           baseUrl: nextBaseUrl,
-          model: nextModel,
+          model: normalizeTranslationModel(nextProvider, nextModel),
           headersJson: "",
           rewriteStyle: nextRewriteStyle,
+          skillConfigName: nextSkillConfigName,
         };
         setSettings((current) => ({
           ...current,
@@ -190,32 +200,11 @@ export default function HomePage() {
           TRANSLATION_SETTINGS_STORAGE_KEY,
           JSON.stringify({
             provider: safeSettings.provider,
-            sourceMode: safeSettings.sourceMode,
             baseUrl: safeSettings.baseUrl,
             model: safeSettings.model,
             rewriteStyle: safeSettings.rewriteStyle,
+            skillConfigName: safeSettings.skillConfigName,
           }),
-        );
-      }
-
-      const rawRewriteFocus = window.localStorage.getItem(REWRITE_FOCUS_STORAGE_KEY);
-      if (rawRewriteFocus) {
-        const normalizedRewriteFocus =
-          nextRewriteStyle === "article_longform"
-            ? rawRewriteFocus === DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS ||
-              rawRewriteFocus === LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS
-              ? DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS
-              : rawRewriteFocus
-            : rawRewriteFocus === DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS ||
-                rawRewriteFocus === LEGACY_ARTICLE_LONGFORM_REWRITE_FOCUS
-              ? DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS
-              : rawRewriteFocus;
-        setRewriteFocus(normalizedRewriteFocus);
-      } else {
-        setRewriteFocus(
-          nextRewriteStyle === "article_longform"
-            ? DEFAULT_ARTICLE_LONGFORM_REWRITE_FOCUS
-            : DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
         );
       }
     } catch {
@@ -238,25 +227,42 @@ export default function HomePage() {
         TRANSLATION_SETTINGS_STORAGE_KEY,
         JSON.stringify({
           provider: persistedSettings.provider,
-          sourceMode: persistedSettings.sourceMode,
           baseUrl: persistedSettings.baseUrl,
-          model: persistedSettings.model,
+          model: normalizeTranslationModel(
+            persistedSettings.provider,
+            persistedSettings.model,
+          ),
           rewriteStyle: persistedSettings.rewriteStyle,
+          skillConfigName: persistedSettings.skillConfigName,
         }),
       );
-      window.localStorage.setItem(REWRITE_FOCUS_STORAGE_KEY, rewriteFocus);
     } catch {
       // Ignore storage failures.
     }
-  }, [hasLoadedPreferences, rewriteFocus, settings]);
+  }, [hasLoadedPreferences, settings]);
 
   function clearConversation() {
-    invalidateCurrentRun();
+    invalidateCurrentRun({ cancelBackend: true });
     setYoutubeUrl("");
+    setUploadedAudioFile(null);
     setJobResult(null);
     setRestoredConversation(null);
     setSidebarQuery("");
     clearJobError();
+  }
+
+  function handleYoutubeUrlChange(value: string) {
+    setYoutubeUrl(value);
+    if (value.trim()) {
+      setUploadedAudioFile(null);
+    }
+  }
+
+  function handlePickAudioFile(file: File | null) {
+    setUploadedAudioFile(file);
+    if (file) {
+      setYoutubeUrl("");
+    }
   }
 
   function toggleSidebarCollapsed() {
@@ -276,11 +282,13 @@ export default function HomePage() {
 
   function handleSidebarItemClick(item: SidebarListItem) {
     if (item.kind === "session") {
-      invalidateCurrentRun();
+      invalidateCurrentRun({ cancelBackend: true });
       void openHistorySession(item.contentContextId);
       return;
     }
+    invalidateCurrentRun({ cancelBackend: true });
     setYoutubeUrl(item.url);
+    setUploadedAudioFile(null);
     if (jobResult) {
       setJobResult(null);
     }
@@ -309,11 +317,14 @@ export default function HomePage() {
           {!jobResult ? (
             <EntryView
               youtubeUrl={youtubeUrl}
+              selectedAudioName={uploadedAudioFile?.name ?? ""}
               isRunning={isRunning}
               jobStatusMessage={jobStatusMessage}
               errorMessage={errorMessage}
-              onChangeUrl={setYoutubeUrl}
+              onChangeUrl={handleYoutubeUrlChange}
+              onPickAudioFile={handlePickAudioFile}
               onSubmit={runJob}
+              onCancel={cancelJob}
             />
           ) : (
             <ResultView
@@ -367,9 +378,7 @@ export default function HomePage() {
             </div>
             <TranslationSettingsPanel
               settings={settings}
-              rewriteFocus={rewriteFocus}
               onChange={setSettings}
-              onRewriteFocusChange={setRewriteFocus}
             />
           </section>
         </div>

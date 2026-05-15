@@ -435,7 +435,7 @@ class JobRepository:
     def initialize(self) -> None:
         with self._db_lock:
             db_path = self._db_path()
-            if self._initialized_db_path == db_path:
+            if self._initialized_db_path == db_path and self._job_records_table_exists(db_path):
                 return
 
             conn = sqlite3.connect(str(db_path))
@@ -519,7 +519,10 @@ class JobRepository:
             self._initialized_db_path = None
             db_path = self._db_path()
             if os.path.exists(db_path):
-                os.remove(db_path)
+                try:
+                    os.remove(db_path)
+                except PermissionError:
+                    return
 
     def _db_connect(self) -> sqlite3.Connection:
         self.initialize()
@@ -547,6 +550,28 @@ class JobRepository:
             )
         except sqlite3.OperationalError:
             return
+
+    def _job_records_table_exists(self, db_path: Path) -> bool:
+        if not db_path.exists():
+            return False
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            try:
+                row = conn.execute(
+                    """
+                    SELECT 1
+                    FROM sqlite_master
+                    WHERE type = 'table'
+                      AND name = 'job_records'
+                    """
+                ).fetchone()
+            finally:
+                conn.close()
+        except sqlite3.OperationalError:
+            return False
+
+        return row is not None
 
 
 def _row_to_record(row: sqlite3.Row) -> JobRecord:

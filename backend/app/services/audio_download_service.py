@@ -13,6 +13,7 @@ from app.config import (
     get_yt_dlp_js_runtime_args,
     get_yt_dlp_proxy_args,
     get_yt_dlp_remote_components,
+    get_yt_dlp_youtube_extractor_args,
 )
 from app.services.yt_dlp_service import (
     YtDlpNotInstalledError,
@@ -29,7 +30,7 @@ FORMAT_FALLBACKS = [
     "ba/b",
     "best",
 ]
-DEFAULT_CONCURRENT_FRAGMENTS = 3
+DEFAULT_CONCURRENT_FRAGMENTS = 1
 MAX_SAFE_CONCURRENT_FRAGMENTS = 4
 
 
@@ -79,6 +80,7 @@ def download_audio(url: str, target_dir: Path | None = None) -> AudioDownloadRes
             "--ignore-config",
             "--no-playlist",
             *get_yt_dlp_remote_components(),
+            *get_yt_dlp_youtube_extractor_args(),
             *get_yt_dlp_js_runtime_args(),
             "--concurrent-fragments",
             str(concurrent_fragments),

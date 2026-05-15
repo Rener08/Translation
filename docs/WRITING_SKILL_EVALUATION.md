@@ -58,7 +58,7 @@ into `tmp/writer_skill_eval/<timestamp>/` by default.
 ## How to read it
 
 - If the report says `provider/model error`, treat the run as incomplete and do not use it to decide on the skill shape.
-- If `article_longform` keeps leaking first person or compresses harder than the baseline, keep the current structure narrow and shrink `lastpost-skill`.
+- If `article_longform` keeps leaking first person or compresses harder than the baseline, keep the current structure narrow and shrink `latepost-skill`.
 - If the skill-fed longform path is clearly stronger and more stable, keep it and fix the concrete failure samples rather than adding a new runner layer.
 
 ## 写作 Agent 执行计划（可落地）
@@ -138,7 +138,7 @@ into `tmp/writer_skill_eval/<timestamp>/` by default.
 
 | 步骤 | 操作 | 验收 |
 | --- | --- | --- |
-| C1 | 盘点 `lastpost-skill` 中实际被 `writer_skill_eval` 与路由命中的模板；在仓库内保留 **pinned 副本**（当前落在 `references/`），并继续保留 `LASTPOST_SKILL_DIR` override，避免仅依赖 `~/.hermes` | 新同事 clone 后能跑同构 article 评测 |
+| C1 | 盘点 `latepost-skill` 中实际被 `writer_skill_eval` 与路由命中的模板；在仓库内保留 **pinned 副本**（当前落在 `writer-skill/latepost/references/`），并继续保留 `LATEPOST_SKILL_DIR / LASTPOST_SKILL_DIR` override，避免仅依赖 `~/.hermes` | 新同事 clone 后能跑同构 article 评测 |
 | C2 | 删除或弱化与 YouTube 场景无关的晚点模板引用（改 `[backend/app/services/content_rewrite_service.py](backend/app/services/content_rewrite_service.py)` 路由或模板列表，**小步**） | 全量评测 `article_longform` 硬覆盖不劣于阶段 C 前一轮 |
 | C3 | 若需冲 P2：仅在 `article_longform` 增加 **第二轮**「人称 patch」（仍调用 `rewrite_content`，非新 agent），上限 1 次以控成本 | 记录 token/耗时；仍达不到 P2 则执行 **实验模式** 降级（前端 `[frontend/app/components/translation-settings-panel.tsx](frontend/app/components/translation-settings-panel.tsx)` 文案 + 本文件说明） |
 
@@ -208,7 +208,7 @@ backend/.venv/bin/python scripts/evaluate_writer_skill.py \
 
 #### `decision_hint`（本次 run）
 
-> article_longform 仍有第一人称泄漏；article_longform 细节保真率偏低；全量 prompt 基线在硬细节覆盖上明显更稳。建议先收缩 lastpost-skill，再决定是否抽通用 runner。
+> article_longform 仍有第一人称泄漏；article_longform 细节保真率偏低；全量 prompt 基线在硬细节覆盖上明显更稳。建议先收缩 latepost-skill，再决定是否抽通用 runner。
 
 #### 相对 baseline #1（`deepseek-chat` / v4-flash）的注意点
 
@@ -260,7 +260,7 @@ speech_verbatim 在密集数字/原话的演讲类素材上硬覆盖 95%，对�
 
 #### `decision_hint`
 
-> article_longform 仍有第一人称泄漏；article_longform 细节保真率偏低。建议先收缩 lastpost-skill，再决定是否抽通用 runner。
+> article_longform 仍有第一人称泄漏；article_longform 细节保真率偏低。建议先收缩 latepost-skill，再决定是否抽通用 runner。
 
 #### 结论
 
@@ -274,3 +274,4 @@ speech_verbatim 在密集数字/原话的演讲类素材上硬覆盖 95%，对�
 - `_detect_ai_slop_hits` 自我触发：原实现将 `analyze_rewrite_quality(text)` 的告警消息文本喂回自身做关键词匹配，而 quality service 的告警消息本身含"模型/免责声明/自述"等触发词，相当于告警自己触发告警。已删除回喂逻辑，`ai_slop_hits` 现在只依赖 `AI_SLOP_MARKERS` 正向匹配。
 
 修复未触发重跑评测——bug 只影响 `ai_slop_hits` 一个指标的统计，不改 LLM 输出。下次评测自然反映真实状态。
+

@@ -21,7 +21,7 @@ from app.api.error_mapping import (
     default_retryable_for_status,
     normalize_http_exception_detail,
 )
-from app.config import get_settings
+from app.config import get_settings, resolve_yt_dlp_cookie_config
 from app.service_bindings import service_bindings
 from app.services.account_quota_service import (
     default_account_quota_service,
@@ -34,6 +34,7 @@ from app.services.speaker_diarization_service import diarize_audio_file
 from app.services.tmp_artifact_cleanup_service import cleanup_stale_tmp_artifacts
 from app.services.transcription_service import transcribe_audio_file
 from app.services.translation_service import discover_provider_models, translate_segments_to_chinese
+from app.services.upload_job_service import run_uploaded_audio_job_with_translation_config
 from app.services.video_source_service import fetch_video_source
 from app.services.writer_agent_service import run_writer_agent
 from app.services.yt_dlp_service import inspect_video_metadata
@@ -42,11 +43,13 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 _RATE_LIMIT_LOCK = threading.Lock()
 _RATE_LIMIT_BUCKETS: dict[str, deque[float]] = {}
+MUTATING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     await run_in_threadpool(cleanup_stale_tmp_artifacts)
+    _log_runtime_summary()
     yield
 
 
@@ -73,6 +76,23 @@ app.add_middleware(
 )
 
 app.include_router(build_api_router())
+
+
+def _log_runtime_summary() -> None:
+    cookie_config = resolve_yt_dlp_cookie_config()
+    logger.info(
+        "runtime_summary deployment_profile=%s api_auth_token_set=%s "
+        "yt_dlp_cookie_mode=%s yt_dlp_cookie_path=%s yt_dlp_cookie_exists=%s "
+        "job_queue_db_path=%s backend_bind_host=%s backend_bind_port=%s",
+        settings.deployment_profile,
+        bool(settings.api_auth_token),
+        cookie_config.mode,
+        cookie_config.effective_path.as_posix() if cookie_config.effective_path else "",
+        bool(cookie_config.effective_path and cookie_config.effective_path.exists()),
+        settings.job_queue_db_path.as_posix(),
+        "127.0.0.1",
+        8000,
+    )
 
 
 @app.exception_handler(RequestValidationError)
@@ -109,6 +129,7 @@ async def security_and_observability_middleware(request: Request, call_next):
     client_ip = _resolve_client_ip(request)
     account_identity = resolve_account_identity_from_request(
         request,
+        settings=settings,
     )
     request.state.account_id = account_identity.account_id
     request.state.account_identity = account_identity
@@ -125,7 +146,7 @@ async def security_and_observability_middleware(request: Request, call_next):
                 retryable=default_retryable_for_status(401),
             )
 
-    if path.startswith("/api/") and method in {"POST", "PUT", "PATCH", "DELETE"}:
+    if path.startswith("/api/") and method in MUTATING_METHODS:
         allowed = _consume_rate_limit_token(client_ip)
         if not allowed:
             return _standard_error_response(
@@ -140,6 +161,7 @@ async def security_and_observability_middleware(request: Request, call_next):
         quota_response = _enforce_account_quota(
             request_id=request_id,
             path=path,
+            method=method,
             account_identity=account_identity,
         )
         if quota_response is not None:
@@ -168,6 +190,7 @@ __all__ = [
     "rewrite_content",
     "run_writer_agent",
     "run_video_job_with_translation_config",
+    "run_uploaded_audio_job_with_translation_config",
     "transcribe_audio_file",
     "diarize_audio_file",
     "inspect_video_metadata",
@@ -187,6 +210,7 @@ _SERVICE_BINDING_NAMES = {
     "run_writer_agent",
     "discover_provider_models",
     "run_video_job_with_translation_config",
+    "run_uploaded_audio_job_with_translation_config",
     "rewrite_content",
 }
 
@@ -297,20 +321,22 @@ def _enforce_account_quota(
     *,
     request_id: str,
     path: str,
+    method: str,
     account_identity,
 ) -> JSONResponse | None:
-    violation = default_account_quota_service.consume_daily_request(
-        account_identity,
-        settings=settings,
-    )
-    if violation is not None:
-        return _standard_error_response(
-            request_id=request_id,
-            status_code=429,
-            detail=violation.detail,
-            error_code=violation.error_code,
-            retryable=violation.retryable,
+    if method in MUTATING_METHODS:
+        violation = default_account_quota_service.consume_daily_request(
+            account_identity,
+            settings=settings,
         )
+        if violation is not None:
+            return _standard_error_response(
+                request_id=request_id,
+                status_code=429,
+                detail=violation.detail,
+                error_code=violation.error_code,
+                retryable=violation.retryable,
+            )
 
     if path == "/api/jobs/run":
         violation = default_account_quota_service.check_job_start_quota(

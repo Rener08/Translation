@@ -422,6 +422,10 @@ class SessionRepository:
             fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
             return
         if msvcrt is not None:
+            handle.seek(0, 2)
+            if handle.tell() == 0:
+                handle.write("\0")
+                handle.flush()
             handle.seek(0)
             msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
 

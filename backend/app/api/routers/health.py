@@ -1,10 +1,11 @@
 import os
-from pathlib import Path
+import importlib.util
 
 from fastapi import APIRouter
 from fastapi import HTTPException
 
 from app.config import ROOT_DIR, get_settings
+from app.config import resolve_yt_dlp_cookie_config
 
 
 router = APIRouter()
@@ -45,6 +46,22 @@ async def readyz() -> dict[str, object]:
     except OSError as error:
         ok = False
         checks["job_queue_db"] = f"failed: {error}"
+
+    yaml_spec = importlib.util.find_spec("yaml")
+    checks["yaml_available"] = "ok" if yaml_spec is not None else "missing"
+
+    cookie_config = resolve_yt_dlp_cookie_config()
+    cookie_path = cookie_config.effective_path
+    if cookie_config.mode == "none":
+        checks["yt_dlp_cookies"] = "unconfigured"
+    elif cookie_config.mode in {"browser", "cookie_header"}:
+        checks["yt_dlp_cookies"] = cookie_config.mode
+    elif cookie_path is not None and cookie_path.exists():
+        checks["yt_dlp_cookies"] = "ok"
+    elif cookie_path is not None:
+        checks["yt_dlp_cookies"] = f"missing: {cookie_path}"
+    else:
+        checks["yt_dlp_cookies"] = cookie_config.mode
 
     if not ok:
         raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})

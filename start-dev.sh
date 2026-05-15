@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 "$ROOT_DIR/start-backend.sh" --daemon
+export TRANSLATION_DISABLE_BACKEND_SUPERVISOR=1
 "$ROOT_DIR/start-frontend.sh" --daemon
 
 echo ""

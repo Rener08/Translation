@@ -9,8 +9,10 @@ import {
   apiFetch,
   buildTranslationConfig,
   extractApiErrorMessage,
+  loadYouTubeAccessStatus,
   mapJobStageLabel,
   normalizeApiErrorMessage,
+  uploadAudioFile,
   waitForJobResult,
 } from "../lib/job";
 
@@ -18,6 +20,7 @@ import {
 type UseJobRunnerParams = {
   settings: TranslationSettings;
   youtubeUrl: string;
+  uploadedAudioFile: File | null;
   onJobResult: (result: JobResult) => void;
   onJobSuccess?: (result: JobResult) => void;
 };
@@ -25,6 +28,7 @@ type UseJobRunnerParams = {
 export function useJobRunner({
   settings,
   youtubeUrl,
+  uploadedAudioFile,
   onJobResult,
   onJobSuccess,
 }: UseJobRunnerParams) {
@@ -34,12 +38,17 @@ export function useJobRunner({
   const [errorMessage, setErrorMessage] = useState("");
   const currentRunSeqRef = useRef(0);
   const activeRunControllerRef = useRef<AbortController | null>(null);
+  const activeJobIdRef = useRef("");
 
   useEffect(() => {
     return () => {
       activeRunControllerRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    activeJobIdRef.current = activeJobId;
+  }, [activeJobId]);
 
   function isCurrentRun(runSeq: number, controller: AbortController): boolean {
     return (
@@ -51,10 +60,21 @@ export function useJobRunner({
     currentRunSeqRef.current += 1;
     activeRunControllerRef.current?.abort();
     activeRunControllerRef.current = null;
+    activeJobIdRef.current = "";
     setIsRunning(false);
     setActiveJobId("");
     setJobStatusMessage("");
     setErrorMessage("");
+  }
+
+  function cancelBackendJob(jobId: string) {
+    const normalizedJobId = jobId.trim();
+    if (!normalizedJobId) {
+      return;
+    }
+    void apiFetch(`/api/jobs/${encodeURIComponent(normalizedJobId)}/cancel`, {
+      method: "POST",
+    }).catch(() => {});
   }
 
   async function runJob() {
@@ -70,24 +90,68 @@ export function useJobRunner({
 
     const runSeq = currentRunSeqRef.current + 1;
     currentRunSeqRef.current = runSeq;
+
+    const previousJobId = activeJobIdRef.current.trim();
+    if (previousJobId) {
+      cancelBackendJob(previousJobId);
+    }
+
     activeRunControllerRef.current?.abort();
     const controller = new AbortController();
     activeRunControllerRef.current = controller;
+    activeJobIdRef.current = "";
+    setActiveJobId("");
     setIsRunning(true);
     setErrorMessage("");
-    setJobStatusMessage("正在提交任务...");
+    setJobStatusMessage(uploadedAudioFile ? "正在上传文件..." : "正在检查 YouTube 访问...");
 
     try {
-      const response = await apiFetch("/api/jobs/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: youtubeUrl,
-          source_mode: settings.sourceMode,
-          translation_config: translationConfig,
-        }),
-        signal: controller.signal,
-      });
+      let response: Response;
+      if (uploadedAudioFile) {
+        const upload = await uploadAudioFile(uploadedAudioFile);
+        if (!isCurrentRun(runSeq, controller)) {
+          return;
+        }
+        setJobStatusMessage("上传完成，正在提交任务...");
+        response = await apiFetch("/api/jobs/run-upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            audio_file_path: upload.audio_file_path,
+            title: upload.title,
+            translation_config: translationConfig,
+          }),
+          signal: controller.signal,
+        });
+      } else {
+        const accessStatus = await loadYouTubeAccessStatus(youtubeUrl);
+        if (!isCurrentRun(runSeq, controller)) {
+          return;
+        }
+        if (!accessStatus.ok) {
+          const guidance = [accessStatus.message, accessStatus.recommended_action]
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .join(" ");
+          setErrorMessage(
+            guidance || "当前 YouTube 访问状态异常，请检查 cookies、网络或视频可见性。",
+          );
+          setJobStatusMessage("");
+          return;
+        }
+
+        setJobStatusMessage("正在提交任务...");
+        response = await apiFetch("/api/jobs/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: youtubeUrl,
+            source_mode: settings.sourceMode,
+            translation_config: translationConfig,
+          }),
+          signal: controller.signal,
+        });
+      }
 
       if (!isCurrentRun(runSeq, controller)) {
         return;
@@ -109,6 +173,7 @@ export function useJobRunner({
         return;
       }
       setActiveJobId(jobId);
+      activeJobIdRef.current = jobId;
       if (submission.progress_text) {
         setJobStatusMessage(submission.progress_text);
       }
@@ -125,20 +190,16 @@ export function useJobRunner({
             typeof status.stage === "string" && status.stage.trim()
               ? mapJobStageLabel(status.stage)
               : "";
-          const timeoutLabel =
-            typeof status.timeout_sec === "number" && status.timeout_sec > 0
-              ? `（阶段超时 ${status.timeout_sec}s）`
-              : "";
           if (statusText && stageLabel) {
-            setJobStatusMessage(`${stageLabel}：${statusText}${timeoutLabel}`);
+            setJobStatusMessage(statusText);
             return;
           }
           if (statusText) {
-            setJobStatusMessage(`${statusText}${timeoutLabel}`);
+            setJobStatusMessage(statusText);
             return;
           }
           if (stageLabel) {
-            setJobStatusMessage(`${stageLabel}处理中${timeoutLabel}`);
+            setJobStatusMessage(`${stageLabel}处理中`);
           }
         },
         { signal: controller.signal },
@@ -165,7 +226,7 @@ export function useJobRunner({
         return;
       }
       if (/cannot connect to backend api|failed to fetch|network/i.test(rawMessage)) {
-        setErrorMessage("无法连接本地后端（http://localhost:8000 或 8002）。请先启动 backend。");
+        setErrorMessage("无法连接本地后端（http://localhost:8000）。请先运行 ./start-dev.sh 或 ./start-backend.sh。");
       } else {
         setErrorMessage(normalizeApiErrorMessage(rawMessage));
       }
@@ -175,6 +236,7 @@ export function useJobRunner({
         if (activeRunControllerRef.current === controller) {
           activeRunControllerRef.current = null;
         }
+        activeJobIdRef.current = "";
         setActiveJobId("");
         setIsRunning(false);
       }
@@ -185,23 +247,22 @@ export function useJobRunner({
     setErrorMessage("");
   }
 
-  function invalidateCurrentRun() {
+  function invalidateCurrentRun(options?: { cancelBackend?: boolean }) {
+    const jobId = activeJobIdRef.current.trim();
+    if (options?.cancelBackend && jobId) {
+      cancelBackendJob(jobId);
+    }
     invalidateActiveRun();
   }
 
   async function cancelJob() {
-    const jobId = activeJobId.trim();
+    const jobId = activeJobIdRef.current.trim();
     if (!jobId) {
       return;
     }
-    try {
-      await apiFetch(`/api/jobs/${encodeURIComponent(jobId)}/cancel`, {
-        method: "POST",
-      });
-      setJobStatusMessage("任务已取消");
-    } catch {
-      setJobStatusMessage("取消请求已发送，请等待状态刷新。");
-    }
+    cancelBackendJob(jobId);
+    invalidateActiveRun();
+    setJobStatusMessage("任务已取消");
   }
 
   return {

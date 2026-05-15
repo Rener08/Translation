@@ -1276,10 +1276,114 @@ def test_jobs_run_endpoint_rejects_invalid_url() -> None:
     _assert_error_response(
         response,
         status_code=400,
-        error_code="INVALID_INPUT",
+        error_code="YOUTUBE_URL_INVALID",
         retryable=False,
         detail="URL must be a valid YouTube link.",
     )
+
+
+def test_upload_audio_endpoint_returns_saved_artifact(monkeypatch) -> None:
+    async def fake_save_uploaded_audio_file(_file):
+        return ("tmp/upload/demo-audio.mp3", "Demo audio", "demo-audio.mp3", 1234)
+
+    monkeypatch.setattr(
+        "app.api.routers.upload.save_uploaded_audio_file",
+        fake_save_uploaded_audio_file,
+    )
+
+    response = client.post(
+        "/api/uploads/audio",
+        files={"file": ("demo-audio.mp3", b"fake-audio", "audio/mpeg")},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "ok": True,
+        "audio_file_path": "tmp/upload/demo-audio.mp3",
+        "title": "Demo audio",
+        "original_filename": "demo-audio.mp3",
+        "media_type": "audio/mpeg",
+        "byte_count": 1234,
+    }
+
+
+def test_jobs_run_upload_endpoint_submits_and_completes(monkeypatch) -> None:
+    def fake_run(
+        audio_file_path: str,
+        *,
+        title: str | None = None,
+        translation_config: dict[str, object] | None = None,
+        **_kwargs,
+    ) -> JobRunResult:
+        assert audio_file_path == "tmp/upload/demo-audio.mp3"
+        assert title == "Demo audio"
+        assert isinstance(translation_config, dict)
+        assert translation_config["provider"] == "deepseek"
+        assert translation_config["api_key"] == "deepseek-demo-key"
+        assert translation_config["model"] == "deepseek-v4-pro"
+        return JobRunResult(
+            video=VideoMetadata(
+                video_id="upload-demo-1",
+                title="Demo audio",
+                duration_sec=None,
+                uploader=None,
+                thumbnail=None,
+                subtitles=[],
+                automatic_captions=[],
+            ),
+            source_type="audio",
+            transcript_en=TranscriptionResult(
+                language="en",
+                text="Uploaded transcript.",
+                segments=[
+                    TranscriptSegment(
+                        index=0,
+                        start=0.0,
+                        end=1.0,
+                        text="Uploaded transcript.",
+                    )
+                ],
+            ),
+            translation_zh_segments=[
+                TranslationSegment(
+                    index=0,
+                    start=0.0,
+                    end=1.0,
+                    source_text="Uploaded transcript.",
+                    translated_text="上传转录",
+                )
+            ],
+            content_context_id="ctx_upload_demo",
+        )
+
+    monkeypatch.setattr("app.main.run_uploaded_audio_job_with_translation_config", fake_run)
+
+    response = client.post(
+        "/api/jobs/run-upload",
+        json={
+            "audio_file_path": "tmp/upload/demo-audio.mp3",
+            "title": "Demo audio",
+            "translation_config": {
+                "provider": "deepseek",
+                "api_key": "deepseek-demo-key",
+                "model": "deepseek-v4-pro",
+            },
+        },
+    )
+
+    assert response.status_code == 202
+    submission = response.json()
+    assert submission["ok"] is True
+    assert submission["status"] == "queued"
+    job_data = _wait_for_job_result(str(submission["job_id"]))
+    assert job_data["status"] == "done"
+    result = job_data["result"]
+    assert isinstance(result, dict)
+    assert result["source_type"] == "audio"
+    assert result["video"]["video_id"] == "upload-demo-1"
+    assert result["video"]["title"] == "Demo audio"
+    assert result["translation_zh"]["segments"][0]["translated_text"] == "上传转录"
 
 
 def test_get_job_status_returns_not_found_envelope() -> None:
@@ -1460,6 +1564,97 @@ def test_jobs_run_endpoint_forwards_source_mode(monkeypatch) -> None:
     job_data = _wait_for_job_result(str(submission["job_id"]))
     assert job_data["status"] == "done"
     assert job_data["result"]["source_type"] == "audio"
+
+
+def test_jobs_run_upload_endpoint_returns_final_result(monkeypatch) -> None:
+    def fake_run(
+        audio_file_path: str,
+        *,
+        title: str = "",
+        translation_config: dict[str, object] | None = None,
+    ) -> JobRunResult:
+        assert audio_file_path == "tmp/upload/demo.m4a"
+        assert title == "Demo upload"
+        assert translation_config is None
+        return JobRunResult(
+            video=VideoMetadata(
+                video_id="upload-demo123",
+                title="Demo upload",
+            ),
+            source_type="audio",
+            transcript_en=TranscriptionResult(
+                language="en",
+                text="Uploaded transcript.",
+                segments=[
+                    TranscriptSegment(
+                        index=0,
+                        start=0.0,
+                        end=1.0,
+                        text="Uploaded transcript.",
+                    )
+                ],
+            ),
+            translation_zh_segments=[
+                TranslationSegment(
+                    index=0,
+                    start=0.0,
+                    end=1.0,
+                    source_text="Uploaded transcript.",
+                    translated_text="上传转录",
+                )
+            ],
+            content_context_id="ctx_upload_demo",
+        )
+
+    monkeypatch.setattr("app.main.run_uploaded_audio_job_with_translation_config", fake_run)
+
+    response = client.post(
+        "/api/jobs/run-upload",
+        json={
+            "audio_file_path": "tmp/upload/demo.m4a",
+            "title": "Demo upload",
+        },
+    )
+
+    assert response.status_code == 202
+    submission = response.json()
+    assert submission["ok"] is True
+    assert submission["status"] == "queued"
+    assert submission["job_id"]
+
+    job_data = _wait_for_job_result(str(submission["job_id"]))
+    assert job_data["status"] == "done"
+    assert job_data["result"] == {
+        "ok": True,
+        "video": {
+            "video_id": "upload-demo123",
+            "title": "Demo upload",
+        },
+        "source_type": "audio",
+        "transcript_en": {
+            "text": "Uploaded transcript.",
+            "segments": [
+                {
+                    "index": 0,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "text": "Uploaded transcript.",
+                }
+            ],
+        },
+        "translation_zh": {
+            "segments": [
+                {
+                    "index": 0,
+                    "start": 0.0,
+                    "end": 1.0,
+                    "source_text": "Uploaded transcript.",
+                    "translated_text": "上传转录",
+                }
+            ]
+        },
+        "content_context_id": "ctx_upload_demo",
+    }
 
 
 def test_jobs_cancel_endpoint_marks_job_cancelled(monkeypatch) -> None:

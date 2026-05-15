@@ -101,6 +101,77 @@ def test_writer_agent_speech_verbatim_skips_article_pipeline(monkeypatch) -> Non
     assert report.rewrite_style == "speech_verbatim"
 
 
+def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    latepost_config = SkillConfig(
+        style_name="晚点",
+        perspective="third_person",
+        output=SkillOutputSpec(
+            min_chars=2000,
+            target_chars=4000,
+            max_chars=6000,
+            min_sections=3,
+            max_sections=6,
+        ),
+        constraints=(
+            StyleConstraint(
+                constraint_type="forbidden_word",
+                pattern="说白了",
+                fix_hint="请替换",
+            ),
+        ),
+        perspective_markers=("我", "我们"),
+        template_routing_enabled=True,
+        content_filters=("跳过广告和赞助内容",),
+        quality_layers=(),
+    )
+
+    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+        calls.append(kwargs)
+        assert kwargs["rewrite_style"] == "article_longform"
+        assert kwargs["skill_config"].style_name == "晚点"
+        if len(calls) == 1:
+            assert "【原始英文素材】" in str(kwargs["source_text"])
+            assert "English reference" in str(kwargs["source_text"])
+            return ContentRewriteResult(
+                rewritten_text="- 第一部分\n- 第二部分\n- 第三部分",
+                provider="ollama",
+                model="qwen3.5:4b",
+            )
+        return ContentRewriteResult(
+            rewritten_text="这是一篇第三视角的晚点文章。" + ("甲" * 1200) + "\n\n第二部分" + ("乙" * 1200),
+            provider="ollama",
+            model="qwen3.5:4b",
+        )
+
+    monkeypatch.setattr(
+        "app.services.pipelines.rewrite_content",
+        fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
+    )
+
+    report = WriterAgent().run(
+        material=MaterialPackage(
+            source_text="中文素材正文。",
+            reference_text="English reference",
+        ),
+        rewrite_focus="改写成晚点风格的第三视角中文报道文章。",
+        rewrite_style="speech_verbatim",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+        skill_config=latepost_config,
+    )
+
+    assert len(calls) == 2
+    assert report.rewrite_style == "article_longform"
+    assert report.draft.revised_once is False
+    assert report.provider == "ollama"
+    assert report.model == "qwen3.5:4b"
+
+
 def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) -> None:
     calls: list[dict[str, object]] = []
 
@@ -118,7 +189,9 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
                 model="qwen3.5:4b",
             )
 
-        assert "请只补足下面缺失的细节" in str(kwargs["rewrite_focus"])
+        assert "原始素材" in str(kwargs["rewrite_focus"])
+        assert "当前完整草稿" in str(kwargs["rewrite_focus"])
+        assert "必须输出修订后的完整正文" in str(kwargs["rewrite_focus"])
         assert kwargs["rewrite_style"] == "speech_verbatim"
         assert kwargs["source_text"] == "NASA said rockets launched. SpaceX confirmed it."
         assert "3" in str(kwargs["detail_ledger"])
@@ -133,6 +206,10 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
         "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
     )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
+    )
 
     report = WriterAgent().run(
         material=MaterialPackage(
@@ -146,8 +223,60 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
     assert len(calls) == 2
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
+    assert report.rewritten_text == "NASA said 3 rockets launched at 8 pm. SpaceX confirmed it."
     assert report.rewrite_style == "speech_verbatim"
     assert report.detail_coverage_issues == ()
+
+
+def test_writer_agent_speech_verbatim_rejects_truncated_patch_output(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            assert kwargs["rewrite_style"] == "speech_verbatim"
+            return ContentRewriteResult(
+                rewritten_text="NASA said rockets launched. SpaceX confirmed it.",
+                provider="ollama",
+                model="qwen3.5:4b",
+            )
+
+        assert "当前完整草稿" in str(kwargs["rewrite_focus"])
+        assert "必须输出修订后的完整正文" in str(kwargs["rewrite_focus"])
+        assert kwargs["rewrite_style"] == "speech_verbatim"
+        return ContentRewriteResult(
+            rewritten_text="补充：3 rockets at 8 pm.",
+            provider="ollama",
+            model="qwen3.5:4b",
+        )
+
+    monkeypatch.setattr(
+        "app.services.pipelines.rewrite_content",
+        fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
+    )
+
+    report = WriterAgent().run(
+        material=MaterialPackage(
+            source_text="NASA said 3 rockets launched at 8 pm. SpaceX confirmed it.",
+        ),
+        rewrite_focus="保留原作者说话节奏。",
+        rewrite_style="speech_verbatim",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+    )
+
+    assert len(calls) == 2
+    assert report.draft.revised_once is True
+    assert report.rewritten_text == "NASA said rockets launched. SpaceX confirmed it."
+    assert report.detail_coverage_issues == (
+        "缺失细节：数字 3",
+        "缺失细节：数字 8",
+        "缺失细节：关键句 NASA said 3 rockets launched at 8 pm.",
+    )
+    assert report.rewrite_style == "speech_verbatim"
 
 
 def test_writer_agent_speech_verbatim_keeps_transliterated_names_without_patch(
@@ -245,7 +374,8 @@ def test_writer_agent_speech_verbatim_treats_chinese_dates_as_hard_coverage(
                 model="qwen3.5:4b",
             )
 
-        assert "请只补足下面缺失的细节" in str(kwargs["rewrite_focus"])
+        assert "当前完整草稿" in str(kwargs["rewrite_focus"])
+        assert "必须输出修订后的完整正文" in str(kwargs["rewrite_focus"])
         assert "2025 年 6 月" in str(kwargs["rewrite_focus"])
         return ContentRewriteResult(
             rewritten_text="我们在 2025 年 6 月发布了产品，并开了一次会议。",

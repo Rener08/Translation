@@ -4,7 +4,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.services.content_context_service import ContentContext
+from app.services.content_context_service import ContentContext, create_content_context
 from app.services.content_rewrite_service import (
     ContentRewriteEmptyOutputError,
     ContentRewriteConfigurationError,
@@ -82,7 +82,7 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
     assert captured["json"]["messages"][1]["role"] == "system"
     assert "【场景模板】" in captured["json"]["messages"][1]["content"]
     assert "场景模板片段" not in captured["json"]["messages"][1]["content"]
-    assert "【通用一页模板】" in captured["json"]["messages"][1]["content"]
+    assert "【通用一页模板】" not in captured["json"]["messages"][1]["content"]
     assert "文章模板片段" in captured["json"]["messages"][1]["content"]
     assert "内容方法论片段" in captured["json"]["messages"][1]["content"]
     assert "风格示例片段" in captured["json"]["messages"][1]["content"]
@@ -269,10 +269,16 @@ def test_content_rewrite_endpoint_loads_reference_text_from_context(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_load_content_context(content_context_id: str) -> ContentContext | None:
+    def fake_load_content_context(
+        content_context_id: str,
+        *,
+        account_id: str | None = None,
+    ) -> ContentContext | None:
         assert content_context_id == "ctx-reference"
+        assert account_id == "user:alice"
         return ContentContext(
             content_context_id="ctx-reference",
+            account_id="user:alice",
             video_title="Demo video",
             transcript_en="Original English transcript.",
             translation_zh="中文译文。",
@@ -291,6 +297,7 @@ def test_content_rewrite_endpoint_loads_reference_text_from_context(
 
     response = client.post(
         "/api/content-rewrite",
+        headers={"x-user-id": "alice"},
         json={
             "content_context_id": "ctx-reference",
             "source_text": "这里是需要改写的原文。",
@@ -305,6 +312,49 @@ def test_content_rewrite_endpoint_loads_reference_text_from_context(
     assert response.status_code == 200
     assert captured["reference_text"] == "Original English transcript."
     assert response.json()["rewritten_text"] == "这是改写后的版本。"
+
+
+def test_content_rewrite_endpoint_rejects_cross_account_context(monkeypatch) -> None:
+    def fake_load_content_context(
+        content_context_id: str,
+        *,
+        account_id: str | None = None,
+    ) -> ContentContext | None:
+        assert content_context_id == "ctx-reference"
+        assert account_id == "user:bob"
+        return None
+
+    monkeypatch.setattr("app.api.routers.content.load_content_context", fake_load_content_context)
+    monkeypatch.setattr(
+        "app.main.run_writer_agent",
+        lambda **kwargs: ContentRewriteResult(
+            rewritten_text="不该返回。",
+            provider="deepseek",
+            model="deepseek-chat",
+        ),
+    )
+
+    response = client.post(
+        "/api/content-rewrite",
+        headers={"x-user-id": "bob"},
+        json={
+            "content_context_id": "ctx-reference",
+            "source_text": "这里是需要改写的原文。",
+            "rewrite_focus": "请改成更口语化。",
+            "translation_config": {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+            },
+        },
+    )
+
+    _assert_error_response(
+        response,
+        status_code=404,
+        error_code="NOT_FOUND",
+        retryable=False,
+        detail="Content context not found.",
+    )
 
 
 def test_rewrite_content_rejects_non_local_ollama_base_url() -> None:
@@ -326,6 +376,27 @@ def test_rewrite_content_rejects_non_local_ollama_base_url() -> None:
 
 def test_content_rewrite_endpoint_returns_detail_coverage_issues(monkeypatch) -> None:
     captured: dict[str, object] = {}
+    content_context_id = create_content_context(
+        video_title="Test video",
+        transcript_en="Hello everyone.\nWelcome back.",
+        translation_zh="大家好。\n欢迎回来。",
+        account_id="user:alice",
+    )
+
+    def fake_load_content_context(
+        content_context_id: str,
+        *,
+        account_id: str | None = None,
+    ) -> ContentContext | None:
+        assert content_context_id == content_context_id
+        assert account_id == "user:alice"
+        return ContentContext(
+            content_context_id=content_context_id,
+            account_id="user:alice",
+            video_title="Test video",
+            transcript_en="Hello everyone.\nWelcome back.",
+            translation_zh="大家好。\n欢迎回来。",
+        )
 
     def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
         return ContentRewriteResult(
@@ -339,6 +410,7 @@ def test_content_rewrite_endpoint_returns_detail_coverage_issues(monkeypatch) ->
     def fake_record_rewrite_result(**kwargs) -> None:
         captured.update(kwargs)
 
+    monkeypatch.setattr("app.api.routers.content.load_content_context", fake_load_content_context)
     monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
     monkeypatch.setattr(
         "app.api.routers.content.record_rewrite_result",
@@ -347,10 +419,11 @@ def test_content_rewrite_endpoint_returns_detail_coverage_issues(monkeypatch) ->
 
     response = client.post(
         "/api/content-rewrite",
+        headers={"x-user-id": "alice"},
         json={
             "source_text": "原文",
             "rewrite_focus": "改写",
-            "content_context_id": "ctx-detail-coverage",
+            "content_context_id": content_context_id,
             "translation_config": {
                 "provider": "deepseek",
                 "model": "deepseek-chat",
@@ -496,7 +569,7 @@ def test_content_rewrite_endpoint_surfaces_empty_rewrite_output(monkeypatch) -> 
     )
 
 
-def test_select_rewrite_template_routes_transcript_first_to_generic() -> None:
+def test_select_rewrite_template_routes_transcript_first_to_transcript_template() -> None:
     references = RewriteReferences(
         article_template="一页版模板",
         content_methodology="方法论",
@@ -516,8 +589,8 @@ def test_select_rewrite_template_routes_transcript_first_to_generic() -> None:
         references=references,
     )
 
-    assert selected.key == "generic"
-    assert selected.body == "一页版模板"
+    assert selected.key == "09_interview_transcript_sync"
+    assert selected.body == "逐字稿模板"
 
 
 def test_select_rewrite_template_routes_explicit_transcript_sync_request() -> None:

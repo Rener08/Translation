@@ -43,6 +43,57 @@ def test_resolve_account_identity_uses_api_token_fingerprint() -> None:
     assert identity.source == "api_token"
 
 
+def test_resolve_account_identity_ignores_user_headers_in_production_by_default(
+    monkeypatch,
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEPLOYMENT_PROFILE", "production")
+    monkeypatch.setenv("API_AUTH_TOKEN", "demo-token")
+
+    identity = resolve_account_identity(
+        headers={"x-user-id": "alice", "x-workspace-id": "workspace-1"},
+        client_ip="127.0.0.1",
+    )
+
+    assert identity.account_id == "anonymous-localhost"
+    assert identity.source == "anonymous_localhost"
+    assert identity.anonymous is True
+
+
+def test_resolve_account_identity_trusts_user_headers_when_enabled(
+    monkeypatch,
+) -> None:
+    get_settings.cache_clear()
+    monkeypatch.setenv("DEPLOYMENT_PROFILE", "production")
+    monkeypatch.setenv("API_AUTH_TOKEN", "demo-token")
+    monkeypatch.setenv("TRUST_ACCOUNT_HEADERS", "1")
+
+    identity = resolve_account_identity(
+        headers={"x-user-id": "alice", "x-workspace-id": "workspace-1"},
+        client_ip="127.0.0.1",
+    )
+
+    assert identity.account_id == "workspace:workspace-1:user:alice"
+    assert identity.source == "workspace_user"
+    assert identity.anonymous is False
+
+
+def test_resolve_account_identity_ignores_trusted_headers_in_production_by_default(monkeypatch) -> None:
+    monkeypatch.setenv("DEPLOYMENT_PROFILE", "production")
+    monkeypatch.setenv("API_AUTH_TOKEN", "demo-token")
+    get_settings.cache_clear()
+    settings = get_settings()
+
+    identity = resolve_account_identity(
+        headers={"x-user-id": "alice", "x-workspace-id": "workspace-1"},
+        client_ip="10.0.0.2",
+        settings=settings,
+    )
+
+    assert identity.source == "anonymous"
+    assert identity.account_id == "anonymous:10.0.0.2"
+
+
 def test_account_quota_repository_rolls_over_by_day(tmp_path: Path) -> None:
     repo = AccountQuotaRepository(lambda: tmp_path / "quota.sqlite")
 

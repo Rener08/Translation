@@ -16,6 +16,7 @@ from app.config import (
     get_settings,
     get_yt_dlp_auth_args,
     get_yt_dlp_proxy_args,
+    get_yt_dlp_youtube_extractor_args,
 )
 
 
@@ -158,6 +159,7 @@ def _download_caption_via_yt_dlp(
         "--ignore-no-formats-error",
         "--no-warnings",
         "--no-playlist",
+        *get_yt_dlp_youtube_extractor_args(),
         *get_yt_dlp_auth_args(),
         *get_yt_dlp_proxy_args(),
         *( ["--write-auto-subs"] if use_automatic_captions else ["--write-subs"] ),

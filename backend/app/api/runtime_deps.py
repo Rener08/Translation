@@ -37,3 +37,7 @@ def get_discover_provider_models():
 
 def get_run_video_job_runner():
     return service_bindings.run_video_job_with_translation_config
+
+
+def get_run_uploaded_audio_job_runner():
+    return service_bindings.run_uploaded_audio_job_with_translation_config

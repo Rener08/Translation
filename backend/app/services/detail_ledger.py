@@ -232,9 +232,22 @@ def _normalize_for_fuzzy_match(value: str) -> str:
     return result
 
 
-def build_detail_patch_prompt(missing_items: tuple[DetailLedgerItem, ...]) -> str:
+def build_detail_patch_prompt(
+    missing_items: tuple[DetailLedgerItem, ...],
+    *,
+    original_source: str,
+    previous_draft: str,
+) -> str:
+    normalized_original = (original_source or "").strip() or "（无）"
+    normalized_previous = (previous_draft or "").strip() or "（无）"
     lines = [
-        "请只补足下面缺失的细节，不要重写整篇，不要压缩，不要新增事实。",
+        "你将修订一篇已经生成的中文正文。",
+        "",
+        "原始素材：",
+        normalized_original,
+        "",
+        "当前完整草稿：",
+        normalized_previous,
         "",
         "缺失细节：",
     ]
@@ -242,7 +255,11 @@ def build_detail_patch_prompt(missing_items: tuple[DetailLedgerItem, ...]) -> st
         lines.append(f"- {item.kind}: {item.text}")
     lines.extend([
         "",
-        "要求：把这些细节自然补回正文中，保留原作者口吻和顺序，只输出正文。",
+        "要求：",
+        "1. 只把缺失细节自然补回正文。",
+        "2. 不新增事实。",
+        "3. 不改写成摘要。",
+        "4. 必须输出修订后的完整正文，不要只输出补充段落。",
     ])
     return "\n".join(lines)
 
