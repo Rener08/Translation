@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.content_chat_service import (
+    ContentChatConfigurationError,
     ContentChatResult,
     answer_content_question,
 )
@@ -12,6 +13,23 @@ from app.services.content_context_service import ContentContext
 
 
 client = TestClient(app)
+
+
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
 
 
 def test_answer_content_question_uses_ollama_with_history_and_prompt(
@@ -197,3 +215,29 @@ def test_content_chat_endpoint_rejects_empty_question() -> None:
     )
 
     assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["error_code"] == "VALIDATION_ERROR"
+    assert body["retryable"] is False
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert isinstance(body["detail"], str)
+    assert body["detail"]
+
+
+def test_answer_content_question_rejects_non_local_ollama_base_url() -> None:
+    try:
+        answer_content_question(
+            video_title="Demo video",
+            transcript_en="Hello everyone.",
+            translation_zh="大家好。",
+            question="请总结这条视频。",
+            chat_config={
+                "provider": "ollama",
+                "base_url": "http://192.168.1.10:11434",
+                "model": "qwen3.5:4b",
+            },
+        )
+    except ContentChatConfigurationError as error:
+        assert "must point to localhost" in str(error)
+    else:
+        raise AssertionError("Expected configuration error")

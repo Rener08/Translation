@@ -53,6 +53,13 @@ export function useRewriteChat({
   const [chatSubmitting, setChatSubmitting] = useState(false);
   const [chatError, setChatError] = useState("");
   const skipAutoRewriteForContextRef = useRef("");
+  const contextVersionRef = useRef(0);
+  const rewriteRequestSeqRef = useRef(0);
+  const patchRequestSeqRef = useRef(0);
+  const chatRequestSeqRef = useRef(0);
+  const rewriteAbortRef = useRef<AbortController | null>(null);
+  const patchAbortRef = useRef<AbortController | null>(null);
+  const chatAbortRef = useRef<AbortController | null>(null);
   const currentContextId = jobResult?.content_context_id ?? "";
 
   const translationText = useMemo(
@@ -62,10 +69,20 @@ export function useRewriteChat({
   );
 
   useEffect(() => {
+    contextVersionRef.current += 1;
+    rewriteRequestSeqRef.current += 1;
+    patchRequestSeqRef.current += 1;
+    chatRequestSeqRef.current += 1;
+    rewriteAbortRef.current?.abort();
+    patchAbortRef.current?.abort();
+    chatAbortRef.current?.abort();
     setChatInput("");
     setChatError("");
     setRewriteCopied(false);
     setDetailCoverageIssues([]);
+    setRewriteLoading(false);
+    setDetailPatchLoading(false);
+    setChatSubmitting(false);
     if (!currentContextId) {
       setMessages([]);
       setRewriteText("");
@@ -88,6 +105,33 @@ export function useRewriteChat({
     setRewriteError("");
     setRewriteProviderLabel("");
   }, [currentContextId, restoredConversation]);
+
+  useEffect(() => {
+    return () => {
+      rewriteAbortRef.current?.abort();
+      patchAbortRef.current?.abort();
+      chatAbortRef.current?.abort();
+    };
+  }, []);
+
+  function isCurrentRequest(
+    contextVersion: number,
+    requestSeq: number,
+    requestType: "rewrite" | "patch" | "chat",
+    controller: AbortController,
+  ): boolean {
+    const currentSeq =
+      requestType === "rewrite"
+        ? rewriteRequestSeqRef.current
+        : requestType === "patch"
+          ? patchRequestSeqRef.current
+          : chatRequestSeqRef.current;
+    return (
+      contextVersion === contextVersionRef.current &&
+      requestSeq === currentSeq &&
+      !controller.signal.aborted
+    );
+  }
 
   useEffect(() => {
     if (!jobResult || !translationText.trim()) {
@@ -116,6 +160,12 @@ export function useRewriteChat({
       return;
     }
 
+    const contextVersion = contextVersionRef.current;
+    const requestSeq = rewriteRequestSeqRef.current + 1;
+    rewriteRequestSeqRef.current = requestSeq;
+    rewriteAbortRef.current?.abort();
+    const controller = new AbortController();
+    rewriteAbortRef.current = controller;
     setRewriteLoading(true);
     setRewriteError("");
     setRewriteText("");
@@ -132,7 +182,11 @@ export function useRewriteChat({
           content_context_id: jobResult?.content_context_id || undefined,
           rewrite_focus: rewriteFocus.trim() || undefined,
         }),
+        signal: controller.signal,
       });
+      if (!isCurrentRequest(contextVersion, requestSeq, "rewrite", controller)) {
+        return;
+      }
       if (!response.ok) {
         throw new Error(await extractApiErrorMessage(response));
       }
@@ -148,9 +202,20 @@ export function useRewriteChat({
         Array.isArray(data.detail_coverage_issues) ? data.detail_coverage_issues : [],
       );
     } catch (error) {
+      if (!isCurrentRequest(contextVersion, requestSeq, "rewrite", controller)) {
+        return;
+      }
+      if (controller.signal.aborted) {
+        return;
+      }
       setRewriteError(error instanceof Error ? error.message : "Failed to rewrite content.");
     } finally {
-      setRewriteLoading(false);
+      if (isCurrentRequest(contextVersion, requestSeq, "rewrite", controller)) {
+        if (rewriteAbortRef.current === controller) {
+          rewriteAbortRef.current = null;
+        }
+        setRewriteLoading(false);
+      }
     }
   }
 
@@ -173,6 +238,12 @@ export function useRewriteChat({
       return;
     }
 
+    const contextVersion = contextVersionRef.current;
+    const requestSeq = patchRequestSeqRef.current + 1;
+    patchRequestSeqRef.current = requestSeq;
+    patchAbortRef.current?.abort();
+    const controller = new AbortController();
+    patchAbortRef.current = controller;
     const missingLines = detailCoverageIssues.map((issue) => `- ${issue}`).join("\n");
     const patchFocus = [
       "请只补足下面缺失的细节，不要重写整篇，不要压缩，不要新增事实。",
@@ -200,7 +271,11 @@ export function useRewriteChat({
           content_context_id: jobResult?.content_context_id || undefined,
           rewrite_focus: patchFocus,
         }),
+        signal: controller.signal,
       });
+      if (!isCurrentRequest(contextVersion, requestSeq, "patch", controller)) {
+        return;
+      }
       if (!response.ok) {
         throw new Error(await extractApiErrorMessage(response));
       }
@@ -216,9 +291,20 @@ export function useRewriteChat({
         Array.isArray(data.detail_coverage_issues) ? data.detail_coverage_issues : [],
       );
     } catch (error) {
+      if (!isCurrentRequest(contextVersion, requestSeq, "patch", controller)) {
+        return;
+      }
+      if (controller.signal.aborted) {
+        return;
+      }
       setRewriteError(error instanceof Error ? error.message : "Failed to patch details.");
     } finally {
-      setDetailPatchLoading(false);
+      if (isCurrentRequest(contextVersion, requestSeq, "patch", controller)) {
+        if (patchAbortRef.current === controller) {
+          patchAbortRef.current = null;
+        }
+        setDetailPatchLoading(false);
+      }
     }
   }
 
@@ -272,6 +358,12 @@ export function useRewriteChat({
     setChatError("");
     setChatInput("");
     setMessages([...cleanHistory, userMessage, pendingAssistantMessage]);
+    const contextVersion = contextVersionRef.current;
+    const requestSeq = chatRequestSeqRef.current + 1;
+    chatRequestSeqRef.current = requestSeq;
+    chatAbortRef.current?.abort();
+    const controller = new AbortController();
+    chatAbortRef.current = controller;
     try {
       const response = await apiFetch("/api/content-chat", {
         method: "POST",
@@ -290,12 +382,19 @@ export function useRewriteChat({
             model: settings.model.trim() || undefined,
           },
         }),
+        signal: controller.signal,
       });
+      if (!isCurrentRequest(contextVersion, requestSeq, "chat", controller)) {
+        return;
+      }
       if (!response.ok) {
         throw new Error(await extractApiErrorMessage(response));
       }
       const data = (await response.json()) as ContentChatResponse;
       setMessages((current) => {
+        if (!isCurrentRequest(contextVersion, requestSeq, "chat", controller)) {
+          return current.filter((message) => !message.pending);
+        }
         const next = [...current];
         const pendingIndex = next.findIndex((message) => message.pending);
         if (pendingIndex >= 0) {
@@ -305,12 +404,23 @@ export function useRewriteChat({
         return [...next, { role: "assistant", content: data.answer }];
       });
     } catch (error) {
+      if (!isCurrentRequest(contextVersion, requestSeq, "chat", controller)) {
+        return;
+      }
+      if (controller.signal.aborted) {
+        return;
+      }
       setChatError(
         error instanceof Error ? error.message : "Failed to answer this question.",
       );
       setMessages((current) => current.filter((message) => !message.pending));
     } finally {
-      setChatSubmitting(false);
+      if (isCurrentRequest(contextVersion, requestSeq, "chat", controller)) {
+        if (chatAbortRef.current === controller) {
+          chatAbortRef.current = null;
+        }
+        setChatSubmitting(false);
+      }
     }
   }
 

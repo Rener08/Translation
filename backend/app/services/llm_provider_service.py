@@ -1,7 +1,11 @@
+import ipaddress
 import re
+from urllib.parse import urlsplit
 from typing import Literal
 
 import httpx
+
+from app.config import get_env_str
 
 
 OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -10,6 +14,11 @@ DEEPSEEK_DEFAULT_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_DEFAULT_MODEL = "deepseek-chat"
 LMSTUDIO_DEFAULT_BASE_URL = "http://127.0.0.1:1234/v1"
 OLLAMA_DEFAULT_BASE_URL = "http://127.0.0.1:11434"
+CUSTOM_PROVIDER_BASE_URLS_ENV = "ALLOW_CUSTOM_PROVIDER_BASE_URLS"
+ALLOWED_REMOTE_PROVIDER_DOMAINS: dict[str, tuple[str, ...]] = {
+    "openai": ("openai.com",),
+    "deepseek": ("deepseek.com",),
+}
 
 THINK_BLOCK_PATTERN = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
@@ -20,6 +29,42 @@ def build_endpoint_url(base_url: str, suffix: str) -> str:
     if not normalized_suffix.startswith("/"):
         normalized_suffix = f"/{normalized_suffix}"
     return f"{normalized_base}{normalized_suffix}"
+
+
+def validate_provider_base_url(provider: str, base_url: str) -> str:
+    normalized_provider = str(provider or "").strip().lower()
+    normalized_base_url = str(base_url or "").strip()
+    if not normalized_base_url:
+        raise ValueError("base_url must not be empty.")
+
+    parsed = urlsplit(normalized_base_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("base_url must use http or https.")
+
+    host = str(parsed.hostname or "").strip().lower()
+    if not host:
+        raise ValueError("base_url must include a host.")
+
+    if _custom_provider_base_urls_enabled():
+        return normalized_base_url
+
+    if normalized_provider in {"lmstudio", "ollama"}:
+        if not _is_loopback_host(host):
+            raise ValueError(
+                f"{normalized_provider} base_url must point to localhost or 127.0.0.1 / ::1."
+            )
+        return normalized_base_url
+
+    allowed_domains = ALLOWED_REMOTE_PROVIDER_DOMAINS.get(normalized_provider, ())
+    if not allowed_domains:
+        return normalized_base_url
+
+    if any(host == domain or host.endswith(f".{domain}") for domain in allowed_domains):
+        return normalized_base_url
+
+    raise ValueError(
+        f"{normalized_provider} base_url must use one of: {', '.join(allowed_domains)}."
+    )
 
 
 def clean_model_output_text(value: str) -> str:
@@ -93,6 +138,20 @@ def extract_provider_error_message(response: httpx.Response) -> str:
     return f"Provider request failed with status {response.status_code}."
 
 
+def coerce_provider_headers(value: object) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+
+    headers: dict[str, str] = {}
+    for key, raw_value in value.items():
+        normalized_key = str(key or "").strip()
+        normalized_value = str(raw_value or "").strip()
+        if not normalized_key or not normalized_value:
+            continue
+        headers[normalized_key] = normalized_value
+    return headers
+
+
 def discover_openai_compatible_model(
     *,
     base_url: str,
@@ -100,6 +159,7 @@ def discover_openai_compatible_model(
     extra_headers: dict[str, str],
     provider: str,
 ) -> str:
+    validate_provider_base_url(provider, base_url)
     models_url = build_endpoint_url(base_url, "/models")
     headers = {"Content-Type": "application/json"}
     if api_key:
@@ -153,3 +213,16 @@ def _strip_markdown_code_fence(value: str) -> str:
     if body.endswith("```"):
         body = body[:-3]
     return body.strip()
+
+
+def _custom_provider_base_urls_enabled() -> bool:
+    return get_env_str(CUSTOM_PROVIDER_BASE_URLS_ENV).lower() in {"1", "true", "yes", "on"}
+
+
+def _is_loopback_host(host: str) -> bool:
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False

@@ -108,6 +108,7 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
         calls.append(kwargs)
         if len(calls) == 1:
             assert kwargs["rewrite_style"] == "speech_verbatim"
+            assert kwargs["source_text"] == "NASA said 3 rockets launched at 8 pm. SpaceX confirmed it."
             assert "NASA" in str(kwargs["detail_ledger"])
             assert "3" in str(kwargs["detail_ledger"])
             assert "SpaceX" in str(kwargs["detail_ledger"])
@@ -119,6 +120,7 @@ def test_writer_agent_speech_verbatim_patches_missing_detail_items(monkeypatch) 
 
         assert "请只补足下面缺失的细节" in str(kwargs["rewrite_focus"])
         assert kwargs["rewrite_style"] == "speech_verbatim"
+        assert kwargs["source_text"] == "NASA said rockets launched. SpaceX confirmed it."
         assert "3" in str(kwargs["detail_ledger"])
         assert "8" in str(kwargs["detail_ledger"])
         return ContentRewriteResult(

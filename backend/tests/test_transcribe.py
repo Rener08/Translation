@@ -2,11 +2,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from app.config import ROOT_DIR
+from app.config import ROOT_DIR, get_settings
 from app.main import app
 from app.services.transcription_service import (
     AudioFileNotFoundError,
+    AudioFileTooLargeError,
     LocalTranscriptionError,
+    TranscriptTooLongError,
     TranscriptionConfigurationError,
     TranscriptionResult,
     TranscriptSegment,
@@ -17,6 +19,23 @@ from app.services.transcription_service import (
 client = TestClient(app)
 TMP_ROOT = ROOT_DIR / "tmp"
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
 
 
 class FakeSegment:
@@ -109,6 +128,50 @@ def test_transcribe_audio_file_rejects_absolute_paths_outside_tmp() -> None:
         assert "Absolute audio paths are not allowed" in str(error)
     else:
         raise AssertionError("Expected AudioFileNotFoundError")
+
+
+def test_transcribe_audio_file_rejects_oversized_audio(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("MAX_AUDIO_BYTES", "4")
+    get_settings.cache_clear()
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
+    audio_file.write_bytes(b"audio")
+
+    monkeypatch.setattr(
+        "app.services.transcription_service._get_whisper_model",
+        lambda: (_ for _ in ()).throw(AssertionError("Whisper model should not load")),
+    )
+
+    try:
+        transcribe_audio_file(str(audio_file))
+    except AudioFileTooLargeError as error:
+        assert "MAX_AUDIO_BYTES" in str(error)
+    else:
+        raise AssertionError("Expected AudioFileTooLargeError")
+
+
+def test_transcribe_audio_file_rejects_oversized_transcript(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MAX_TRANSCRIPT_CHARS", "10")
+    get_settings.cache_clear()
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
+    audio_file.write_bytes(b"audio")
+
+    class FakeModel:
+        def transcribe(self, audio_path: str, language: str, vad_filter: bool):
+            return iter([FakeSegment(0.0, 1.5, "Hello everyone.")]), FakeInfo("en")
+
+    monkeypatch.setattr(
+        "app.services.transcription_service._get_whisper_model",
+        lambda: FakeModel(),
+    )
+
+    try:
+        transcribe_audio_file(str(audio_file))
+    except TranscriptTooLongError as error:
+        assert "MAX_TRANSCRIPT_CHARS" in str(error)
+    else:
+        raise AssertionError("Expected TranscriptTooLongError")
 
 
 def test_transcribe_audio_file_surfaces_model_configuration_errors(
@@ -230,9 +293,34 @@ def test_transcribe_endpoint_returns_file_error(monkeypatch) -> None:
     )
 
     assert response.status_code == 400
-    assert response.json() == {
-        "detail": "Audio file was not found: tmp/missing.webm"
-    }
+    body = response.json()
+    assert body["detail"] == "Audio file was not found: tmp/missing.webm"
+    assert body["error_code"] == "AUDIO_FILE_NOT_FOUND"
+    assert body["retryable"] is False
+    assert isinstance(body["request_id"], str)
+    assert body["request_id"]
+
+
+def test_transcribe_endpoint_returns_limit_error(monkeypatch) -> None:
+    def fake_transcribe(audio_file_path: str) -> TranscriptionResult:
+        raise AudioFileTooLargeError(
+            "Audio file is 5 bytes, exceeding MAX_AUDIO_BYTES=4."
+        )
+
+    monkeypatch.setattr("app.main.transcribe_audio_file", fake_transcribe)
+
+    response = client.post(
+        "/api/transcribe",
+        json={"audio_file_path": "tmp/sample.webm"},
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["detail"] == "Audio file is 5 bytes, exceeding MAX_AUDIO_BYTES=4."
+    assert body["error_code"] == "INVALID_INPUT"
+    assert body["retryable"] is False
+    assert isinstance(body["request_id"], str)
+    assert body["request_id"]
 
 
 def test_transcribe_endpoint_returns_configuration_error(monkeypatch) -> None:
@@ -247,6 +335,12 @@ def test_transcribe_endpoint_returns_configuration_error(monkeypatch) -> None:
     )
 
     assert response.status_code == 500
+    body = response.json()
+    assert body["detail"] == "Failed to load local Whisper model."
+    assert body["error_code"] == "CONFIGURATION_ERROR"
+    assert body["retryable"] is False
+    assert isinstance(body["request_id"], str)
+    assert body["request_id"]
 
 
 def test_transcribe_endpoint_returns_runtime_error(monkeypatch) -> None:
@@ -261,4 +355,9 @@ def test_transcribe_endpoint_returns_runtime_error(monkeypatch) -> None:
     )
 
     assert response.status_code == 502
-    assert response.json() == {"detail": "Local Whisper transcription failed."}
+    body = response.json()
+    assert body["detail"] == "Local Whisper transcription failed."
+    assert body["error_code"] == "UPSTREAM_ERROR"
+    assert body["retryable"] is True
+    assert isinstance(body["request_id"], str)
+    assert body["request_id"]

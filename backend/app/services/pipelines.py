@@ -19,6 +19,8 @@ from app.services.content_rewrite_service import (
 from app.services.detail_ledger import (
     DetailLedger,
     build_detail_ledger,
+    build_longform_topic_ledger,
+    merge_detail_ledgers,
     analyze_detail_coverage_enhanced,
     build_detail_patch_prompt,
     build_detail_patch_ledger,
@@ -44,8 +46,18 @@ from app.services.writer_versions import (
 @dataclass(frozen=True)
 class MaterialPackage:
     source_text: str
+    reference_text: str = ""
     source_language: str = "en"
     translation_language: str = "zh-CN"
+
+    def article_input_text(self) -> str:
+        source = (self.source_text or "").strip()
+        reference = (self.reference_text or "").strip()
+        if not reference or reference == source:
+            return source
+        return (
+            f"{source}\n\n【原始英文素材】\n{reference}"
+        )
 
 
 @dataclass(frozen=True)
@@ -165,7 +177,7 @@ class SpeechVerbatimPipeline:
         if coverage.missing_items:
             patched_once = True
             patch_result = rewrite_content(
-                source_text=normalized_source,
+                source_text=direct_result.rewritten_text,
                 rewrite_focus=build_detail_patch_prompt(coverage.missing_items),
                 rewrite_style="speech_verbatim",
                 rewrite_config=rewrite_config,
@@ -231,14 +243,17 @@ class ArticleLongformPipeline:
     ) -> WriterRunReport:
         trace_id = new_writer_trace_id()
         normalized_source = material.source_text
+        article_source = material.article_input_text()
         spec = resolve_article_spec(normalized_source)
-        detail_ledger = build_detail_ledger(normalized_source)
+        detail_ledger = build_detail_ledger(article_source)
+        topic_ledger = build_longform_topic_ledger(article_source)
+        longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
 
         planning_result = rewrite_content(
             source_text=normalized_source,
             rewrite_focus=_build_outline_prompt(
                 spec=spec, rewrite_focus=rewrite_focus,
-                detail_ledger_text=detail_ledger.to_prompt_text(),
+                detail_ledger_text=longform_ledger.to_prompt_text(),
             ),
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
@@ -249,7 +264,7 @@ class ArticleLongformPipeline:
             source_text=normalized_source,
             rewrite_focus=_build_draft_prompt(
                 spec=spec, rewrite_focus=rewrite_focus, outline=outline,
-                detail_ledger_text=detail_ledger.to_prompt_text(),
+                detail_ledger_text=longform_ledger.to_prompt_text(),
             ),
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
@@ -259,7 +274,7 @@ class ArticleLongformPipeline:
             draft_result.rewritten_text,
             normalized_source,
             self._skill_config,
-            detail_ledger,
+            longform_ledger,
         )
         final_result = draft_result
         revised_once = False
@@ -284,7 +299,7 @@ class ArticleLongformPipeline:
                 final_result.rewritten_text,
                 normalized_source,
                 self._skill_config,
-                detail_ledger,
+                longform_ledger,
             )
             if not post_quality_report.passed:
                 second_revise_prompt = _build_article_longform_revision_prompt(
@@ -390,9 +405,7 @@ def _build_article_longform_revision_prompt(
     validation: ArticleValidationResult,
     quality_report: QualityReport,
 ) -> str:
-    style_issues = tuple(
-        issue.message for issue in quality_report.issues if getattr(issue, "check_type", "") == "perspective"
-    )
+    style_issues = tuple(issue.message for issue in quality_report.issues)
     prompt = _build_comprehensive_revise_prompt(
         previous_article=previous_article,
         spec=spec,

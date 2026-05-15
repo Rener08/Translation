@@ -7,6 +7,7 @@ import httpx
 from app.config import get_env_str
 from app.services.content_context_service import load_content_context
 from app.services.llm_provider_service import (
+    coerce_provider_headers,
     build_endpoint_url,
     clean_model_output_text,
     discover_openai_compatible_model,
@@ -15,6 +16,7 @@ from app.services.llm_provider_service import (
     provider_default_base_url,
     provider_default_model,
     provider_env_prefix,
+    validate_provider_base_url,
 )
 from app.services.translation_service import (
     RETRYABLE_STATUS_CODES,
@@ -163,6 +165,10 @@ def _resolve_chat_config(raw_config: dict[str, object] | None) -> ChatProviderCo
         or get_env_str(f"{env_prefix}_BASE_URL")
         or provider_default_base_url(provider)
     ).strip()
+    try:
+        base_url = validate_provider_base_url(provider, base_url)
+    except ValueError as error:
+        raise ContentChatConfigurationError(str(error)) from error
 
     model = str(
         config.get("model")
@@ -171,7 +177,7 @@ def _resolve_chat_config(raw_config: dict[str, object] | None) -> ChatProviderCo
         or provider_default_model(provider)
     ).strip()
 
-    extra_headers = _coerce_headers(config.get("extra_headers"))
+    extra_headers = coerce_provider_headers(config.get("extra_headers"))
     if not model and provider in {"lmstudio", "ollama"}:
         try:
             model = discover_openai_compatible_model(
@@ -391,18 +397,4 @@ def _build_headers(config: ChatProviderConfig) -> dict[str, str]:
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
     headers.update(config.extra_headers)
-    return headers
-
-
-def _coerce_headers(value: object) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-
-    headers: dict[str, str] = {}
-    for key, header_value in value.items():
-        normalized_key = str(key).strip()
-        normalized_value = str(header_value).strip()
-        if not normalized_key or not normalized_value:
-            continue
-        headers[normalized_key] = normalized_value
     return headers

@@ -8,6 +8,23 @@ from app.services.yt_dlp_service import VideoInspectError, VideoMetadata
 client = TestClient(app)
 
 
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
+
+
 def test_extract_candidate_people_from_metadata() -> None:
     metadata = VideoMetadata(
         video_id="Z6sqEbg2ETo",
@@ -90,7 +107,10 @@ def test_video_participants_endpoint_returns_yt_dlp_failure(monkeypatch) -> None
         json={"url": "https://www.youtube.com/watch?v=abc123xyz"},
     )
 
-    assert response.status_code == 502
-    assert response.json() == {
-        "detail": "Failed to inspect video metadata: Video unavailable",
-    }
+    _assert_error_response(
+        response,
+        status_code=502,
+        error_code="UPSTREAM_ERROR",
+        retryable=True,
+        detail="Failed to inspect video metadata: Video unavailable",
+    )

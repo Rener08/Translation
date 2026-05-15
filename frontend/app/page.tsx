@@ -10,6 +10,7 @@ import { TranslationSettingsPanel } from "./components/translation-settings-pane
 import { useJobRunner } from "./hooks/use-job-runner";
 import {
   SidebarListItem,
+  RestoredConversationState,
   useSessionHistory,
 } from "./hooks/use-session-history";
 import { useRewriteChat } from "./hooks/use-rewrite-chat";
@@ -66,6 +67,8 @@ export default function HomePage() {
   const [rewriteFocus, setRewriteFocus] = useState(
     DEFAULT_SPEECH_VERBATIM_REWRITE_FOCUS,
   );
+  const [restoredConversation, setRestoredConversation] =
+    useState<RestoredConversationState | null>(null);
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarQuery, setSidebarQuery] = useState("");
@@ -84,8 +87,14 @@ export default function HomePage() {
   } = useSessionHistory({
     activeContextId,
     query: sidebarQuery,
-    onOpenSession: ({ youtubeUrl: nextUrl, jobResult: nextResult }) => {
+    onOpenSession: ({
+      youtubeUrl: nextUrl,
+      jobResult: nextResult,
+      restoredConversation: nextConversation,
+    }) => {
+      invalidateCurrentRun();
       setYoutubeUrl(nextUrl);
+      setRestoredConversation(nextConversation);
       setJobResult(nextResult);
       clearJobError();
     },
@@ -96,11 +105,15 @@ export default function HomePage() {
     jobStatusMessage,
     errorMessage,
     clearJobError,
+    invalidateCurrentRun,
     runJob,
   } = useJobRunner({
     settings,
     youtubeUrl,
-    onJobResult: setJobResult,
+    onJobResult: (result) => {
+      setRestoredConversation(null);
+      setJobResult(result);
+    },
     onJobSuccess: (result) => {
       recordSearchHistory(youtubeUrl, result.video.title || youtubeUrl);
       void loadHistory();
@@ -128,6 +141,7 @@ export default function HomePage() {
     jobResult,
     settings,
     rewriteFocus,
+    restoredConversation,
   });
 
   useEffect(() => {
@@ -149,21 +163,39 @@ export default function HomePage() {
         nextRewriteStyle = REWRITE_STYLE_VALUES.has(parsed.rewriteStyle ?? "")
           ? (parsed.rewriteStyle as TranslationSettings["rewriteStyle"])
           : defaultSettings.rewriteStyle;
+        const nextProvider = TRANSLATION_PROVIDER_VALUES.has(parsed.provider ?? "")
+          ? (parsed.provider as TranslationSettings["provider"])
+          : defaultSettings.provider;
+        const nextSourceMode = SOURCE_MODE_VALUES.has(parsed.sourceMode ?? "")
+          ? (parsed.sourceMode as TranslationSettings["sourceMode"])
+          : defaultSettings.sourceMode;
+        const nextBaseUrl =
+          typeof parsed.baseUrl === "string" ? parsed.baseUrl : defaultSettings.baseUrl;
+        const nextModel =
+          typeof parsed.model === "string" ? parsed.model : defaultSettings.model;
+        const safeSettings: TranslationSettings = {
+          provider: nextProvider,
+          sourceMode: nextSourceMode,
+          apiKey: "",
+          baseUrl: nextBaseUrl,
+          model: nextModel,
+          headersJson: "",
+          rewriteStyle: nextRewriteStyle,
+        };
         setSettings((current) => ({
           ...current,
-          provider: TRANSLATION_PROVIDER_VALUES.has(parsed.provider ?? "")
-            ? (parsed.provider as TranslationSettings["provider"])
-            : current.provider,
-          sourceMode: SOURCE_MODE_VALUES.has(parsed.sourceMode ?? "")
-            ? (parsed.sourceMode as TranslationSettings["sourceMode"])
-            : current.sourceMode,
-          baseUrl: typeof parsed.baseUrl === "string" ? parsed.baseUrl : current.baseUrl,
-          model: typeof parsed.model === "string" ? parsed.model : current.model,
-          headersJson:
-            typeof parsed.headersJson === "string" ? parsed.headersJson : current.headersJson,
-          apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : current.apiKey,
-          rewriteStyle: nextRewriteStyle,
+          ...safeSettings,
         }));
+        window.localStorage.setItem(
+          TRANSLATION_SETTINGS_STORAGE_KEY,
+          JSON.stringify({
+            provider: safeSettings.provider,
+            sourceMode: safeSettings.sourceMode,
+            baseUrl: safeSettings.baseUrl,
+            model: safeSettings.model,
+            rewriteStyle: safeSettings.rewriteStyle,
+          }),
+        );
       }
 
       const rawRewriteFocus = window.localStorage.getItem(REWRITE_FOCUS_STORAGE_KEY);
@@ -197,9 +229,20 @@ export default function HomePage() {
       return;
     }
     try {
+      const persistedSettings: TranslationSettings = {
+        ...settings,
+        apiKey: "",
+        headersJson: "",
+      };
       window.localStorage.setItem(
         TRANSLATION_SETTINGS_STORAGE_KEY,
-        JSON.stringify(settings),
+        JSON.stringify({
+          provider: persistedSettings.provider,
+          sourceMode: persistedSettings.sourceMode,
+          baseUrl: persistedSettings.baseUrl,
+          model: persistedSettings.model,
+          rewriteStyle: persistedSettings.rewriteStyle,
+        }),
       );
       window.localStorage.setItem(REWRITE_FOCUS_STORAGE_KEY, rewriteFocus);
     } catch {
@@ -208,8 +251,10 @@ export default function HomePage() {
   }, [hasLoadedPreferences, rewriteFocus, settings]);
 
   function clearConversation() {
+    invalidateCurrentRun();
     setYoutubeUrl("");
     setJobResult(null);
+    setRestoredConversation(null);
     setSidebarQuery("");
     clearJobError();
   }
@@ -231,6 +276,7 @@ export default function HomePage() {
 
   function handleSidebarItemClick(item: SidebarListItem) {
     if (item.kind === "session") {
+      invalidateCurrentRun();
       void openHistorySession(item.contentContextId);
       return;
     }

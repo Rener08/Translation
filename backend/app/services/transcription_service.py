@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 from typing import TYPE_CHECKING
 
-from app.config import ROOT_DIR, get_env_str
+from app.config import ROOT_DIR, get_env_str, get_settings
 from app.services.persistent_cache_service import (
     build_cache_key,
     load_json_cache,
@@ -31,8 +31,16 @@ class AudioFileNotFoundError(TranscriptionError):
     """Raised when the requested audio file cannot be found."""
 
 
+class AudioFileTooLargeError(ValueError):
+    """Raised when the requested audio file exceeds the configured limit."""
+
+
 class LocalTranscriptionError(TranscriptionError):
     """Raised when local Whisper transcription fails."""
+
+
+class TranscriptTooLongError(ValueError):
+    """Raised when the resulting transcript exceeds the configured limit."""
 
 
 @dataclass(frozen=True)
@@ -57,6 +65,7 @@ def transcribe_audio_file(audio_file_path: str) -> TranscriptionResult:
         raise AudioFileNotFoundError(
             f"Audio file was not found: {audio_file_path}"
         )
+    _ensure_audio_file_within_limit(file_path)
 
     cached_result = _load_cached_transcription(file_path)
     if cached_result is not None:
@@ -100,6 +109,7 @@ def transcribe_audio_file(audio_file_path: str) -> TranscriptionResult:
         text=transcript_text,
         segments=segments,
     )
+    _ensure_transcript_within_limit(result)
     _store_cached_transcription(file_path, result)
     return result
 
@@ -195,7 +205,9 @@ def _load_cached_transcription(file_path: Path) -> TranscriptionResult | None:
     if not segments:
         return None
 
-    return TranscriptionResult(language=language, text=text, segments=segments)
+    result = TranscriptionResult(language=language, text=text, segments=segments)
+    _ensure_transcript_within_limit(result)
+    return result
 
 
 def _store_cached_transcription(
@@ -220,3 +232,28 @@ def _store_cached_transcription(
             ],
         },
     )
+
+
+def _ensure_audio_file_within_limit(file_path: Path) -> None:
+    max_audio_bytes = get_settings().max_audio_bytes
+    if max_audio_bytes <= 0:
+        return
+
+    audio_size = file_path.stat().st_size
+    if audio_size > max_audio_bytes:
+        raise AudioFileTooLargeError(
+            f"Audio file is {audio_size} bytes, exceeding MAX_AUDIO_BYTES={max_audio_bytes}."
+        )
+
+
+def _ensure_transcript_within_limit(result: TranscriptionResult) -> None:
+    max_transcript_chars = get_settings().max_transcript_chars
+    if max_transcript_chars <= 0:
+        return
+
+    transcript_length = len(result.text.strip())
+    if transcript_length > max_transcript_chars:
+        raise TranscriptTooLongError(
+            "Transcript is "
+            f"{transcript_length} characters, exceeding MAX_TRANSCRIPT_CHARS={max_transcript_chars}."
+        )

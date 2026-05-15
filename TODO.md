@@ -124,10 +124,13 @@ This page is the post-run workspace.
 - [x] Persist job queue records to SQLite so status survives service restart
 - [x] Replace string-based `runtime_deps.resolve` lookups with explicit FastAPI dependencies
 - [x] Replace thread-only stage timeout with hard-killable process timeout for transcribe stage
-- [ ] Move in-memory execution queue to durable worker queue (Redis/Postgres-backed)
+- [x] Add yt-dlp subprocess timeout for audio download and subtitle fallback
+- [x] Enforce `MAX_VIDEO_DURATION_SEC`, `MAX_AUDIO_BYTES`, `MAX_TRANSCRIPT_CHARS`, and `MAX_TRANSLATION_SEGMENTS` at real job/transcription boundaries
+- [x] Keep hard-limit failures mapped to readable API/job errors
+- [x] Move in-memory execution queue to durable worker queue (SQLite-backed claim/lease with heartbeat; Redis/Postgres remains future work)
 - [x] Remove API key persistence from frontend localStorage
-- [ ] Tighten production CORS profile and enforce auth in deployment profile
-- [ ] Add user/account layer and per-user quota model before multi-user rollout
+- [x] Tighten production CORS profile and enforce auth in deployment profile
+- [x] Add user/account layer and per-user quota model before multi-user rollout
 
 - [x] Make rewrite style behavior fully consistent between desktop prompt injection and backend fallback behavior
 - [x] Decide rewrite source of truth:
@@ -232,7 +235,7 @@ See [`CONTRIBUTING.md`](CONTRIBUTING.md) section **MVP manual smoke checklist**.
   - `article_longform`
   - `{{transcript}}` full-prompt baseline
 - [x] Emit JSON + Markdown reports with detail coverage, ordering, third-person, compression, and AI-slop signals
-- [ ] Use the report to decide whether to shrink `lastpost-skill` or keep the current prompt routing structure
+- [x] Use the report to keep the current prompt routing structure narrow and shrink `lastpost-skill` for `article_longform` fallback only
 
 ## Deferred / Out Of Scope For Now
 

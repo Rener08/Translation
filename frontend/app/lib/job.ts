@@ -90,6 +90,20 @@ export type JobRunStatusResponse = {
   retryable?: boolean | null;
 };
 
+type ApiErrorResponseBody = {
+  detail?: unknown;
+  error_code?: unknown;
+  retryable?: unknown;
+  request_id?: unknown;
+};
+
+type ParsedApiError = {
+  message: string;
+  errorCode: string;
+  retryable: boolean | null;
+  requestId: string;
+};
+
 export type TranslationProvider =
   | "openai"
   | "deepseek"
@@ -285,6 +299,55 @@ async function probeApiBase(base: string): Promise<boolean> {
   }
 }
 
+function parseApiErrorResponse(rawText: string): ParsedApiError | null {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as ApiErrorResponseBody;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const detail =
+      typeof parsed.detail === "string" ? parsed.detail.trim() : "";
+    const errorCode =
+      typeof parsed.error_code === "string" ? parsed.error_code.trim() : "";
+    const requestId =
+      typeof parsed.request_id === "string" ? parsed.request_id.trim() : "";
+    const retryable =
+      typeof parsed.retryable === "boolean" ? parsed.retryable : null;
+
+    const message = detail || errorCode || trimmed;
+    return {
+      message,
+      errorCode,
+      retryable,
+      requestId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatParsedApiError(error: ParsedApiError): string {
+  const parts: string[] = [];
+  const normalizedMessage = normalizeApiErrorMessage(error.message);
+  if (error.errorCode) {
+    parts.push(`[${error.errorCode}]`);
+  }
+  parts.push(normalizedMessage);
+  if (error.retryable === true) {
+    parts.push("（可重试）");
+  }
+  if (error.requestId) {
+    parts.push(`request_id=${error.requestId}`);
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
 async function resolveApiBase(): Promise<string> {
   if (resolvedApiBaseUrl) {
     return resolvedApiBaseUrl;
@@ -451,13 +514,9 @@ export async function extractApiErrorMessage(
   const rawText = (await response.text()).trim();
 
   if (rawText) {
-    try {
-      const parsed = JSON.parse(rawText) as { detail?: unknown };
-      if (typeof parsed.detail === "string" && parsed.detail.trim()) {
-        return normalizeApiErrorMessage(parsed.detail);
-      }
-    } catch {
-      return normalizeApiErrorMessage(rawText);
+    const parsed = parseApiErrorResponse(rawText);
+    if (parsed) {
+      return formatParsedApiError(parsed);
     }
 
     return normalizeApiErrorMessage(rawText);
@@ -475,17 +534,22 @@ export async function extractApiErrorMessage(
 export async function waitForJobResult(
   jobId: string,
   onStatus?: (status: JobRunStatusResponse) => void,
+  options?: { signal?: AbortSignal },
 ): Promise<JobResult> {
   const normalizedJobId = jobId.trim();
   if (!normalizedJobId) {
     throw new Error("Job id is missing.");
   }
 
+  const signal = options?.signal;
   const deadline = Date.now() + 30 * 60 * 1000;
   let lastMessage = "正在等待任务完成...";
   let lastStage = "";
 
   while (Date.now() < deadline) {
+    if (signal?.aborted) {
+      throw new Error("Request aborted.");
+    }
     const response = await apiFetch(`/api/jobs/${encodeURIComponent(normalizedJobId)}`);
     if (!response.ok) {
       throw new Error(await extractApiErrorMessage(response));
@@ -524,7 +588,30 @@ export async function waitForJobResult(
       throw new Error(data.error || "任务已取消。");
     }
 
-    await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        cleanup();
+        resolve();
+      }, 1000);
+
+      const cleanup = () => {
+        window.clearTimeout(timeout);
+        signal?.removeEventListener("abort", onAbort);
+      };
+
+      const onAbort = () => {
+        cleanup();
+        reject(new Error("Request aborted."));
+      };
+
+      if (signal?.aborted) {
+        cleanup();
+        reject(new Error("Request aborted."));
+        return;
+      }
+
+      signal?.addEventListener("abort", onAbort, { once: true });
+    });
   }
 
   if (lastStage) {

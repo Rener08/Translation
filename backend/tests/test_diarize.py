@@ -20,6 +20,23 @@ TMP_ROOT = ROOT_DIR / "tmp"
 TMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
+
+
 class FakeTurn:
     def __init__(self, start: float, end: float) -> None:
         self.start = start
@@ -216,5 +233,10 @@ def test_diarize_endpoint_returns_configuration_error(monkeypatch) -> None:
         json={"audio_file_path": "tmp/sample.webm"},
     )
 
-    assert response.status_code == 500
-    assert response.json() == {"detail": "Missing PYANNOTE_AUTH_TOKEN"}
+    _assert_error_response(
+        response,
+        status_code=500,
+        error_code="CONFIGURATION_ERROR",
+        retryable=False,
+        detail="Missing PYANNOTE_AUTH_TOKEN",
+    )

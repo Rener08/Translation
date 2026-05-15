@@ -2,9 +2,9 @@ import logging
 import inspect
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 
-from app.api.error_mapping import classify_service_error
+from app.api.error_mapping import classify_service_error, raise_mapped_http_exception
 from app.api.runtime_deps import get_run_video_job_runner
 from app.config import get_env_str
 from app.services.job_queue_service import (
@@ -41,14 +41,15 @@ VIDEO_JOB_TASK_TYPE = "video_job_v1"
     response_model=JobRunStatusResponse,
     response_model_exclude_none=True,
 )
-async def run_job(request: JobRunRequest) -> JobRunStatusResponse:
+async def run_job(request: Request, job_request: JobRunRequest) -> JobRunStatusResponse:
     try:
-        parsed = parse_youtube_url(str(request.url))
+        parsed = parse_youtube_url(str(job_request.url))
     except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
+        raise_mapped_http_exception(error)
+    account_id = str(getattr(request.state, "account_id", "") or "").strip()
     translation_config = (
-        request.translation_config.model_dump()
-        if request.translation_config
+        job_request.translation_config.model_dump()
+        if job_request.translation_config
         else None
     )
     stage_timeouts = _resolve_job_stage_timeouts_from_env()
@@ -56,9 +57,10 @@ async def run_job(request: JobRunRequest) -> JobRunStatusResponse:
         VIDEO_JOB_TASK_TYPE,
         {
             "normalized_url": parsed.normalized_url,
-            "source_mode": request.source_mode,
+            "source_mode": job_request.source_mode,
             "translation_config": translation_config,
             "stage_timeouts": stage_timeouts,
+            "account_id": account_id,
         },
     )
     return JobRunStatusResponse(
@@ -100,6 +102,7 @@ def _run_job_background(
     normalized_url: str,
     source_mode: str,
     translation_config: dict[str, object] | None,
+    account_id: str,
     *,
     stage_timeouts: dict[str, int],
 ) -> None:
@@ -120,6 +123,7 @@ def _run_job_background(
             source_mode=source_mode,
             translation_config=translation_config,
             stage_timeouts=stage_timeouts,
+            account_id=account_id,
             cancellation_checker=lambda: is_job_cancel_requested(job_id),
             progress_callback=lambda stage, value, text: update_job_progress(
                 job_id,
@@ -145,6 +149,7 @@ def _run_job_background(
             normalized_url=normalized_url,
             source_mode=source_mode,
             translation_config=translation_config,
+            account_id=account_id,
         )
         _raise_if_job_cancelled(job_id)
         response = _build_job_run_response(result)
@@ -180,6 +185,7 @@ def _run_video_job_task(job_id: str, payload: dict[str, object]) -> None:
     normalized_url = str(payload.get("normalized_url") or "").strip()
     source_mode = str(payload.get("source_mode") or "subtitle_first").strip() or "subtitle_first"
     translation_config = payload.get("translation_config")
+    account_id = str(payload.get("account_id") or "").strip()
     if not isinstance(translation_config, dict):
         translation_config = None
     stage_timeouts = payload.get("stage_timeouts")
@@ -191,6 +197,7 @@ def _run_video_job_task(job_id: str, payload: dict[str, object]) -> None:
         normalized_url,
         source_mode,
         translation_config,
+        account_id,
         stage_timeouts=stage_timeouts,
     )
 
@@ -201,10 +208,12 @@ def _persist_job_session(
     normalized_url: str,
     source_mode: str,
     translation_config: dict[str, object] | None,
+    account_id: str,
 ) -> None:
     try:
         upsert_job_session(
             content_context_id=result.content_context_id,
+            account_id=account_id or None,
             video_id=result.video.video_id,
             video_url=normalized_url,
             video_title=result.video.title,
@@ -346,6 +355,7 @@ def _invoke_job_runner(
     stage_timeouts: dict[str, int],
     cancellation_checker,
     progress_callback,
+    account_id: str | None = None,
 ):
     kwargs: dict[str, object] = {
         "source_mode": source_mode,
@@ -364,6 +374,8 @@ def _invoke_job_runner(
             kwargs["progress_callback"] = progress_callback
         if "cancellation_checker" in parameters:
             kwargs["cancellation_checker"] = cancellation_checker
+        if "account_id" in parameters and account_id is not None:
+            kwargs["account_id"] = account_id
 
     return run_callable(normalized_url, **kwargs)
 

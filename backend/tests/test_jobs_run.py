@@ -1,10 +1,14 @@
 import httpx
+import pytest
 import time
 from fastapi.testclient import TestClient
 
+from app.config import ROOT_DIR, get_settings
 from app.main import app
 from app.services.job_run_service import (
+    JobCancelledError,
     JobRunResult,
+    JobStageTimeoutError,
     run_video_job,
     run_video_job_with_translation_config,
 )
@@ -18,6 +22,23 @@ from app.services.yt_dlp_service import VideoMetadata
 
 
 client = TestClient(app)
+
+
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
 
 
 def _wait_for_job_result(
@@ -138,6 +159,44 @@ def test_run_video_job_uses_caption_source_without_transcription(monkeypatch) ->
     assert result.content_context_id
 
 
+def test_run_video_job_rejects_overlong_video_before_fetch_source(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MAX_VIDEO_DURATION_SEC", "5")
+    get_settings.cache_clear()
+
+    def fake_extract(url: str) -> dict[str, object]:
+        return {"id": "abc123xyz", "title": "Test video"}
+
+    def fake_build(payload: dict[str, object]) -> VideoMetadata:
+        return VideoMetadata(
+            video_id="abc123xyz",
+            title="Test video",
+            duration_sec=6,
+            uploader="Uploader",
+            thumbnail="https://example.com/thumb.jpg",
+            subtitles=[],
+            automatic_captions=[],
+        )
+
+    def fail_source(*args, **kwargs) -> VideoSourceResult:
+        raise AssertionError("Source fetch should not run when duration exceeds limit.")
+
+    monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
+    monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
+    monkeypatch.setattr(
+        "app.services.job_run_service.fetch_video_source_from_info",
+        fail_source,
+    )
+
+    try:
+        run_video_job("https://www.youtube.com/watch?v=abc123xyz")
+    except ValueError as error:
+        assert "MAX_VIDEO_DURATION_SEC" in str(error)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
 def test_run_video_job_transcribes_audio_source(monkeypatch) -> None:
     def fake_extract(url: str) -> dict[str, object]:
         return {"id": "abc123xyz", "title": "Test video"}
@@ -221,6 +280,114 @@ def test_run_video_job_transcribes_audio_source(monkeypatch) -> None:
         result.translation_zh_segments[0].translated_text == "\u5927\u5bb6\u597d\u3002"
     )
     assert result.content_context_id
+
+
+def test_run_video_job_rejects_oversized_audio_before_transcription(
+    monkeypatch, tmp_path
+) -> None:
+    monkeypatch.setenv("MAX_AUDIO_BYTES", "4")
+    get_settings.cache_clear()
+    audio_file = ROOT_DIR / "tmp" / f"{tmp_path.name}-sample.webm"
+    audio_file.parent.mkdir(parents=True, exist_ok=True)
+    audio_file.write_bytes(b"audio")
+
+    def fake_extract(url: str) -> dict[str, object]:
+        return {"id": "abc123xyz", "title": "Test video"}
+
+    def fake_build(payload: dict[str, object]) -> VideoMetadata:
+        return VideoMetadata(
+            video_id="abc123xyz",
+            title="Test video",
+            duration_sec=10,
+            uploader="Uploader",
+            thumbnail="https://example.com/thumb.jpg",
+            subtitles=[],
+            automatic_captions=[],
+        )
+
+    def fake_source(
+        url: str,
+        payload: dict[str, object],
+        source_mode: str = "subtitle_first",
+    ) -> VideoSourceResult:
+        return VideoSourceResult(
+            source_type="audio",
+            audio_file_path=audio_file.as_posix(),
+        )
+
+    def fail_transcribe(audio_file_path: str) -> TranscriptionResult:
+        raise AssertionError("Transcription should not run when audio exceeds limit.")
+
+    monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
+    monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
+    monkeypatch.setattr(
+        "app.services.job_run_service.fetch_video_source_from_info",
+        fake_source,
+    )
+    monkeypatch.setattr(
+        "app.services.job_run_service.transcribe_audio_file",
+        fail_transcribe,
+    )
+
+    try:
+        run_video_job("https://www.youtube.com/watch?v=abc123xyz")
+    except ValueError as error:
+        assert "MAX_AUDIO_BYTES" in str(error)
+    else:
+        raise AssertionError("Expected ValueError")
+
+
+def test_run_video_job_rejects_transcript_with_too_many_segments(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("MAX_TRANSLATION_SEGMENTS", "2")
+    get_settings.cache_clear()
+
+    def fake_extract(url: str) -> dict[str, object]:
+        return {"id": "abc123xyz", "title": "Test video"}
+
+    def fake_build(payload: dict[str, object]) -> VideoMetadata:
+        return VideoMetadata(
+            video_id="abc123xyz",
+            title="Test video",
+            duration_sec=10,
+            uploader="Uploader",
+            thumbnail="https://example.com/thumb.jpg",
+            subtitles=["en"],
+            automatic_captions=[],
+        )
+
+    def fake_source(
+        url: str,
+        payload: dict[str, object],
+        source_mode: str = "subtitle_first",
+    ) -> VideoSourceResult:
+        return VideoSourceResult(
+            source_type="captions",
+            language="en",
+            text="One.\nTwo.\nThree.",
+        )
+
+    def fail_translate(*args, **kwargs):
+        raise AssertionError("Translation should not run when segment limit is exceeded.")
+
+    monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
+    monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
+    monkeypatch.setattr(
+        "app.services.job_run_service.fetch_video_source_from_info",
+        fake_source,
+    )
+    monkeypatch.setattr(
+        "app.services.job_run_service.translate_segments_to_chinese",
+        fail_translate,
+    )
+
+    try:
+        run_video_job("https://www.youtube.com/watch?v=abc123xyz")
+    except ValueError as error:
+        assert "MAX_TRANSLATION_SEGMENTS" in str(error)
+    else:
+        raise AssertionError("Expected ValueError")
 
 
 def test_run_video_job_with_translation_config_forwards_force_audio_mode(
@@ -624,6 +791,255 @@ def test_run_video_job_merges_caption_lines_before_translation(monkeypatch) -> N
     assert len(result.transcript_en.segments) == 2
 
 
+def test_run_video_job_emits_stage_progress_in_order(monkeypatch) -> None:
+    progress_events: list[tuple[str, int, str]] = []
+
+    def fake_extract(url: str) -> dict[str, object]:
+        return {"id": "abc123xyz", "title": "Test video"}
+
+    def fake_build(payload: dict[str, object]) -> VideoMetadata:
+        return VideoMetadata(
+            video_id="abc123xyz",
+            title="Test video",
+            duration_sec=10,
+            uploader="Uploader",
+            thumbnail="https://example.com/thumb.jpg",
+            subtitles=[],
+            automatic_captions=[],
+        )
+
+    def fake_source(
+        url: str,
+        payload: dict[str, object],
+        source_mode: str = "subtitle_first",
+    ) -> VideoSourceResult:
+        return VideoSourceResult(
+            source_type="audio",
+            audio_file_path="tmp/sample.webm",
+        )
+
+    def fake_transcribe(audio_file_path: str) -> TranscriptionResult:
+        return TranscriptionResult(
+            language="en",
+            text="Hello everyone.",
+            segments=[
+                TranscriptSegment(
+                    index=0,
+                    start=0.0,
+                    end=1.0,
+                    text="Hello everyone.",
+                )
+            ],
+        )
+
+    def fake_translate(
+        segments: list[dict[str, object]],
+        translation_config: dict[str, object] | None = None,
+    ) -> list[TranslationSegment]:
+        return [
+            TranslationSegment(
+                index=0,
+                start=0.0,
+                end=1.0,
+                source_text="Hello everyone.",
+                translated_text="大家好。",
+            )
+        ]
+
+    monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
+    monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
+    monkeypatch.setattr(
+        "app.services.job_run_service.fetch_video_source_from_info",
+        fake_source,
+    )
+    monkeypatch.setattr(
+        "app.services.job_run_service.transcribe_audio_file",
+        fake_transcribe,
+    )
+    monkeypatch.setattr(
+        "app.services.job_run_service.translate_segments_to_chinese",
+        fake_translate,
+    )
+    monkeypatch.setattr("app.services.job_run_service._maybe_attach_speakers", lambda video, source, transcript: transcript)
+    monkeypatch.setattr("app.services.job_run_service._job_run_should_attach_speakers", lambda: False)
+    monkeypatch.setattr("app.services.job_run_service.load_json_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.services.job_run_service.store_json_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "app.services.job_run_service.create_content_context",
+        lambda **kwargs: "ctx-stage-machine",
+    )
+
+    result = run_video_job_with_translation_config(
+        "https://www.youtube.com/watch?v=abc123xyz",
+        progress_callback=lambda stage, value, text: progress_events.append((stage, value, text)),
+    )
+
+    assert [stage for stage, _, _ in progress_events] == [
+        "inspect",
+        "fetch_source",
+        "transcribe",
+        "translate",
+        "persist",
+    ]
+    assert progress_events == [
+        ("inspect", 12, "正在解析视频信息..."),
+        ("fetch_source", 25, "正在提取字幕或音频..."),
+        ("transcribe", 45, "正在进行本地转录..."),
+        ("translate", 70, "正在翻译中文字幕..."),
+        ("persist", 85, "正在生成内容上下文..."),
+    ]
+    assert result.content_context_id == "ctx-stage-machine"
+
+
+def test_run_video_job_cancels_at_stage_boundary_before_translate(monkeypatch) -> None:
+    from pytest import raises as pytest_raises
+
+    cancelled = {"value": False}
+    translate_called = {"value": False}
+
+    def fake_extract(url: str) -> dict[str, object]:
+        return {"id": "abc123xyz", "title": "Test video"}
+
+    def fake_build(payload: dict[str, object]) -> VideoMetadata:
+        return VideoMetadata(
+            video_id="abc123xyz",
+            title="Test video",
+            duration_sec=10,
+            uploader="Uploader",
+            thumbnail="https://example.com/thumb.jpg",
+            subtitles=[],
+            automatic_captions=[],
+        )
+
+    def fake_source(
+        url: str,
+        payload: dict[str, object],
+        source_mode: str = "subtitle_first",
+    ) -> VideoSourceResult:
+        return VideoSourceResult(
+            source_type="audio",
+            audio_file_path="tmp/sample.webm",
+        )
+
+    def fake_transcribe(audio_file_path: str) -> TranscriptionResult:
+        return TranscriptionResult(
+            language="en",
+            text="Hello everyone.",
+            segments=[
+                TranscriptSegment(
+                    index=0,
+                    start=0.0,
+                    end=1.0,
+                    text="Hello everyone.",
+                )
+            ],
+        )
+
+    def fake_translate(
+        segments: list[dict[str, object]],
+        translation_config: dict[str, object] | None = None,
+    ) -> list[TranslationSegment]:
+        translate_called["value"] = True
+        return [
+            TranslationSegment(
+                index=0,
+                start=0.0,
+                end=1.0,
+                source_text="Hello everyone.",
+                translated_text="大家好。",
+            )
+        ]
+
+    monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
+    monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
+    monkeypatch.setattr(
+        "app.services.job_run_service.fetch_video_source_from_info",
+        fake_source,
+    )
+    monkeypatch.setattr(
+        "app.services.job_run_service.transcribe_audio_file",
+        fake_transcribe,
+    )
+    monkeypatch.setattr(
+        "app.services.job_run_service.translate_segments_to_chinese",
+        fake_translate,
+    )
+    monkeypatch.setattr("app.services.job_run_service._maybe_attach_speakers", lambda video, source, transcript: transcript)
+    monkeypatch.setattr("app.services.job_run_service._job_run_should_attach_speakers", lambda: False)
+    monkeypatch.setattr("app.services.job_run_service.load_json_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.services.job_run_service.store_json_cache", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        "app.services.job_run_service.create_content_context",
+        lambda **kwargs: "ctx-stage-machine",
+    )
+
+    def progress_callback(stage: str, value: int, text: str) -> None:
+        if stage == "translate":
+            cancelled["value"] = True
+
+    with pytest_raises(JobCancelledError):
+        run_video_job_with_translation_config(
+            "https://www.youtube.com/watch?v=abc123xyz",
+            progress_callback=progress_callback,
+            cancellation_checker=lambda: cancelled["value"],
+        )
+
+    assert translate_called["value"] is False
+
+
+def test_run_video_job_times_out_at_fetch_source_stage(monkeypatch) -> None:
+    from pytest import raises as pytest_raises
+
+    def fake_extract(url: str) -> dict[str, object]:
+        return {"id": "abc123xyz", "title": "Test video"}
+
+    def fake_build(payload: dict[str, object]) -> VideoMetadata:
+        return VideoMetadata(
+            video_id="abc123xyz",
+            title="Test video",
+            duration_sec=10,
+            uploader="Uploader",
+            thumbnail="https://example.com/thumb.jpg",
+            subtitles=[],
+            automatic_captions=[],
+        )
+
+    def slow_source(
+        url: str,
+        payload: dict[str, object],
+        source_mode: str = "subtitle_first",
+    ) -> VideoSourceResult:
+        time.sleep(1.2)
+        return VideoSourceResult(
+            source_type="captions",
+            language="en",
+            text="Hello everyone.",
+        )
+
+    def fail_transcribe(audio_file_path: str) -> TranscriptionResult:
+        raise AssertionError("Transcription should not run after fetch_source timeout.")
+
+    monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
+    monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
+    monkeypatch.setattr(
+        "app.services.job_run_service.fetch_video_source_from_info",
+        slow_source,
+    )
+    monkeypatch.setattr(
+        "app.services.job_run_service.transcribe_audio_file",
+        fail_transcribe,
+    )
+
+    with pytest_raises(JobStageTimeoutError) as error_info:
+        run_video_job_with_translation_config(
+            "https://www.youtube.com/watch?v=abc123xyz",
+            stage_timeout_seconds={"fetch_source": 1},
+        )
+
+    assert error_info.value.stage == "fetch_source"
+    assert error_info.value.timeout_sec == 1
+
+
 def test_jobs_run_endpoint_returns_final_result(monkeypatch) -> None:
     def fake_run(
         url: str,
@@ -857,7 +1273,25 @@ def test_jobs_run_endpoint_rejects_invalid_url() -> None:
         json={"url": "https://example.com/not-youtube"},
     )
 
-    assert response.status_code == 400
+    _assert_error_response(
+        response,
+        status_code=400,
+        error_code="INVALID_INPUT",
+        retryable=False,
+        detail="URL must be a valid YouTube link.",
+    )
+
+
+def test_get_job_status_returns_not_found_envelope() -> None:
+    response = client.get("/api/jobs/does-not-exist")
+
+    _assert_error_response(
+        response,
+        status_code=404,
+        error_code="NOT_FOUND",
+        retryable=False,
+        detail="Job not found",
+    )
 
 
 def test_jobs_run_endpoint_returns_upstream_error(monkeypatch) -> None:
@@ -883,6 +1317,8 @@ def test_jobs_run_endpoint_returns_upstream_error(monkeypatch) -> None:
     job_data = _wait_for_job_result(str(submission["job_id"]), allow_failed=True)
     assert job_data["status"] == "failed"
     assert job_data["error"] == "Upstream translation failed."
+    assert job_data["error_code"] == "UPSTREAM_ERROR"
+    assert job_data["retryable"] is True
 
 
 def test_jobs_run_endpoint_forwards_translation_config(monkeypatch) -> None:

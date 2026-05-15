@@ -10,6 +10,13 @@ from typing import Literal
 import httpx
 
 from app.config import ROOT_DIR, get_env_str
+from app.services.llm_provider_service import (
+    coerce_provider_headers,
+    provider_default_base_url,
+    provider_default_model,
+    provider_env_prefix,
+    validate_provider_base_url,
+)
 from app.services.persistent_cache_service import (
     build_cache_key,
     load_json_cache,
@@ -260,8 +267,8 @@ def _resolve_translation_config(
             f"Unsupported translation provider '{provider}'. Supported providers: {supported}."
         )
 
-    env_prefix = _provider_env_prefix(provider)
-    extra_headers = _coerce_headers(config.get("extra_headers"))
+    env_prefix = provider_env_prefix(provider)
+    extra_headers = coerce_provider_headers(config.get("extra_headers"))
 
     api_key = str(
         config.get("api_key") or get_env_str(f"{env_prefix}_API_KEY") or ""
@@ -272,14 +279,18 @@ def _resolve_translation_config(
             f"{env_prefix}_API_KEY is not set. Add it to your environment, .env file, or request settings."
         )
 
-    default_base_url = _provider_default_base_url(provider)
+    default_base_url = provider_default_base_url(provider)
     base_url = str(
         config.get("base_url")
         or get_env_str(f"{env_prefix}_BASE_URL")
         or default_base_url
     ).strip()
+    try:
+        base_url = validate_provider_base_url(provider, base_url)
+    except ValueError as error:
+        raise TranslationConfigurationError(str(error)) from error
 
-    default_model = _provider_default_model(provider)
+    default_model = provider_default_model(provider)
     model = str(
         config.get("model")
         or get_env_str(f"{env_prefix}_TRANSLATION_MODEL")
@@ -1532,6 +1543,13 @@ def discover_provider_models(
 ) -> list[str]:
     fallback_models = _provider_fallback_models(provider)
     discovered_models: list[str] = []
+    try:
+        base_url = validate_provider_base_url(
+            provider,
+            base_url or provider_default_base_url(provider),
+        )
+    except ValueError as error:
+        raise TranslationConfigurationError(str(error)) from error
 
     def add_model(candidate: object) -> None:
         model_id = str(candidate).strip()
@@ -1540,7 +1558,7 @@ def discover_provider_models(
 
     if provider == "ollama":
         models_url = _build_endpoint_url(
-            _normalize_ollama_base_url(base_url or _provider_default_base_url(provider)),
+            _normalize_ollama_base_url(base_url),
             "/api/tags",
         )
         headers = {"Content-Type": "application/json"}
@@ -1566,7 +1584,7 @@ def discover_provider_models(
         return discovered_models or fallback_models
 
     models_url = _build_endpoint_url(
-        base_url or _provider_default_base_url(provider),
+        base_url,
         "/models",
     )
     headers = {"Content-Type": "application/json"}
@@ -1597,34 +1615,6 @@ def discover_provider_models(
                 add_model(item.get("model") or item.get("name"))
 
     return discovered_models or fallback_models
-
-
-def _provider_env_prefix(provider: str) -> str:
-    if provider == "openai":
-        return "OPENAI"
-    if provider == "deepseek":
-        return "DEEPSEEK"
-    if provider == "lmstudio":
-        return "LMSTUDIO"
-    return "OLLAMA"
-
-
-def _provider_default_base_url(provider: str) -> str:
-    if provider == "openai":
-        return OPENAI_DEFAULT_BASE_URL
-    if provider == "deepseek":
-        return DEEPSEEK_DEFAULT_BASE_URL
-    if provider == "lmstudio":
-        return LMSTUDIO_DEFAULT_BASE_URL
-    return OLLAMA_DEFAULT_BASE_URL
-
-
-def _provider_default_model(provider: str) -> str:
-    if provider == "openai":
-        return OPENAI_DEFAULT_MODEL
-    if provider == "deepseek":
-        return DEEPSEEK_DEFAULT_MODEL
-    return ""
 
 
 def _provider_fallback_models(provider: str) -> list[str]:
@@ -1709,20 +1699,6 @@ def _extract_provider_error_message(response: httpx.Response) -> str:
             return message.strip()
 
     return f"Translation provider failed with status {response.status_code}."
-
-
-def _coerce_headers(value: object) -> dict[str, str]:
-    if not isinstance(value, dict):
-        return {}
-
-    headers: dict[str, str] = {}
-    for key, header_value in value.items():
-        normalized_key = str(key).strip()
-        normalized_value = str(header_value).strip()
-        if not normalized_key or not normalized_value:
-            continue
-        headers[normalized_key] = normalized_value
-    return headers
 
 
 def _as_int(value: object) -> int:

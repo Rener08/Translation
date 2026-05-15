@@ -41,6 +41,7 @@ class WriterAgent:
         self,
         *,
         material: MaterialPackage,
+        reference_text: str | None = None,
         rewrite_focus: str | None = None,
         rewrite_style: RewriteStyle | None = None,
         rewrite_config: dict[str, object] | None = None,
@@ -72,7 +73,8 @@ class WriterAgent:
 
         return self._execute_pipeline(
             self._select_strategy(normalized_style, skill_config=config, llm_call_fn=llm_call_fn),
-            material, normalized_focus, rewrite_config,
+            self._with_reference_text(material, reference_text),
+            normalized_focus, rewrite_config,
         )
 
     def _select_strategy(
@@ -95,19 +97,38 @@ class WriterAgent:
             rewrite_config=rewrite_config,
         )
 
+    @staticmethod
+    def _with_reference_text(
+        material: MaterialPackage,
+        reference_text: str | None,
+    ) -> MaterialPackage:
+        normalized_reference = (reference_text or "").strip()
+        if not normalized_reference:
+            return material
+        if normalized_reference == (material.reference_text or "").strip():
+            return material
+        return MaterialPackage(
+            source_text=material.source_text,
+            reference_text=normalized_reference,
+            source_language=material.source_language,
+            translation_language=material.translation_language,
+        )
+
 
 def run_writer_agent(
     *,
     source_text: str,
+    reference_text: str | None = None,
     rewrite_focus: str | None = None,
     rewrite_style: RewriteStyle | None = None,
     rewrite_config: dict[str, object] | None = None,
     skill_config: SkillConfig | None = None,
 ) -> ContentRewriteResult:
     agent = WriterAgent()
-    material = MaterialPackage(source_text=source_text)
+    material = MaterialPackage(source_text=source_text, reference_text=(reference_text or "").strip())
     report = agent.run(
         material=material,
+        reference_text=reference_text,
         rewrite_focus=rewrite_focus,
         rewrite_style=rewrite_style,
         rewrite_config=rewrite_config,

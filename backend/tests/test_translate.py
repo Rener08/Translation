@@ -26,6 +26,23 @@ from app.services.translation_service import (
 client = TestClient(app)
 
 
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
+
+
 def _extract_prompt_indices(content: str) -> list[int]:
     return [
         int(value)
@@ -201,6 +218,22 @@ def test_translate_segments_to_chinese_requires_api_key(monkeypatch) -> None:
         )
     except TranslationConfigurationError as error:
         assert "OPENAI_API_KEY is not set" in str(error)
+    else:
+        raise AssertionError("Expected TranslationConfigurationError")
+
+
+def test_translate_segments_to_chinese_rejects_non_local_ollama_base_url() -> None:
+    try:
+        translate_segments_to_chinese(
+            [{"index": 0, "start": 0.0, "end": 1.0, "text": "Hello"}],
+            translation_config={
+                "provider": "ollama",
+                "base_url": "http://192.168.1.10:11434",
+                "model": "qwen3.5:4b",
+            },
+        )
+    except TranslationConfigurationError as error:
+        assert "must point to localhost" in str(error)
     else:
         raise AssertionError("Expected TranslationConfigurationError")
 
@@ -1096,10 +1129,13 @@ def test_translate_endpoint_returns_configuration_error(monkeypatch) -> None:
         },
     )
 
-    assert response.status_code == 500
-    assert response.json() == {
-        "detail": "OPENAI_API_KEY is not set. Add it to your environment or .env file."
-    }
+    _assert_error_response(
+        response,
+        status_code=500,
+        error_code="CONFIGURATION_ERROR",
+        retryable=False,
+        detail="OPENAI_API_KEY is not set. Add it to your environment or .env file.",
+    )
 
 
 def test_translate_endpoint_returns_openai_error(monkeypatch) -> None:
@@ -1125,8 +1161,13 @@ def test_translate_endpoint_returns_openai_error(monkeypatch) -> None:
         },
     )
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "Upstream translation failed."}
+    _assert_error_response(
+        response,
+        status_code=502,
+        error_code="UPSTREAM_ERROR",
+        retryable=True,
+        detail="Upstream translation failed.",
+    )
 
 
 def test_translate_endpoint_forwards_translation_config(monkeypatch) -> None:
@@ -1193,9 +1234,23 @@ def test_translate_endpoint_rejects_empty_segment_text() -> None:
     )
 
     assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["error_code"] == "VALIDATION_ERROR"
+    assert body["retryable"] is False
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert isinstance(body["detail"], str)
+    assert body["detail"]
 
 
 def test_translate_endpoint_rejects_empty_segment_list() -> None:
     response = client.post("/api/translate", json={"segments": []})
 
     assert response.status_code == 422
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["error_code"] == "VALIDATION_ERROR"
+    assert body["retryable"] is False
+    assert body["request_id"] == response.headers["x-request-id"]
+    assert isinstance(body["detail"], str)
+    assert body["detail"]

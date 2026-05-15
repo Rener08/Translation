@@ -1,22 +1,23 @@
 from __future__ import annotations
 
 import logging
-import json
-import os
-import sqlite3
 import threading
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
 from uuid import uuid4
 
-from app.config import get_env_str, get_settings
+from app.config import get_env_str
+from app.repositories.job_repository import (
+    JobRecord,
+    JobStatus,
+    clone_job_record,
+    default_job_repository,
+)
 
 
 logger = logging.getLogger(__name__)
-JobStatus = Literal["queued", "running", "done", "failed", "cancelled"]
 JobTaskHandler = Callable[[str, dict[str, Any]], None]
 
 
@@ -24,32 +25,11 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@dataclass
-class JobRecord:
-    job_id: str
-    status: JobStatus = "queued"
-    progress_value: int = 0
-    progress_text: str = "已加入队列"
-    stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None
-    timeout_sec: int | None = None
-    result: dict[str, Any] | None = None
-    error: str | None = None
-    error_code: str | None = None
-    retryable: bool | None = None
-    cancel_requested: bool = False
-    task_type: str | None = None
-    task_payload: dict[str, Any] | None = None
-    created_at: str = field(default_factory=_now_iso)
-    updated_at: str = field(default_factory=_now_iso)
-
-
 _JOB_RECORDS: dict[str, JobRecord] = {}
 _JOB_RECORDS_LOCK = threading.RLock()
 _JOB_EXECUTOR: ThreadPoolExecutor | None = None
 _JOB_EXECUTOR_MAX_WORKERS: int | None = None
 _JOB_EXECUTOR_LOCK = threading.Lock()
-_JOB_DB_LOCK = threading.RLock()
-_JOB_DB_INITIALIZED = False
 _JOB_TASK_HANDLERS: dict[str, JobTaskHandler] = {}
 _JOB_TASK_HANDLERS_LOCK = threading.RLock()
 _JOB_DISPATCHER_THREAD: threading.Thread | None = None
@@ -58,6 +38,7 @@ _JOB_DISPATCHER_WAKE_EVENT = threading.Event()
 _JOB_DISPATCHER_LOCK = threading.Lock()
 _JOB_ACTIVE_FUTURES: dict[str, Future[Any] | None] = {}
 _JOB_ACTIVE_FUTURES_LOCK = threading.RLock()
+_JOB_WORKER_ID = uuid4().hex
 
 
 def submit_background_job(
@@ -185,6 +166,11 @@ def update_job_progress(
             record.error_code = str(error_code).strip() or None
         if retryable is not None:
             record.retryable = bool(retryable)
+        if status in {"done", "failed", "cancelled"}:
+            record.claimed_by = None
+            record.claimed_at = None
+            record.lease_expires_at = None
+            record.last_heartbeat_at = None
         record.updated_at = _now_iso()
         _upsert_record_db(record)
 
@@ -213,6 +199,10 @@ def request_job_cancel(job_id: str) -> JobRecord | None:
         record.error = "任务被用户取消。"
         record.error_code = "JOB_CANCELLED"
         record.retryable = False
+        record.claimed_by = None
+        record.claimed_at = None
+        record.lease_expires_at = None
+        record.last_heartbeat_at = None
         record.updated_at = _now_iso()
         _upsert_record_db(record)
         return _copy_record(record)
@@ -291,14 +281,18 @@ def _dispatch_queued_persistent_jobs() -> None:
     if available <= 0:
         return
 
-    queued_records = _load_dispatchable_jobs_db(task_types=task_types, limit=available)
-    if not queued_records:
+    lease_seconds = _get_job_queue_lease_seconds()
+    claimed_records = _claim_dispatchable_jobs_db(
+        task_types=task_types,
+        limit=available,
+        worker_id=_JOB_WORKER_ID,
+        lease_seconds=lease_seconds,
+    )
+    if not claimed_records:
         return
 
     executor = _get_job_executor()
-    for record in queued_records:
-        if record.cancel_requested or record.status != "queued":
-            continue
+    for record in claimed_records:
         if not record.task_type:
             continue
         payload = dict(record.task_payload or {})
@@ -311,15 +305,34 @@ def _dispatch_queued_persistent_jobs() -> None:
             record.job_id,
             record.task_type,
             payload,
+            worker_id=_JOB_WORKER_ID,
+            lease_seconds=lease_seconds,
         )
         _set_job_future(record.job_id, future)
         future.add_done_callback(lambda _f, job_id=record.job_id: _on_job_future_done(job_id))
 
 
-def _run_registered_task_job(job_id: str, task_type: str, payload: dict[str, Any]) -> None:
+def _run_registered_task_job(
+    job_id: str,
+    task_type: str,
+    payload: dict[str, Any],
+    *,
+    worker_id: str,
+    lease_seconds: int,
+) -> None:
+    heartbeat_stop = threading.Event()
+    heartbeat_thread = threading.Thread(
+        target=_job_lease_heartbeat_loop,
+        args=(job_id, worker_id, lease_seconds, heartbeat_stop),
+        daemon=True,
+        name=f"job-lease-heartbeat-{job_id}",
+    )
+    heartbeat_thread.start()
     with _JOB_TASK_HANDLERS_LOCK:
         handler = _JOB_TASK_HANDLERS.get(task_type)
     if handler is None:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
         update_job_progress(
             job_id,
             status="failed",
@@ -330,7 +343,11 @@ def _run_registered_task_job(job_id: str, task_type: str, payload: dict[str, Any
             retryable=False,
         )
         return
-    _run_background_job(job_id, lambda resolved_job_id: handler(resolved_job_id, payload))
+    try:
+        _run_background_job(job_id, lambda resolved_job_id: handler(resolved_job_id, payload))
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=1)
 
 
 def _set_job_future(job_id: str, future: Future[Any]) -> None:
@@ -372,6 +389,23 @@ def _available_worker_slots() -> int:
     return remaining
 
 
+def _job_lease_heartbeat_loop(
+    job_id: str,
+    worker_id: str,
+    lease_seconds: int,
+    stop_event: threading.Event,
+) -> None:
+    interval = max(5, min(30, max(1, lease_seconds // 3)))
+    while not stop_event.wait(timeout=interval):
+        renewed = default_job_repository.renew_lease(
+            job_id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+        )
+        if not renewed:
+            return
+
+
 def _get_job_executor() -> ThreadPoolExecutor:
     max_workers = _get_job_queue_max_workers()
     global _JOB_EXECUTOR, _JOB_EXECUTOR_MAX_WORKERS
@@ -393,6 +427,10 @@ def _get_job_executor() -> ThreadPoolExecutor:
 
 def _get_job_queue_max_workers() -> int:
     return _clamp_int_env("JOB_QUEUE_MAX_WORKERS", default=1, minimum=1, maximum=4)
+
+
+def _get_job_queue_lease_seconds() -> int:
+    return _positive_int_env("JOB_QUEUE_LEASE_SECONDS", default=1800)
 
 
 def _get_job_record_ttl_hours() -> int:
@@ -481,199 +519,23 @@ def _parse_record_timestamp(value: str) -> datetime:
 
 
 def _copy_record(record: JobRecord) -> JobRecord:
-    return JobRecord(
-        job_id=record.job_id,
-        status=record.status,
-        progress_value=record.progress_value,
-        progress_text=record.progress_text,
-        stage=record.stage,
-        timeout_sec=record.timeout_sec,
-        result=dict(record.result) if isinstance(record.result, dict) else None,
-        error=record.error,
-        error_code=record.error_code,
-        retryable=record.retryable,
-        cancel_requested=record.cancel_requested,
-        task_type=record.task_type,
-        task_payload=dict(record.task_payload)
-        if isinstance(record.task_payload, dict)
-        else None,
-        created_at=record.created_at,
-        updated_at=record.updated_at,
-    )
+    return clone_job_record(record)
 
 
 def _normalize_job_id(job_id: str) -> str:
     return str(job_id or "").strip()
 
 
-def _job_db_path() -> str:
-    settings = get_settings()
-    settings.job_queue_db_path.parent.mkdir(parents=True, exist_ok=True)
-    return str(settings.job_queue_db_path)
-
-
 def _init_job_db() -> None:
-    global _JOB_DB_INITIALIZED
-    if _JOB_DB_INITIALIZED:
-        return
-    with _JOB_DB_LOCK:
-        if _JOB_DB_INITIALIZED:
-            return
-        conn = sqlite3.connect(_job_db_path())
-        try:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS job_records (
-                    job_id TEXT PRIMARY KEY,
-                    status TEXT NOT NULL,
-                    progress_value INTEGER NOT NULL,
-                    progress_text TEXT NOT NULL,
-                    stage TEXT NULL,
-                    timeout_sec INTEGER NULL,
-                    result_json TEXT NULL,
-                    error TEXT NULL,
-                    error_code TEXT NULL,
-                    retryable INTEGER NULL,
-                    cancel_requested INTEGER NOT NULL DEFAULT 0,
-                    task_type TEXT NULL,
-                    task_payload_json TEXT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                )
-                """
-            )
-            _ensure_job_records_column(conn, "task_type", "TEXT NULL")
-            _ensure_job_records_column(conn, "task_payload_json", "TEXT NULL")
-            conn.execute(
-                """
-                UPDATE job_records
-                SET status = 'failed',
-                    progress_value = 100,
-                    progress_text = '任务中断（服务重启）',
-                    error = COALESCE(error, '任务在服务重启时中断。'),
-                    error_code = COALESCE(error_code, 'JOB_INTERRUPTED_RESTART'),
-                    retryable = 1,
-                    updated_at = ?
-                WHERE status = 'running'
-                """,
-                (_now_iso(),),
-            )
-            conn.execute(
-                """
-                UPDATE job_records
-                SET status = 'failed',
-                    progress_value = 100,
-                    progress_text = '任务中断（服务重启）',
-                    error = COALESCE(error, '任务在服务重启时中断。'),
-                    error_code = COALESCE(error_code, 'JOB_INTERRUPTED_RESTART'),
-                    retryable = 1,
-                    updated_at = ?
-                WHERE status = 'queued' AND (task_type IS NULL OR TRIM(task_type) = '')
-                """,
-                (_now_iso(),),
-            )
-            conn.commit()
-        finally:
-            conn.close()
-        _JOB_DB_INITIALIZED = True
-
-
-def _ensure_job_records_column(
-    conn: sqlite3.Connection,
-    column_name: str,
-    ddl_suffix: str,
-) -> None:
-    try:
-        conn.execute(
-            f"ALTER TABLE job_records ADD COLUMN {column_name} {ddl_suffix}"  # noqa: S608
-        )
-    except sqlite3.OperationalError:
-        # Column already exists.
-        return
-
-
-def _db_connect() -> sqlite3.Connection:
-    _init_job_db()
-    conn = sqlite3.connect(_job_db_path())
-    conn.row_factory = sqlite3.Row
-    return conn
+    default_job_repository.initialize()
 
 
 def _upsert_record_db(record: JobRecord) -> None:
-    with _JOB_DB_LOCK:
-        conn = _db_connect()
-        try:
-            conn.execute(
-                """
-                INSERT INTO job_records (
-                    job_id, status, progress_value, progress_text, stage, timeout_sec,
-                    result_json, error, error_code, retryable, cancel_requested,
-                    task_type, task_payload_json,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(job_id) DO UPDATE SET
-                    status = excluded.status,
-                    progress_value = excluded.progress_value,
-                    progress_text = excluded.progress_text,
-                    stage = excluded.stage,
-                    timeout_sec = excluded.timeout_sec,
-                    result_json = excluded.result_json,
-                    error = excluded.error,
-                    error_code = excluded.error_code,
-                    retryable = excluded.retryable,
-                    cancel_requested = excluded.cancel_requested,
-                    task_type = excluded.task_type,
-                    task_payload_json = excluded.task_payload_json,
-                    created_at = excluded.created_at,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    record.job_id,
-                    record.status,
-                    record.progress_value,
-                    record.progress_text,
-                    record.stage,
-                    record.timeout_sec,
-                    json.dumps(record.result, ensure_ascii=False, sort_keys=True)
-                    if isinstance(record.result, dict)
-                    else None,
-                    record.error,
-                    record.error_code,
-                    None if record.retryable is None else int(bool(record.retryable)),
-                    int(bool(record.cancel_requested)),
-                    record.task_type,
-                    json.dumps(record.task_payload, ensure_ascii=False, sort_keys=True)
-                    if isinstance(record.task_payload, dict)
-                    else None,
-                    record.created_at,
-                    record.updated_at,
-                ),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+    default_job_repository.upsert_record(record)
 
 
 def _load_record_from_db(job_id: str) -> JobRecord | None:
-    with _JOB_DB_LOCK:
-        conn = _db_connect()
-        try:
-            row = conn.execute(
-                """
-                SELECT job_id, status, progress_value, progress_text, stage, timeout_sec,
-                       result_json, error, error_code, retryable, cancel_requested,
-                       task_type, task_payload_json,
-                       created_at, updated_at
-                FROM job_records
-                WHERE job_id = ?
-                """,
-                (job_id,),
-            ).fetchone()
-        finally:
-            conn.close()
-    if row is None:
-        return None
-    return _row_to_record(row)
+    return default_job_repository.load_record(job_id)
 
 
 def _load_dispatchable_jobs_db(
@@ -681,109 +543,36 @@ def _load_dispatchable_jobs_db(
     task_types: tuple[str, ...],
     limit: int,
 ) -> list[JobRecord]:
-    if not task_types or limit <= 0:
-        return []
+    return default_job_repository.load_dispatchable_records(
+        task_types=task_types,
+        limit=limit,
+    )
 
-    placeholders = ", ".join("?" for _ in task_types)
-    with _JOB_DB_LOCK:
-        conn = _db_connect()
-        try:
-            rows = conn.execute(
-                f"""
-                SELECT job_id, status, progress_value, progress_text, stage, timeout_sec,
-                       result_json, error, error_code, retryable, cancel_requested,
-                       task_type, task_payload_json,
-                       created_at, updated_at
-                FROM job_records
-                WHERE status = 'queued'
-                  AND cancel_requested = 0
-                  AND task_type IN ({placeholders})
-                ORDER BY created_at ASC
-                LIMIT ?
-                """,
-                (*task_types, int(limit)),
-            ).fetchall()
-        finally:
-            conn.close()
-    return [_row_to_record(row) for row in rows]
+
+def _claim_dispatchable_jobs_db(
+    *,
+    task_types: tuple[str, ...],
+    limit: int,
+    worker_id: str,
+    lease_seconds: int,
+) -> list[JobRecord]:
+    return default_job_repository.claim_dispatchable_records(
+        task_types=task_types,
+        limit=limit,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+    )
 
 
 def _prune_records_db_locked() -> None:
-    ttl_hours = _get_job_record_ttl_hours()
-    max_count = _get_job_record_max_count()
-    stale_cutoff = (datetime.now(timezone.utc) - timedelta(hours=ttl_hours)).isoformat()
-
-    with _JOB_DB_LOCK:
-        conn = _db_connect()
-        try:
-            conn.execute(
-                """
-                DELETE FROM job_records
-                WHERE status IN ('done', 'failed', 'cancelled') AND updated_at < ?
-                """,
-                (stale_cutoff,),
-            )
-            count_row = conn.execute("SELECT COUNT(*) AS count FROM job_records").fetchone()
-            total = int(count_row["count"] if count_row is not None else 0)
-            if total > max_count:
-                excess = total - max_count
-                conn.execute(
-                    """
-                    DELETE FROM job_records
-                    WHERE job_id IN (
-                        SELECT job_id FROM job_records
-                        WHERE status IN ('done', 'failed', 'cancelled')
-                        ORDER BY updated_at ASC
-                        LIMIT ?
-                    )
-                    """,
-                    (excess,),
-                )
-            conn.commit()
-        finally:
-            conn.close()
-
-
-def _row_to_record(row: sqlite3.Row) -> JobRecord:
-    raw_result = row["result_json"]
-    parsed_result: dict[str, Any] | None = None
-    if isinstance(raw_result, str) and raw_result.strip():
-        try:
-            payload = json.loads(raw_result)
-            if isinstance(payload, dict):
-                parsed_result = payload
-        except json.JSONDecodeError:
-            parsed_result = None
-    raw_task_payload = row["task_payload_json"]
-    parsed_task_payload: dict[str, Any] | None = None
-    if isinstance(raw_task_payload, str) and raw_task_payload.strip():
-        try:
-            payload = json.loads(raw_task_payload)
-            if isinstance(payload, dict):
-                parsed_task_payload = payload
-        except json.JSONDecodeError:
-            parsed_task_payload = None
-    return JobRecord(
-        job_id=str(row["job_id"]),
-        status=str(row["status"]),  # type: ignore[arg-type]
-        progress_value=int(row["progress_value"]),
-        progress_text=str(row["progress_text"] or ""),
-        stage=str(row["stage"]) if row["stage"] else None,  # type: ignore[arg-type]
-        timeout_sec=int(row["timeout_sec"]) if row["timeout_sec"] is not None else None,
-        result=parsed_result,
-        error=str(row["error"]) if row["error"] is not None else None,
-        error_code=str(row["error_code"]) if row["error_code"] is not None else None,
-        retryable=None if row["retryable"] is None else bool(int(row["retryable"])),
-        cancel_requested=bool(int(row["cancel_requested"] or 0)),
-        task_type=str(row["task_type"]) if row["task_type"] is not None else None,
-        task_payload=parsed_task_payload,
-        created_at=str(row["created_at"] or _now_iso()),
-        updated_at=str(row["updated_at"] or _now_iso()),
+    default_job_repository.prune_records(
+        ttl_hours=_get_job_record_ttl_hours(),
+        max_count=_get_job_record_max_count(),
     )
 
 
 def reset_job_queue_state_for_tests() -> None:
-    global _JOB_DB_INITIALIZED, _JOB_DISPATCHER_THREAD
+    global _JOB_DISPATCHER_THREAD
     _JOB_DISPATCHER_STOP_EVENT.set()
     _JOB_DISPATCHER_WAKE_EVENT.set()
     dispatcher = _JOB_DISPATCHER_THREAD
@@ -796,8 +585,4 @@ def reset_job_queue_state_for_tests() -> None:
         _JOB_ACTIVE_FUTURES.clear()
     with _JOB_RECORDS_LOCK:
         _JOB_RECORDS.clear()
-    with _JOB_DB_LOCK:
-        db_path = _job_db_path()
-        if os.path.exists(db_path):
-            os.remove(db_path)
-    _JOB_DB_INITIALIZED = False
+    default_job_repository.reset_for_tests()

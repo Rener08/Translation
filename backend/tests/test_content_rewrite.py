@@ -4,8 +4,10 @@ import httpx
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.services.content_context_service import ContentContext
 from app.services.content_rewrite_service import (
     ContentRewriteEmptyOutputError,
+    ContentRewriteConfigurationError,
     ContentRewriteProviderError,
     ContentRewriteResult,
     RewriteReferences,
@@ -16,6 +18,23 @@ from app.services.prompt_validation import validate_rewrite_prompt
 
 
 client = TestClient(app)
+
+
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
 
 
 def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> None:
@@ -204,6 +223,7 @@ def test_rewrite_content_injects_transcript_into_full_skill_prompt(monkeypatch) 
 def test_content_rewrite_endpoint_returns_rewritten_text(monkeypatch) -> None:
     def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
         assert kwargs["source_text"] == "这里是需要改写的原文。"
+        assert kwargs["reference_text"] is None
         assert kwargs["rewrite_focus"] == "请改成更口语化。"
         assert kwargs["rewrite_style"] == "speech_verbatim"
         assert kwargs["rewrite_config"] == {
@@ -242,6 +262,66 @@ def test_content_rewrite_endpoint_returns_rewritten_text(monkeypatch) -> None:
         "quality_issues": [],
         "detail_coverage_issues": [],
     }
+
+
+def test_content_rewrite_endpoint_loads_reference_text_from_context(
+    monkeypatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_load_content_context(content_context_id: str) -> ContentContext | None:
+        assert content_context_id == "ctx-reference"
+        return ContentContext(
+            content_context_id="ctx-reference",
+            video_title="Demo video",
+            transcript_en="Original English transcript.",
+            translation_zh="中文译文。",
+        )
+
+    def fake_run_writer_agent(**kwargs) -> ContentRewriteResult:
+        captured.update(kwargs)
+        return ContentRewriteResult(
+            rewritten_text="这是改写后的版本。",
+            provider="deepseek",
+            model="deepseek-chat",
+        )
+
+    monkeypatch.setattr("app.api.routers.content.load_content_context", fake_load_content_context)
+    monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
+
+    response = client.post(
+        "/api/content-rewrite",
+        json={
+            "content_context_id": "ctx-reference",
+            "source_text": "这里是需要改写的原文。",
+            "rewrite_focus": "请改成更口语化。",
+            "translation_config": {
+                "provider": "deepseek",
+                "model": "deepseek-chat",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["reference_text"] == "Original English transcript."
+    assert response.json()["rewritten_text"] == "这是改写后的版本。"
+
+
+def test_rewrite_content_rejects_non_local_ollama_base_url() -> None:
+    try:
+        rewrite_content(
+            source_text="原始内容第一句。原始内容第二句。",
+            rewrite_focus="保留原作者说话节奏。",
+            rewrite_config={
+                "provider": "ollama",
+                "base_url": "http://192.168.1.10:11434",
+                "model": "qwen3.5:4b",
+            },
+        )
+    except ContentRewriteConfigurationError as error:
+        assert "must point to localhost" in str(error)
+    else:
+        raise AssertionError("Expected configuration error")
 
 
 def test_content_rewrite_endpoint_returns_detail_coverage_issues(monkeypatch) -> None:
@@ -305,7 +385,13 @@ def test_content_rewrite_endpoint_rejects_empty_source_text() -> None:
         },
     )
 
-    assert response.status_code == 422
+    _assert_error_response(
+        response,
+        status_code=422,
+        error_code="VALIDATION_ERROR",
+        retryable=False,
+        detail="source_text: Value error, source_text must not be empty.",
+    )
 
 
 def test_content_rewrite_endpoint_rejects_blank_rewrite_focus() -> None:
@@ -317,10 +403,13 @@ def test_content_rewrite_endpoint_rejects_blank_rewrite_focus() -> None:
         },
     )
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "detail": "改写提示为空。请重新选择写作风格，或移除空白 rewrite_focus 后重试。"
-    }
+    _assert_error_response(
+        response,
+        status_code=400,
+        error_code="REWRITE_INPUT_INVALID",
+        retryable=False,
+        detail="改写提示为空。请重新选择写作风格，或移除空白 rewrite_focus 后重试。",
+    )
 
 
 def test_content_rewrite_endpoint_rejects_invalid_placeholder_usage() -> None:
@@ -332,10 +421,13 @@ def test_content_rewrite_endpoint_rejects_invalid_placeholder_usage() -> None:
         },
     )
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "detail": "改写模板包含不支持的占位符：{{ transcript }}。当前仅支持 {{transcript}}。"
-    }
+    _assert_error_response(
+        response,
+        status_code=400,
+        error_code="REWRITE_INPUT_INVALID",
+        retryable=False,
+        detail="改写模板包含不支持的占位符：{{ transcript }}。当前仅支持 {{transcript}}。",
+    )
 
 
 def test_content_rewrite_endpoint_rejects_full_prompt_without_transcript_placeholder() -> None:
@@ -347,10 +439,13 @@ def test_content_rewrite_endpoint_rejects_full_prompt_without_transcript_placeho
         },
     )
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "detail": "该写作风格看起来是完整 Prompt，但缺少 {{transcript}}。请补上占位符，或删掉完整 prompt 结构后作为风格提示使用。"
-    }
+    _assert_error_response(
+        response,
+        status_code=400,
+        error_code="REWRITE_INPUT_INVALID",
+        retryable=False,
+        detail="该写作风格看起来是完整 Prompt，但缺少 {{transcript}}。请补上占位符，或删掉完整 prompt 结构后作为风格提示使用。",
+    )
 
 
 def test_content_rewrite_endpoint_surfaces_provider_failure(monkeypatch) -> None:
@@ -367,10 +462,13 @@ def test_content_rewrite_endpoint_surfaces_provider_failure(monkeypatch) -> None
         },
     )
 
-    assert response.status_code == 502
-    assert response.json() == {
-        "detail": "内容改写失败：上游模型服务返回错误。deepseek rewrite request failed: timed out"
-    }
+    _assert_error_response(
+        response,
+        status_code=502,
+        error_code="UPSTREAM_ERROR",
+        retryable=True,
+        detail="内容改写失败：上游模型服务返回错误。deepseek rewrite request failed: timed out",
+    )
 
 
 def test_content_rewrite_endpoint_surfaces_empty_rewrite_output(monkeypatch) -> None:
@@ -389,10 +487,13 @@ def test_content_rewrite_endpoint_surfaces_empty_rewrite_output(monkeypatch) -> 
         },
     )
 
-    assert response.status_code == 502
-    assert response.json() == {
-        "detail": "内容改写失败：deepseek 返回了空内容。请重试，或更换模型/提示词。"
-    }
+    _assert_error_response(
+        response,
+        status_code=502,
+        error_code="REWRITE_EMPTY",
+        retryable=True,
+        detail="内容改写失败：deepseek 返回了空内容。请重试，或更换模型/提示词。",
+    )
 
 
 def test_select_rewrite_template_routes_transcript_first_to_generic() -> None:

@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 from app.config import (
     ROOT_DIR,
     get_env_str,
+    get_settings,
     get_yt_dlp_auth_args,
     get_yt_dlp_js_runtime_args,
     get_yt_dlp_proxy_args,
@@ -36,6 +37,10 @@ class AudioDownloadError(Exception):
     """Raised when audio download fails."""
 
 
+class AudioDownloadTimeoutError(AudioDownloadError):
+    """Raised when yt-dlp exceeds the configured subprocess timeout."""
+
+
 @dataclass(frozen=True)
 class AudioDownloadResult:
     audio_file_path: str
@@ -59,6 +64,7 @@ def download_audio(url: str, target_dir: Path | None = None) -> AudioDownloadRes
     concurrent_fragments = _get_safe_concurrent_fragments()
     logger.info("Downloading Whisper-ready media to %s", output_dir)
     logger.info("Using yt-dlp native concurrent fragments: %s", concurrent_fragments)
+    timeout_sec = get_settings().yt_dlp_timeout_sec
 
     completed = None
     stdout = ""
@@ -88,14 +94,25 @@ def download_audio(url: str, target_dir: Path | None = None) -> AudioDownloadRes
             url,
         ]
 
-        completed = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=timeout_sec,
+            )
+        except subprocess.TimeoutExpired as error:
+            logger.error(
+                "yt-dlp audio download timed out after %ss for %s",
+                timeout_sec,
+                url,
+            )
+            raise AudioDownloadTimeoutError(
+                f"yt-dlp audio download timed out after {timeout_sec}s."
+            ) from error
 
         stdout = (completed.stdout or "").strip()
         stderr = (completed.stderr or "").strip()

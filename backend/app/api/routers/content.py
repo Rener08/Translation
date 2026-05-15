@@ -5,6 +5,7 @@ from fastapi.concurrency import run_in_threadpool
 
 from app.api.error_mapping import raise_mapped_http_exception
 from app.api.runtime_deps import get_answer_content_question, get_run_writer_agent
+from app.services.content_context_service import load_content_context
 from app.services.content_rewrite_service import (
     ContentRewriteEmptyOutputError,
     ContentRewriteProviderError,
@@ -73,9 +74,15 @@ async def content_rewrite(
             else None
         )
         skill_config = resolve_skill_config(skill_dir=None, config_name=request.skill_config_name)
+        reference_text = ""
+        if request.content_context_id:
+            context = load_content_context(request.content_context_id)
+            if context is not None:
+                reference_text = context.transcript_en
         result = await run_in_threadpool(
             run_writer_agent_fn,
             source_text=request.source_text,
+            reference_text=reference_text or None,
             rewrite_focus=request.rewrite_focus,
             rewrite_style=request.rewrite_style,
             rewrite_config=rewrite_config,

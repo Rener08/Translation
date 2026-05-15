@@ -3,7 +3,9 @@ import shutil
 import pytest
 
 from app.config import get_settings
+from app.repositories.account_quota_repository import default_account_quota_repository
 from app.services import job_queue_service
+from app.services.account_quota_service import default_account_quota_service
 from app.services.persistent_cache_service import CACHE_ROOT_DIR
 
 
@@ -28,12 +30,24 @@ ISOLATED_ENV_KEYS = [
     "JOB_RECORD_TTL_HOURS",
     "JOB_RECORD_MAX_COUNT",
     "TMP_ARTIFACT_TTL_HOURS",
+    "YTDLP_SUBPROCESS_TIMEOUT_SEC",
     "YTDLP_COOKIES_FROM_BROWSER",
     "YTDLP_COOKIES_FILE",
     "YTDLP_ENABLE_DEFAULT_COOKIES_FILE",
     "JOB_QUEUE_DB_PATH",
     "API_AUTH_TOKEN",
     "API_RATE_LIMIT_PER_MINUTE",
+    "DEPLOYMENT_PROFILE",
+    "APP_ENV",
+    "CORS_ALLOWED_ORIGINS",
+    "ACCOUNT_DAILY_REQUEST_LIMIT",
+    "ACCOUNT_MAX_CONCURRENT_JOBS",
+    "ACCOUNT_MAX_HISTORY_SESSIONS",
+    "ACCOUNT_QUOTA_DB_PATH",
+    "MAX_VIDEO_DURATION_SEC",
+    "MAX_AUDIO_BYTES",
+    "MAX_TRANSCRIPT_CHARS",
+    "MAX_TRANSLATION_SEGMENTS",
 ]
 
 
@@ -51,3 +65,5 @@ def isolate_backend_env(monkeypatch: pytest.MonkeyPatch) -> None:
     job_queue_service._JOB_EXECUTOR = None
     job_queue_service._JOB_EXECUTOR_MAX_WORKERS = None
     job_queue_service.reset_job_queue_state_for_tests()
+    default_account_quota_repository.reset_for_tests()
+    default_account_quota_service._quota_repository.reset_for_tests()

@@ -13,6 +13,7 @@ import httpx
 from app.config import (
     ROOT_DIR,
     get_env_str,
+    get_settings,
     get_yt_dlp_auth_args,
     get_yt_dlp_proxy_args,
 )
@@ -30,6 +31,10 @@ TAG_PATTERN = re.compile(r"<[^>]+>")
 
 class CaptionServiceError(Exception):
     """Raised when caption extraction fails."""
+
+
+class CaptionDownloadTimeoutError(CaptionServiceError):
+    """Raised when yt-dlp exceeds the configured subtitle download timeout."""
 
 
 @dataclass(frozen=True)
@@ -143,6 +148,7 @@ def _download_caption_via_yt_dlp(
 
     TMP_CAPTION_DIR.mkdir(parents=True, exist_ok=True)
     output_template = str(TMP_CAPTION_DIR / f"{video_id}")
+    timeout_sec = get_settings().yt_dlp_timeout_sec
     command = [
         sys.executable,
         "-m",
@@ -164,14 +170,25 @@ def _download_caption_via_yt_dlp(
         video_url,
     ]
 
-    completed = subprocess.run(
-        command,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=timeout_sec,
+        )
+    except subprocess.TimeoutExpired as error:
+        logger.error(
+            "yt-dlp caption download timed out after %ss for %s",
+            timeout_sec,
+            video_url,
+        )
+        raise CaptionDownloadTimeoutError(
+            f"yt-dlp subtitle download timed out after {timeout_sec}s."
+        ) from error
 
     if completed.returncode != 0:
         stderr = (completed.stderr or "").strip()

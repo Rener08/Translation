@@ -4,12 +4,13 @@ import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 from queue import Empty
-from typing import Callable
+from typing import Callable, TypeVar
 from typing import Literal
 
-from app.config import get_env_str
+from app.config import ROOT_DIR, get_env_str, get_settings
 from app.services.content_context_service import create_content_context
 from app.services.participant_candidate_service import extract_candidate_people
 from app.services.persistent_cache_service import (
@@ -29,8 +30,13 @@ from app.services.speaker_identity_service import (
 )
 from app.services.transcript_cleaner import clean_transcript
 from app.services.transcription_service import (
+    AudioFileNotFoundError,
+    AudioFileTooLargeError,
     TranscriptSegment,
     TranscriptionResult,
+    TranscriptTooLongError,
+    TranscriptionConfigurationError,
+    LocalTranscriptionError,
     transcribe_audio_file,
 )
 from app.services.translation_service import (
@@ -69,6 +75,7 @@ class JobStageTimeouts:
     fetch_source: int = 180
     transcribe: int = 900
     translate: int = 900
+    persist: int = 30
 
     def for_stage(self, stage: JobStage) -> int:
         if stage == "inspect":
@@ -79,6 +86,8 @@ class JobStageTimeouts:
             return self.transcribe
         if stage == "translate":
             return self.translate
+        if stage == "persist":
+            return self.persist
         return 120
 
 
@@ -108,6 +117,295 @@ class JobRunResult:
     content_context_id: str
 
 
+@dataclass(frozen=True)
+class JobRunStageContext:
+    url: str
+    translation_config: dict[str, object] | None
+    source_mode: SourceMode
+    stage_timeouts: JobStageTimeouts
+    progress_callback: JobProgressCallback
+    cancellation_checker: JobCancellationChecker | None
+
+
+@dataclass(frozen=True)
+class JobRunPipelineState:
+    context: JobRunStageContext
+    video_info: dict[str, object] | None = None
+    video: VideoMetadata | None = None
+    source: VideoSourceResult | None = None
+    transcript: TranscriptionResult | None = None
+    translation_zh_segments: list[TranslationSegment] | None = None
+    translation_zh_text: str | None = None
+    content_context_id: str | None = None
+
+
+@dataclass(frozen=True)
+class InspectStageOutput:
+    video_info: dict[str, object]
+    video: VideoMetadata
+
+
+@dataclass(frozen=True)
+class FetchSourceStageOutput:
+    source: VideoSourceResult
+
+
+@dataclass(frozen=True)
+class TranscribeStageOutput:
+    transcript: TranscriptionResult
+
+
+@dataclass(frozen=True)
+class TranslateStageOutput:
+    translation_zh_segments: list[TranslationSegment]
+    translation_zh_text: str
+
+
+@dataclass(frozen=True)
+class PersistStageOutput:
+    content_context_id: str
+
+
+StageOutputT = TypeVar("StageOutputT")
+StageValueT = TypeVar("StageValueT")
+
+
+class JobRunStageMachine:
+    def __init__(self, context: JobRunStageContext):
+        self._context = context
+
+    def run(self) -> JobRunResult:
+        state = JobRunPipelineState(context=self._context)
+        state = self._run_inspect_stage(state)
+        state = self._run_fetch_source_stage(state)
+        state = self._run_transcribe_stage(state)
+        state = self._run_translate_stage(state)
+        state = self._run_persist_stage(state)
+
+        video = _require_stage_value(state.video, "video")
+        source = _require_stage_value(state.source, "source")
+        transcript = _require_stage_value(state.transcript, "transcript")
+        translation_zh_segments = _require_stage_value(
+            state.translation_zh_segments, "translation_zh_segments"
+        )
+        content_context_id = _require_stage_value(
+            state.content_context_id, "content_context_id"
+        )
+
+        return JobRunResult(
+            video=video,
+            source_type=source.source_type,
+            transcript_en=transcript,
+            translation_zh_segments=translation_zh_segments,
+            content_context_id=content_context_id,
+        )
+
+    def _run_inspect_stage(self, state: JobRunPipelineState) -> JobRunPipelineState:
+        output = self._run_stage(
+            stage="inspect",
+            progress_value=12,
+            progress_text="正在解析视频信息...",
+            timeout_sec=self._context.stage_timeouts.inspect,
+            func=self._inspect_stage,
+        )
+        return replace(state, video_info=output.video_info, video=output.video)
+
+    def _inspect_stage(self) -> InspectStageOutput:
+        video_info = extract_video_info(self._context.url)
+        video = build_video_metadata(video_info)
+        logger.info("Loaded metadata for %s (%s)", video.video_id, video.title)
+        _ensure_video_duration_within_limit(video)
+        return InspectStageOutput(video_info=video_info, video=video)
+
+    def _run_fetch_source_stage(self, state: JobRunPipelineState) -> JobRunPipelineState:
+        video_info = _require_stage_value(state.video_info, "video_info")
+        output = self._run_stage(
+            stage="fetch_source",
+            progress_value=25,
+            progress_text="正在提取字幕或音频...",
+            timeout_sec=self._context.stage_timeouts.fetch_source,
+            func=lambda: self._fetch_source_stage(video_info),
+        )
+        return replace(state, source=output.source)
+
+    def _fetch_source_stage(self, video_info: dict[str, object]) -> FetchSourceStageOutput:
+        source = fetch_video_source_from_info(
+            self._context.url,
+            video_info,
+            source_mode=self._context.source_mode,
+        )
+        logger.info("Selected source type %s for %s", source.source_type, video_info.get("id"))
+        if source.source_type == "audio" and source.audio_file_path:
+            _ensure_audio_file_within_limit(source.audio_file_path)
+        return FetchSourceStageOutput(source=source)
+
+    def _run_transcribe_stage(self, state: JobRunPipelineState) -> JobRunPipelineState:
+        source = _require_stage_value(state.source, "source")
+        progress_text = (
+            "检测到字幕，正在整理文本..."
+            if source.source_type == "captions"
+            else "正在进行本地转录..."
+        )
+        output = self._run_stage(
+            stage="transcribe",
+            progress_value=45,
+            progress_text=progress_text,
+            timeout_sec=self._context.stage_timeouts.transcribe,
+            func=lambda: self._transcribe_stage(state),
+        )
+        return replace(state, transcript=output.transcript)
+
+    def _transcribe_stage(self, state: JobRunPipelineState) -> TranscribeStageOutput:
+        source = _require_stage_value(state.source, "source")
+        video = _require_stage_value(state.video, "video")
+        _raise_if_cancelled(self._context.cancellation_checker)
+        transcript = _load_cached_material_transcript(self._context.url, source)
+        if transcript is None:
+            transcript = _run_transcribe_stage(
+                source=source,
+                timeout_sec=self._context.stage_timeouts.transcribe,
+                cancellation_checker=self._context.cancellation_checker,
+            )
+            _raise_if_cancelled(self._context.cancellation_checker)
+            _store_cached_material_transcript(self._context.url, source, transcript)
+        else:
+            logger.info(
+                "Using cached transcript material for %s (source=%s)",
+                self._context.url,
+                source.source_type,
+            )
+
+        _raise_if_cancelled(self._context.cancellation_checker)
+        if _job_run_should_attach_speakers():
+            transcript = _maybe_attach_speakers(
+                video=video,
+                source=source,
+                transcript=transcript,
+            )
+        else:
+            logger.info(
+                "Skipping speaker attachment during main job run for %s",
+                video.video_id,
+            )
+
+        _raise_if_cancelled(self._context.cancellation_checker)
+        if _should_compact_transcript_for_translation(source.source_type, transcript):
+            compacted_transcript = _compact_transcript_segments(transcript)
+            if len(compacted_transcript.segments) < len(transcript.segments):
+                logger.info(
+                    "Compacted transcript segments for translation from %s to %s for %s",
+                    len(transcript.segments),
+                    len(compacted_transcript.segments),
+                    video.video_id,
+                )
+                transcript = compacted_transcript
+
+        _ensure_transcript_within_limits(transcript)
+        logger.info(
+            "Prepared English transcript with %s segments for %s",
+            len(transcript.segments),
+            video.video_id,
+        )
+        return TranscribeStageOutput(transcript=transcript)
+
+    def _run_translate_stage(self, state: JobRunPipelineState) -> JobRunPipelineState:
+        transcript = _require_stage_value(state.transcript, "transcript")
+        output = self._run_stage(
+            stage="translate",
+            progress_value=70,
+            progress_text="正在翻译中文字幕...",
+            timeout_sec=self._context.stage_timeouts.translate,
+            func=lambda: self._translate_stage(transcript),
+        )
+        return replace(
+            state,
+            translation_zh_segments=output.translation_zh_segments,
+            translation_zh_text=output.translation_zh_text,
+        )
+
+    def _translate_stage(self, transcript: TranscriptionResult) -> TranslateStageOutput:
+        _raise_if_cancelled(self._context.cancellation_checker)
+        translations = translate_segments_to_chinese(
+            [
+                {
+                    "index": segment.index,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                }
+                for segment in transcript.segments
+            ],
+            translation_config=self._context.translation_config,
+        )
+        logger.info(
+            "Translated %s segments for %s",
+            len(translations),
+            self._context.url,
+        )
+        raw_translation_text = _translation_segments_to_text(translations)
+        clean_result = clean_transcript(raw_translation_text)
+        logger.info(
+            "Cleaned translation: %s fillers, %s markers, %s duplicates removed",
+            clean_result.removed_filler_count,
+            clean_result.removed_marker_count,
+            clean_result.removed_duplicate_count,
+        )
+        return TranslateStageOutput(
+            translation_zh_segments=translations,
+            translation_zh_text=clean_result.cleaned_text,
+        )
+
+    def _run_persist_stage(self, state: JobRunPipelineState) -> JobRunPipelineState:
+        output = self._run_stage(
+            stage="persist",
+            progress_value=85,
+            progress_text="正在生成内容上下文...",
+            timeout_sec=self._context.stage_timeouts.persist,
+            func=lambda: self._persist_stage(state),
+        )
+        return replace(state, content_context_id=output.content_context_id)
+
+    def _persist_stage(self, state: JobRunPipelineState) -> PersistStageOutput:
+        video = _require_stage_value(state.video, "video")
+        source = _require_stage_value(state.source, "source")
+        transcript = _require_stage_value(state.transcript, "transcript")
+        translation_zh_text = _require_stage_value(
+            state.translation_zh_text, "translation_zh_text"
+        )
+        content_context_id = create_content_context(
+            video_id=video.video_id,
+            video_url=self._context.url,
+            video_title=video.title,
+            video_duration_sec=video.duration_sec,
+            video_uploader=video.uploader,
+            video_thumbnail=video.thumbnail,
+            source_type=source.source_type,
+            transcript_en=transcript.text,
+            translation_zh=translation_zh_text,
+        )
+        return PersistStageOutput(content_context_id=content_context_id)
+
+    def _run_stage(
+        self,
+        *,
+        stage: JobStage,
+        progress_value: int,
+        progress_text: str,
+        timeout_sec: int,
+        func: Callable[[], StageOutputT],
+    ) -> StageOutputT:
+        _raise_if_cancelled(self._context.cancellation_checker)
+        self._context.progress_callback(stage, progress_value, progress_text)
+        _raise_if_cancelled(self._context.cancellation_checker)
+        return _run_stage_with_timeout(
+            stage=stage,
+            timeout_sec=timeout_sec,
+            func=func,
+            cancellation_checker=self._context.cancellation_checker,
+        )
+
+
+
 def run_video_job(
     url: str,
     source_mode: SourceMode = SOURCE_MODE_SUBTITLE_FIRST,
@@ -125,132 +423,17 @@ def run_video_job_with_translation_config(
 ) -> JobRunResult:
     logger.info("Starting job run for %s", url)
     timeouts = _resolve_stage_timeouts(stage_timeout_seconds)
-    emit_progress = progress_callback or _noop_progress
-    _raise_if_cancelled(cancellation_checker)
-
-    emit_progress("inspect", 12, "正在解析视频信息...")
-    video_info = _run_stage_with_timeout(
-        stage="inspect",
-        timeout_sec=timeouts.inspect,
-        func=extract_video_info,
-        args=[url],
-        cancellation_checker=cancellation_checker,
-    )
-    video = build_video_metadata(video_info)
-    logger.info("Loaded metadata for %s (%s)", video.video_id, video.title)
-
-    emit_progress("fetch_source", 25, "正在提取字幕或音频...")
-    source = _run_stage_with_timeout(
-        stage="fetch_source",
-        timeout_sec=timeouts.fetch_source,
-        func=fetch_video_source_from_info,
-        args=[url, video_info],
-        source_mode=source_mode,
-        cancellation_checker=cancellation_checker,
-    )
-    logger.info("Selected source type %s for %s", source.source_type, video.video_id)
-
-    emit_progress(
-        "transcribe",
-        45,
-        "检测到字幕，正在整理文本..." if source.source_type == "captions" else "正在进行本地转录...",
-    )
-    transcript = _load_cached_material_transcript(video.video_id, source)
-    if transcript is None:
-        transcript = _run_transcribe_stage(
-            source=source,
-            timeout_sec=timeouts.transcribe,
+    machine = JobRunStageMachine(
+        JobRunStageContext(
+            url=url,
+            translation_config=translation_config,
+            source_mode=source_mode,
+            stage_timeouts=timeouts,
+            progress_callback=progress_callback or _noop_progress,
             cancellation_checker=cancellation_checker,
         )
-        _store_cached_material_transcript(video.video_id, source, transcript)
-    else:
-        logger.info(
-            "Using cached transcript material for %s (source=%s)",
-            video.video_id,
-            source.source_type,
-        )
-    if _job_run_should_attach_speakers():
-        transcript = _maybe_attach_speakers(
-            video=video, source=source, transcript=transcript
-        )
-    else:
-        logger.info(
-            "Skipping speaker attachment during main job run for %s", video.video_id
-        )
-
-    if _should_compact_transcript_for_translation(source.source_type, transcript):
-        compacted_transcript = _compact_transcript_segments(transcript)
-        if len(compacted_transcript.segments) < len(transcript.segments):
-            logger.info(
-                "Compacted transcript segments for translation from %s to %s for %s",
-                len(transcript.segments),
-                len(compacted_transcript.segments),
-                video.video_id,
-            )
-            transcript = compacted_transcript
-
-    logger.info(
-        "Prepared English transcript with %s segments for %s",
-        len(transcript.segments),
-        video.video_id,
     )
-
-    emit_progress("translate", 70, "正在翻译中文字幕...")
-    _raise_if_cancelled(cancellation_checker)
-    translations = _run_stage_with_timeout(
-        stage="translate",
-        timeout_sec=timeouts.translate,
-        func=translate_segments_to_chinese,
-        args=[
-            [
-                {
-                    "index": segment.index,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text,
-                }
-                for segment in transcript.segments
-            ]
-        ],
-        translation_config=translation_config,
-        cancellation_checker=cancellation_checker,
-    )
-    logger.info(
-        "Translated %s segments for %s",
-        len(translations),
-        video.video_id,
-    )
-
-    # Clean transcript before persisting
-    raw_translation_text = _translation_segments_to_text(translations)
-    clean_result = clean_transcript(raw_translation_text)
-    logger.info(
-        "Cleaned transcript: %s fillers, %s markers, %s duplicates removed",
-        clean_result.removed_filler_count,
-        clean_result.removed_marker_count,
-        clean_result.removed_duplicate_count,
-    )
-
-    content_context_id = create_content_context(
-        video_id=video.video_id,
-        video_url=url,
-        video_title=video.title,
-        video_duration_sec=video.duration_sec,
-        video_uploader=video.uploader,
-        video_thumbnail=video.thumbnail,
-        source_type=source.source_type,
-        transcript_en=transcript.text,
-        translation_zh=clean_result.cleaned_text,
-    )
-    _raise_if_cancelled(cancellation_checker)
-
-    return JobRunResult(
-        video=video,
-        source_type=source.source_type,
-        transcript_en=transcript,
-        translation_zh_segments=translations,
-        content_context_id=content_context_id,
-    )
+    return machine.run()
 
 
 def _resolve_stage_timeouts(
@@ -267,6 +450,7 @@ def _resolve_stage_timeouts(
         ),
         transcribe=_normalize_positive_timeout(override.get("transcribe"), base.transcribe),
         translate=_normalize_positive_timeout(override.get("translate"), base.translate),
+        persist=_normalize_positive_timeout(override.get("persist"), base.persist),
     )
 
 
@@ -380,6 +564,17 @@ def _run_transcription_process_with_timeout(
 
     if not result.get("ok"):
         detail = str(result.get("error") or "Unknown transcription error.")
+        error_type = str(result.get("error_type") or "").strip()
+        if error_type in {"AudioFileNotFoundError", "TranscriptionConfigurationError"}:
+            raise _map_transcription_error_type(error_type, detail)
+        if error_type == "AudioFileTooLargeError":
+            raise AudioFileTooLargeError(detail)
+        if error_type == "TranscriptTooLongError":
+            raise TranscriptTooLongError(detail)
+        if error_type == "ValueError":
+            raise ValueError(detail)
+        if error_type == "LocalTranscriptionError":
+            raise LocalTranscriptionError(detail)
         raise JobRunError(detail)
 
     payload = result.get("result")
@@ -402,6 +597,7 @@ def _transcribe_audio_worker(audio_file_path: str, result_queue) -> None:
             {
                 "ok": False,
                 "error": str(error),
+                "error_type": error.__class__.__name__,
             }
         )
 
@@ -466,6 +662,12 @@ def _raise_if_cancelled(cancellation_checker: JobCancellationChecker | None) -> 
 
 def _noop_progress(_stage: JobStage, _value: int, _text: str) -> None:
     return
+
+
+def _require_stage_value(value: StageValueT | None, name: str) -> StageValueT:
+    if value is None:
+        raise JobRunError(f"Missing required pipeline value: {name}.")
+    return value
 
 
 def _build_english_transcript(source: VideoSourceResult) -> TranscriptionResult:
@@ -839,3 +1041,69 @@ def _safe_float(value: object) -> float:
         return float(str(value))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _ensure_video_duration_within_limit(video: VideoMetadata) -> None:
+    max_video_duration_sec = get_settings().max_video_duration_sec
+    if max_video_duration_sec <= 0:
+        return
+
+    duration_sec = video.duration_sec
+    if duration_sec is None:
+        return
+
+    if duration_sec > max_video_duration_sec:
+        raise ValueError(
+            "Video duration is "
+            f"{duration_sec}s, exceeding MAX_VIDEO_DURATION_SEC={max_video_duration_sec}."
+        )
+
+
+def _ensure_audio_file_within_limit(audio_file_path: str) -> None:
+    max_audio_bytes = get_settings().max_audio_bytes
+    if max_audio_bytes <= 0:
+        return
+
+    file_path = _resolve_job_audio_file_path(audio_file_path)
+    if not file_path.exists() or not file_path.is_file():
+        return
+
+    audio_size = file_path.stat().st_size
+    if audio_size > max_audio_bytes:
+        raise ValueError(
+            "Audio file is "
+            f"{audio_size} bytes, exceeding MAX_AUDIO_BYTES={max_audio_bytes}."
+        )
+
+
+def _ensure_transcript_within_limits(transcript: TranscriptionResult) -> None:
+    max_transcript_chars = get_settings().max_transcript_chars
+    if max_transcript_chars > 0 and len(transcript.text.strip()) > max_transcript_chars:
+        raise ValueError(
+            "Transcript is "
+            f"{len(transcript.text.strip())} characters, exceeding MAX_TRANSCRIPT_CHARS={max_transcript_chars}."
+        )
+
+    max_translation_segments = get_settings().max_translation_segments
+    if max_translation_segments > 0 and len(transcript.segments) > max_translation_segments:
+        raise ValueError(
+            "Transcript has "
+            f"{len(transcript.segments)} segments, exceeding MAX_TRANSLATION_SEGMENTS={max_translation_segments}."
+        )
+
+
+def _map_transcription_error_type(error_type: str, detail: str) -> Exception:
+    if error_type == "AudioFileNotFoundError":
+        return AudioFileNotFoundError(detail)
+    if error_type == "TranscriptionConfigurationError":
+        return TranscriptionConfigurationError(detail)
+    if error_type == "LocalTranscriptionError":
+        return LocalTranscriptionError(detail)
+    return JobRunError(detail)
+
+
+def _resolve_job_audio_file_path(audio_file_path: str) -> Path:
+    raw_path = Path(audio_file_path)
+    if raw_path.is_absolute():
+        return raw_path.resolve()
+    return (ROOT_DIR / raw_path).resolve()

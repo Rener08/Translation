@@ -22,6 +22,23 @@ from app.services.translation_service import (
 client = TestClient(app)
 
 
+def _assert_error_response(
+    response,
+    *,
+    status_code: int,
+    error_code: str,
+    retryable: bool,
+    detail: str,
+) -> None:
+    assert response.status_code == status_code
+    body = response.json()
+    assert set(body) == {"detail", "error_code", "retryable", "request_id"}
+    assert body["detail"] == detail
+    assert body["error_code"] == error_code
+    assert body["retryable"] is retryable
+    assert body["request_id"] == response.headers["x-request-id"]
+
+
 def test_inspect_video_metadata_extracts_fields(monkeypatch) -> None:
     captured_command: list[str] = []
 
@@ -242,10 +259,13 @@ def test_inspect_video_endpoint_returns_install_error(monkeypatch) -> None:
         json={"url": "https://www.youtube.com/watch?v=abc123xyz"},
     )
 
-    assert response.status_code == 500
-    assert response.json() == {
-        "detail": "yt-dlp is not installed. Install it with `python -m pip install yt-dlp`."
-    }
+    _assert_error_response(
+        response,
+        status_code=500,
+        error_code="CONFIGURATION_ERROR",
+        retryable=False,
+        detail="yt-dlp is not installed. Install it with `python -m pip install yt-dlp`.",
+    )
 
 
 def test_inspect_video_endpoint_returns_yt_dlp_failure(monkeypatch) -> None:
@@ -259,10 +279,13 @@ def test_inspect_video_endpoint_returns_yt_dlp_failure(monkeypatch) -> None:
         json={"url": "https://www.youtube.com/watch?v=abc123xyz"},
     )
 
-    assert response.status_code == 502
-    assert response.json() == {
-        "detail": "Failed to inspect video metadata: Video unavailable",
-    }
+    _assert_error_response(
+        response,
+        status_code=502,
+        error_code="UPSTREAM_ERROR",
+        retryable=True,
+        detail="Failed to inspect video metadata: Video unavailable",
+    )
 
 
 def test_provider_models_returns_configuration_error(monkeypatch) -> None:
@@ -276,8 +299,13 @@ def test_provider_models_returns_configuration_error(monkeypatch) -> None:
         json={"provider": "openai"},
     )
 
-    assert response.status_code == 500
-    assert response.json() == {"detail": "Missing provider config"}
+    _assert_error_response(
+        response,
+        status_code=500,
+        error_code="CONFIGURATION_ERROR",
+        retryable=False,
+        detail="Missing provider config",
+    )
 
 
 def test_provider_models_returns_provider_error(monkeypatch) -> None:
@@ -291,5 +319,10 @@ def test_provider_models_returns_provider_error(monkeypatch) -> None:
         json={"provider": "openai"},
     )
 
-    assert response.status_code == 502
-    assert response.json() == {"detail": "Upstream provider failed"}
+    _assert_error_response(
+        response,
+        status_code=502,
+        error_code="UPSTREAM_ERROR",
+        retryable=True,
+        detail="Upstream provider failed",
+    )

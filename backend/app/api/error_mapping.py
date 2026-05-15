@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
+from typing import Any
 
 from fastapi import HTTPException
 
@@ -33,6 +35,67 @@ class ErrorClassification:
     error_code: str
     retryable: bool
     detail: str
+
+
+def build_error_payload(
+    *,
+    detail: str,
+    error_code: str,
+    retryable: bool,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "detail": detail,
+        "error_code": error_code,
+        "retryable": retryable,
+    }
+    if request_id is not None:
+        payload["request_id"] = request_id
+    return payload
+
+
+def default_error_code_for_status(status_code: int) -> str:
+    if status_code == 400:
+        return "INVALID_REQUEST"
+    if status_code == 401:
+        return "UNAUTHORIZED"
+    if status_code == 403:
+        return "FORBIDDEN"
+    if status_code == 404:
+        return "NOT_FOUND"
+    if status_code == 409:
+        return "CONFLICT"
+    if status_code == 422:
+        return "VALIDATION_ERROR"
+    if status_code == 429:
+        return "RATE_LIMITED"
+    if status_code == 503:
+        return "SERVICE_UNAVAILABLE"
+    if status_code >= 500:
+        return "INTERNAL_ERROR"
+    return "UNEXPECTED_ERROR"
+
+
+def default_retryable_for_status(status_code: int) -> bool:
+    return status_code in {429, 502, 503}
+
+
+def normalize_http_exception_detail(detail: object, status_code: int) -> tuple[str, str, bool]:
+    if isinstance(detail, dict):
+        if {"detail", "error_code", "retryable"} <= detail.keys():
+            return (
+                str(detail["detail"]),
+                str(detail["error_code"]),
+                bool(detail["retryable"]),
+            )
+        raw_detail = detail.get("detail") or detail.get("message") or detail.get("status") or detail
+        error_code = str(detail.get("error_code") or default_error_code_for_status(status_code))
+        if "retryable" in detail:
+            retryable = bool(detail["retryable"])
+        else:
+            retryable = default_retryable_for_status(status_code)
+        return _stringify_detail(raw_detail), error_code, retryable
+    return _stringify_detail(detail), default_error_code_for_status(status_code), default_retryable_for_status(status_code)
 
 
 def classify_service_error(error: Exception) -> ErrorClassification:
@@ -96,4 +159,22 @@ def classify_service_error(error: Exception) -> ErrorClassification:
 
 def raise_mapped_http_exception(error: Exception) -> None:
     classification = classify_service_error(error)
-    raise HTTPException(status_code=classification.status_code, detail=classification.detail) from error
+    raise HTTPException(
+        status_code=classification.status_code,
+        detail=build_error_payload(
+            detail=classification.detail,
+            error_code=classification.error_code,
+            retryable=classification.retryable,
+        ),
+    ) from error
+
+
+def _stringify_detail(detail: object) -> str:
+    if isinstance(detail, str):
+        return detail
+    if isinstance(detail, (dict, list, tuple)):
+        try:
+            return json.dumps(detail, ensure_ascii=False)
+        except TypeError:
+            pass
+    return str(detail)

@@ -100,10 +100,31 @@ Current local setup uses:
 - `YTDLP_COOKIES_FILE`: optional cookies.txt path for yt-dlp
 - `YTDLP_ENABLE_DEFAULT_COOKIES_FILE`: whether backend auto-loads repo `youtube-cookies.txt` (default `0`)
 - `YTDLP_REMOTE_COMPONENTS`: optional `yt-dlp` remote components flag, for example `ejs:github`
+- `YTDLP_SUBPROCESS_TIMEOUT_SEC`: timeout for yt-dlp audio and subtitle subprocesses
+- `MAX_VIDEO_DURATION_SEC`: reject videos longer than this before job ingest continues
+- `MAX_AUDIO_BYTES`: reject downloaded audio files above this size before transcription
+- `MAX_TRANSCRIPT_CHARS`: reject transcript text above this length before translation
+- `MAX_TRANSLATION_SEGMENTS`: reject transcript segment counts above this limit before translation
 - `API_AUTH_TOKEN`: optional shared secret; when set, **every** `/api/*` request must send `Authorization: Bearer <token>` or header `x-api-token`
 - `API_RATE_LIMIT_PER_MINUTE`: write-request rate limit per client IP (POST/PUT/PATCH/DELETE)
+- `DEPLOYMENT_PROFILE`: use `production` to require `API_AUTH_TOKEN` at startup and disable the localhost CORS defaults
+- `CORS_ALLOWED_ORIGINS`: explicit comma-separated browser origins for production or custom deployments; leave empty for same-origin deployments
+- `ACCOUNT_DAILY_REQUEST_LIMIT`: per-account limit for mutating API requests; `0` disables the check
+- `ACCOUNT_MAX_CONCURRENT_JOBS`: per-account limit for queued/running jobs accepted by `/api/jobs/run`; `0` disables the check
+- `ACCOUNT_MAX_HISTORY_SESSIONS`: per-account limit for persisted session history records accepted by `/api/jobs/run`; `0` disables the check
+- `ACCOUNT_QUOTA_DB_PATH`: SQLite file path for per-account daily request counters (`tmp/account_quota.sqlite` by default)
 - `JOB_QUEUE_DB_PATH`: SQLite file path for persisted async job records (`tmp/job_queue.sqlite` by default)
+- `JOB_QUEUE_LEASE_SECONDS`: lease duration for claimed jobs before another worker can reclaim them
+- `JOB_QUEUE_HEARTBEAT_SECONDS`: how often a running worker renews its job lease
 - `TRUST_PROXY_HEADERS`: set to `1` only when behind a trusted reverse proxy so client IP comes from `X-Forwarded-For` / `X-Real-IP`
+
+Account identity is derived from request headers in this order:
+
+- `X-User-Id` plus `X-Workspace-Id`
+- `X-User-Id`
+- `X-Workspace-Id`
+- validated API token fingerprint
+- anonymous fallback based on the client IP, with a stable `anonymous-localhost` identity for local development
 
 **Note:** Liveness and readiness routes are **`/health`**, **`/readyz`**, and **`/livez`** (they do **not** use the `/api` prefix and are **not** covered by `API_AUTH_TOKEN`). Configure your reverse proxy accordingly.
 
@@ -152,6 +173,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 The backend uses `yt-dlp` for video inspection and audio download.
 Remote components are opt-in through `YTDLP_REMOTE_COMPONENTS`; leave it empty unless you explicitly need them.
+Audio and subtitle fallback subprocesses use `YTDLP_SUBPROCESS_TIMEOUT_SEC`, while the main job flow enforces the `MAX_*` limits above before Whisper or translation work starts.
 
 Install backend dependencies inside the project virtual environment:
 
@@ -397,9 +419,9 @@ Job orchestration notes:
 - Metadata and source selection share the same `yt-dlp` inspection payload, so the job does not inspect the same video twice.
 - The pipeline prefers English captions. If captions are unavailable, it downloads audio to `tmp/`, transcribes in English, then translates to Simplified Chinese.
 - The job request can include `translation_config` so the UI can switch between OpenAI and DeepSeek without editing backend files.
-- `POST /api/jobs/run` submits the full metadata -> source -> transcript -> translation flow to an in-memory job queue and returns immediately with `202 Accepted`.
+- `POST /api/jobs/run` submits the full metadata -> source -> transcript -> translation flow to the current in-memory worker queue, while job records are still persisted to SQLite for status recovery.
 - `GET /api/jobs/{job_id}` polls job progress. `done` responses include `result`, and `failed` responses include `error`.
-- The queue is in-memory and designed for local single-process development. Restarting the backend drops queued and running job state.
+- The execution queue is still in-memory and designed for local single-process development. Restarting the backend drops queued and running work, even though persisted job records remain on disk.
 
 Run tests:
 
@@ -535,7 +557,7 @@ Web frontend loop for component development:
 - Includes `POST /api/jobs/{job_id}/cancel`
 - Includes `POST /api/provider/test-connection`
 - Includes `GET /api/system/export-logs`
-- Uses an in-memory queue for async job runs and `GET /api/jobs/{job_id}` polling
+- Uses in-memory workers for async job runs and `GET /api/jobs/{job_id}` polling, with SQLite-backed job records
 - Supports `youtube.com/watch?v=...`
 - Supports `youtu.be/...`
 - Supports extra query parameters and normalizes the URL

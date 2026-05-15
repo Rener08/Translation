@@ -4,14 +4,17 @@ from pathlib import Path
 import httpx
 from fastapi.testclient import TestClient
 
+from app.config import get_settings
 from app.main import app
 from app.services.audio_download_service import (
     AudioDownloadError,
+    AudioDownloadTimeoutError,
     AudioDownloadResult,
     download_audio,
 )
 from app.services.caption_service import (
     CaptionServiceError,
+    CaptionDownloadTimeoutError,
     CaptionResult,
     fetch_best_english_captions,
 )
@@ -226,6 +229,67 @@ def test_download_audio_normalizes_cookie_database_failure(
         )
     else:
         raise AssertionError("Expected AudioDownloadError")
+
+
+def test_download_audio_times_out(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("YTDLP_SUBPROCESS_TIMEOUT_SEC", "1")
+    get_settings.cache_clear()
+    captured_command: list[str] = []
+
+    def fake_run(*args, **kwargs):
+        captured_command.extend(args[0])
+        assert kwargs["timeout"] == 1
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=1)
+
+    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+
+    try:
+        download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
+    except AudioDownloadTimeoutError as error:
+        assert "timed out" in str(error).lower()
+        assert "--print" in captured_command
+    else:
+        raise AssertionError("Expected AudioDownloadTimeoutError")
+
+
+def test_fetch_best_english_captions_times_out_via_yt_dlp_fallback(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("YTDLP_SUBPROCESS_TIMEOUT_SEC", "1")
+    get_settings.cache_clear()
+
+    def fake_get(url: str, **kwargs):
+        raise httpx.ReadTimeout(
+            "timed out",
+            request=httpx.Request("GET", url),
+        )
+
+    def fake_run(*args, **kwargs):
+        assert kwargs["timeout"] == 1
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=1)
+
+    monkeypatch.setattr("app.services.caption_service.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.caption_service.subprocess.run", fake_run)
+
+    try:
+        fetch_best_english_captions(
+            {
+                "id": "abc123xyz",
+                "subtitles": {
+                    "en": [
+                        {
+                            "ext": "srv3",
+                            "url": "https://www.youtube.com/api/timedtext?v=abc123xyz&lang=en",
+                        }
+                    ]
+                },
+                "automatic_captions": {},
+            }
+        )
+    except CaptionDownloadTimeoutError as error:
+        assert "timed out" in str(error).lower()
+    else:
+        raise AssertionError("Expected CaptionDownloadTimeoutError")
 
 
 def test_fetch_video_source_prefers_captions_when_available(monkeypatch) -> None:

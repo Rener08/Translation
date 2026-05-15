@@ -41,6 +41,33 @@ DETAIL_LEDGER_STRONG_ENTITY_TOKENS = {
     "nasa", "spacex", "openai", "deepseek", "youtube", "chatgpt",
     "ollama", "lmstudio", "lm studio",
 }
+DETAIL_LEDGER_THEME_MAX_ITEMS = 6
+DETAIL_LEDGER_THEME_SPECS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "AI安全与可解释性",
+        ("安全", "可解释性", "对齐", "alignment", "interpretability", "explainability", "mri", "神经网络"),
+    ),
+    (
+        "内部财务实践",
+        ("财务", "claude", "mfr", "报表", "internal finance", "ant stats", "月度财务", "法定财务", "30分钟", "70多项"),
+    ),
+    (
+        "模型发布与安全边界",
+        ("发布", "分阶段", "网络安全", "安全能力", "cyber", "漏洞", "red team", "250", "22"),
+    ),
+    (
+        "企业隐私承诺",
+        ("企业数据", "隐私", "不训练", "不使用", "customer data", "sensitive", "confidential", "客户数据"),
+    ),
+    (
+        "算力部署与合作",
+        ("算力", "gigawatt", "tpu", "trainium", "gpu", "google", "amazon", "spacex", "colossus", "5gw", "5 gigawatt", "2027"),
+    ),
+    (
+        "政府与监管",
+        ("政府", "监管", "国防", "america first", "pre-approval", "approval", "policy", "美国优先", "民主盟友"),
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -59,12 +86,20 @@ class DetailLedger:
             return "未提取到可单独保留的细节，请优先保留原文顺序和口吻。"
 
         exact_items = [item for item in self.items if item.preserve_exact][:limit]
+        theme_items = [
+            item for item in self.items
+            if not item.preserve_exact and item.kind == "主题脉络"
+        ][:limit]
         soft_items = [item for item in self.items if not item.preserve_exact][:limit]
+        soft_items = [item for item in soft_items if item.kind != "主题脉络"][:limit]
 
         lines: list[str] = []
         if exact_items:
             lines.append("【必须保留】")
             lines.extend(f"- {item.kind}: {item.text}" for item in exact_items)
+        if theme_items:
+            lines.append("【主题脉络】")
+            lines.extend(f"- {item.kind}: {item.text}" for item in theme_items)
         if soft_items:
             lines.append("【优先保留】")
             lines.extend(f"- {item.kind}: {item.text}" for item in soft_items)
@@ -108,6 +143,39 @@ def build_detail_ledger(source_text: str) -> DetailLedger:
                 break
 
     return DetailLedger(items=tuple(items))
+
+
+def build_longform_topic_ledger(source_text: str) -> DetailLedger:
+    normalized_source = (source_text or "").strip()
+    if not normalized_source:
+        return DetailLedger(items=())
+
+    fragments = _split_detail_fragments(normalized_source)
+    items: list[DetailLedgerItem] = []
+    seen: set[tuple[str, str]] = set()
+
+    for label, keywords in DETAIL_LEDGER_THEME_SPECS:
+        theme_fragment = _find_theme_fragment(normalized_source, fragments, keywords)
+        if not theme_fragment:
+            continue
+        _append_detail_item(
+            items,
+            seen,
+            DetailLedgerItem(kind="主题脉络", text=f"{label}: {theme_fragment}", preserve_exact=False),
+        )
+        if len(items) >= DETAIL_LEDGER_THEME_MAX_ITEMS:
+            break
+
+    return DetailLedger(items=tuple(items))
+
+
+def merge_detail_ledgers(*ledgers: DetailLedger) -> DetailLedger:
+    items: list[DetailLedgerItem] = []
+    seen: set[tuple[str, str]] = set()
+    for ledger in ledgers:
+        for item in ledger.items:
+            _append_detail_item(items, seen, item)
+    return DetailLedger(items=tuple(items[:DETAIL_LEDGER_MAX_ITEMS]))
 
 
 def analyze_detail_coverage(
@@ -379,6 +447,29 @@ def _find_detail_fragments(source_text: str) -> tuple[str, ...]:
         if len(fragments) >= 4:
             break
     return tuple(fragments)
+
+
+def _find_theme_fragment(
+    source_text: str,
+    fragments: list[str],
+    keywords: tuple[str, ...],
+) -> str:
+    lowered_keywords = tuple(keyword.lower() for keyword in keywords)
+    for fragment in fragments:
+        lowered_fragment = fragment.lower()
+        if any(keyword in lowered_fragment for keyword in lowered_keywords):
+            return _trim_detail_text(fragment, DETAIL_LEDGER_FRAGMENT_LIMIT)
+
+    for fragment in _split_detail_fragments(source_text):
+        lowered_fragment = fragment.lower()
+        if any(keyword in lowered_fragment for keyword in lowered_keywords):
+            return _trim_detail_text(fragment, DETAIL_LEDGER_FRAGMENT_LIMIT)
+
+    for keyword in keywords:
+        if keyword.lower() in source_text.lower():
+            return _trim_detail_text(keyword, DETAIL_LEDGER_FRAGMENT_LIMIT)
+
+    return ""
 
 
 def _split_detail_fragments(source_text: str) -> list[str]:
