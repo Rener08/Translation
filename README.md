@@ -23,45 +23,7 @@ Rewrite precedence is explicit:
 
 ## Project Structure
 
-```text
-.
-|-- backend/
-|   |-- app/
-|   |   |-- main.py
-|   |   |-- services/
-|   |   |   |-- audio_download_service.py
-|   |   |   |-- caption_service.py
-|   |   |   |-- job_run_service.py
-|   |   |   |-- translation_service.py
-|   |   |   |-- transcription_service.py
-|   |   |   |-- video_source_service.py
-|   |   |   `-- yt_dlp_service.py
-|   |   `-- youtube.py
-|   |-- requirements.txt
-|   |-- tests/
-|   |   |-- test_fetch_source.py
-|   |   |-- test_jobs_run.py
-|   |   |-- test_translate.py
-|   |   |-- test_transcribe.py
-|   |   |-- test_video_inspect.py
-|   |   `-- test_youtube.py
-|   `-- uvicorn.cmd
-|-- frontend/
-|   |-- app/
-|   |   |-- components/
-|   |   |-- lib/
-|   |   |-- globals.css
-|   |   |-- layout.tsx
-|   |   `-- page.tsx
-|   |-- next-env.d.ts
-|   |-- next.config.ts
-|   |-- npm.cmd
-|   |-- package-lock.json
-|   |-- package.json
-|   `-- tsconfig.json
-|-- .env.example
-`-- README.md
-```
+详见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。后端服务层见 `backend/app/services/`（35+ 个 service 文件）。
 
 Local generated files created during setup or runtime, not source directories:
 
@@ -505,6 +467,14 @@ docker compose up --build
 
 - frontend: [http://localhost:3000](http://localhost:3000)
 - backend: [http://localhost:8000/health](http://localhost:8000/health)
+
+## 部署注意事项
+
+后端限流基于单进程内存，**必须以单 worker 运行**：
+- uvicorn: `uvicorn app.main:app --workers 1`（默认即单 worker）
+- Docker: 使用提供的 `docker-compose.yml`，已配置单容器
+
+多 worker 或多容器部署会导致限流失效。
 
 Writing styles are local prompt files in `skills/`.
 

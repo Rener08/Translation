@@ -138,7 +138,7 @@ def test_run_video_job_uses_caption_source_without_transcription(monkeypatch) ->
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file", fail_transcribe
+        "app.services.job_run_transcript.transcribe_audio_file", fail_transcribe
     )
     monkeypatch.setattr(
         "app.services.job_run_service._maybe_attach_speakers",
@@ -234,24 +234,6 @@ def test_run_video_job_transcribes_audio_source(monkeypatch) -> None:
             ],
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        assert segments == [
-            {"index": 0, "start": 0.0, "end": 1.5, "text": "Hello everyone."}
-        ]
-        assert translation_config is None
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=1.5,
-                source_text="Hello everyone.",
-                translated_text="\u5927\u5bb6\u597d\u3002",
-            )
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
@@ -259,12 +241,8 @@ def test_run_video_job_transcribes_audio_source(monkeypatch) -> None:
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fake_transcribe,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
     )
 
     result = run_video_job("https://www.youtube.com/watch?v=abc123xyz")
@@ -272,9 +250,7 @@ def test_run_video_job_transcribes_audio_source(monkeypatch) -> None:
     assert result.source_type == "audio"
     assert result.transcript_en.text == "Hello everyone."
     assert result.transcript_en.segments[0].speaker is None
-    assert (
-        result.translation_zh_segments[0].translated_text == "\u5927\u5bb6\u597d\u3002"
-    )
+    assert result.translation_zh_segments == []
     assert result.content_context_id
 
 
@@ -321,7 +297,7 @@ def test_run_video_job_rejects_oversized_audio_before_transcription(
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fail_transcribe,
     )
 
@@ -424,20 +400,6 @@ def test_run_video_job_with_translation_config_forwards_force_audio_mode(
             ],
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=1.0,
-                source_text="Audio transcript",
-                translated_text="\u97f3\u9891\u8f6c\u5f55",
-            )
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
@@ -445,12 +407,8 @@ def test_run_video_job_with_translation_config_forwards_force_audio_mode(
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fake_transcribe,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
     )
 
     result = run_video_job_with_translation_config(
@@ -496,29 +454,6 @@ def test_run_video_job_falls_back_to_single_segment_when_transcript_has_no_segme
             segments=[],
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        assert segments == [
-            {
-                "index": 0,
-                "start": 0.0,
-                "end": 0.0,
-                "text": "One full transcript block.",
-            }
-        ]
-        assert translation_config is None
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=0.0,
-                source_text="One full transcript block.",
-                translated_text="\u4e00\u6574\u6bb5\u82f1\u6587\u8f6c\u5f55\u3002",
-            )
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
@@ -526,16 +461,12 @@ def test_run_video_job_falls_back_to_single_segment_when_transcript_has_no_segme
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fake_transcribe,
     )
     monkeypatch.setattr(
         "app.services.job_run_service._maybe_attach_speakers",
         lambda video, source, transcript: transcript,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
     )
 
     result = run_video_job("https://www.youtube.com/watch?v=abc123xyz")
@@ -571,36 +502,11 @@ def test_run_video_job_forwards_translation_config(monkeypatch) -> None:
             text="Hello everyone.",
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        assert translation_config == {
-            "provider": "deepseek",
-            "api_key": "deepseek-demo-key",
-            "base_url": "https://api.deepseek.com",
-            "model": "deepseek-chat",
-            "extra_headers": {"X-Test-Header": "demo"},
-        }
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=0.0,
-                source_text="Hello everyone.",
-                translated_text="\u5927\u5bb6\u597d\u3002",
-            )
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
         "app.services.job_run_service.fetch_video_source_from_info",
         fake_source,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
     )
     monkeypatch.setattr(
         "app.services.job_run_service._maybe_attach_speakers",
@@ -618,9 +524,7 @@ def test_run_video_job_forwards_translation_config(monkeypatch) -> None:
         },
     )
 
-    assert (
-        result.translation_zh_segments[0].translated_text == "\u5927\u5bb6\u597d\u3002"
-    )
+    assert result.translation_zh_segments == []
 
 
 def test_run_video_job_can_attach_speakers_when_enabled(monkeypatch) -> None:
@@ -680,20 +584,6 @@ def test_run_video_job_can_attach_speakers_when_enabled(monkeypatch) -> None:
             ],
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=1.5,
-                source_text="Hello everyone.",
-                translated_text="\u5927\u5bb6\u597d\u3002",
-            )
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
@@ -701,16 +591,12 @@ def test_run_video_job_can_attach_speakers_when_enabled(monkeypatch) -> None:
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fake_transcribe,
     )
     monkeypatch.setattr(
         "app.services.job_run_service._maybe_attach_speakers",
         fake_attach,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
     )
 
     result = run_video_job("https://www.youtube.com/watch?v=abc123xyz")
@@ -741,24 +627,6 @@ def test_run_video_job_merges_caption_lines_before_translation(monkeypatch) -> N
             text="OpenAI was founded on December 11,\n2015 in San Francisco.\nIt later launched GPT.",
         )
 
-    captured_segments: list[dict[str, object]] = []
-
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        captured_segments.extend(segments)
-        return [
-            TranslationSegment(
-                index=index,
-                start=float(index),
-                end=float(index),
-                source_text=str(segment["text"]),
-                translated_text=f"翻译 {index}",
-            )
-            for index, segment in enumerate(segments)
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
@@ -769,14 +637,10 @@ def test_run_video_job_merges_caption_lines_before_translation(monkeypatch) -> N
         "app.services.job_run_service._maybe_attach_speakers",
         lambda video, source, transcript: transcript,
     )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
-    )
 
     result = run_video_job("https://www.youtube.com/watch?v=abc123xyz")
 
-    assert [segment["text"] for segment in captured_segments] == [
+    assert [seg.text for seg in result.transcript_en.segments] == [
         "OpenAI was founded on December 11, 2015 in San Francisco.",
         "It later launched GPT.",
     ]
@@ -824,20 +688,6 @@ def test_run_video_job_emits_stage_progress_in_order(monkeypatch) -> None:
             ],
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=1.0,
-                source_text="Hello everyone.",
-                translated_text="大家好。",
-            )
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
@@ -845,12 +695,8 @@ def test_run_video_job_emits_stage_progress_in_order(monkeypatch) -> None:
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fake_transcribe,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
     )
     monkeypatch.setattr("app.services.job_run_service._maybe_attach_speakers", lambda video, source, transcript: transcript)
     monkeypatch.setattr("app.services.job_run_service._job_run_should_attach_speakers", lambda: False)
@@ -870,14 +716,12 @@ def test_run_video_job_emits_stage_progress_in_order(monkeypatch) -> None:
         "inspect",
         "fetch_source",
         "transcribe",
-        "translate",
         "persist",
     ]
     assert progress_events == [
         ("inspect", 12, "正在解析视频信息..."),
         ("fetch_source", 25, "正在提取字幕或音频..."),
         ("transcribe", 45, "正在进行本地转录..."),
-        ("translate", 70, "正在翻译中文字幕..."),
         ("persist", 85, "正在生成内容上下文..."),
     ]
     assert result.content_context_id == "ctx-stage-machine"
@@ -887,7 +731,6 @@ def test_run_video_job_cancels_at_stage_boundary_before_translate(monkeypatch) -
     from pytest import raises as pytest_raises
 
     cancelled = {"value": False}
-    translate_called = {"value": False}
 
     def fake_extract(url: str) -> dict[str, object]:
         return {"id": "abc123xyz", "title": "Test video"}
@@ -927,21 +770,6 @@ def test_run_video_job_cancels_at_stage_boundary_before_translate(monkeypatch) -
             ],
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        translate_called["value"] = True
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=1.0,
-                source_text="Hello everyone.",
-                translated_text="大家好。",
-            )
-        ]
-
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr(
@@ -949,12 +777,8 @@ def test_run_video_job_cancels_at_stage_boundary_before_translate(monkeypatch) -
         fake_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fake_transcribe,
-    )
-    monkeypatch.setattr(
-        "app.services.job_run_service.translate_segments_to_chinese",
-        fake_translate,
     )
     monkeypatch.setattr("app.services.job_run_service._maybe_attach_speakers", lambda video, source, transcript: transcript)
     monkeypatch.setattr("app.services.job_run_service._job_run_should_attach_speakers", lambda: False)
@@ -966,7 +790,7 @@ def test_run_video_job_cancels_at_stage_boundary_before_translate(monkeypatch) -
     )
 
     def progress_callback(stage: str, value: int, text: str) -> None:
-        if stage == "translate":
+        if stage == "persist":
             cancelled["value"] = True
 
     with pytest_raises(JobCancelledError):
@@ -975,8 +799,6 @@ def test_run_video_job_cancels_at_stage_boundary_before_translate(monkeypatch) -
             progress_callback=progress_callback,
             cancellation_checker=lambda: cancelled["value"],
         )
-
-    assert translate_called["value"] is False
 
 
 def test_run_video_job_times_out_at_fetch_source_stage(monkeypatch) -> None:
@@ -1018,7 +840,7 @@ def test_run_video_job_times_out_at_fetch_source_stage(monkeypatch) -> None:
         slow_source,
     )
     monkeypatch.setattr(
-        "app.services.job_run_service.transcribe_audio_file",
+        "app.services.job_run_transcript.transcribe_audio_file",
         fail_transcribe,
     )
 
@@ -1733,20 +1555,6 @@ def test_run_video_job_reuses_material_transcript_cache(monkeypatch) -> None:
             segments=[TranscriptSegment(index=0, start=0.0, end=1.0, text="Cached transcript.")],
         )
 
-    def fake_translate(
-        segments: list[dict[str, object]],
-        translation_config: dict[str, object] | None = None,
-    ) -> list[TranslationSegment]:
-        return [
-            TranslationSegment(
-                index=0,
-                start=0.0,
-                end=1.0,
-                source_text="Cached transcript.",
-                translated_text="缓存转录",
-            )
-        ]
-
     def fake_load_json_cache(namespace: str, key: str):
         return cache_store.get(f"{namespace}:{key}")
 
@@ -1756,8 +1564,7 @@ def test_run_video_job_reuses_material_transcript_cache(monkeypatch) -> None:
     monkeypatch.setattr("app.services.job_run_service.extract_video_info", fake_extract)
     monkeypatch.setattr("app.services.job_run_service.build_video_metadata", fake_build)
     monkeypatch.setattr("app.services.job_run_service.fetch_video_source_from_info", fake_source)
-    monkeypatch.setattr("app.services.job_run_service.transcribe_audio_file", fake_transcribe)
-    monkeypatch.setattr("app.services.job_run_service.translate_segments_to_chinese", fake_translate)
+    monkeypatch.setattr("app.services.job_run_transcript.transcribe_audio_file", fake_transcribe)
     monkeypatch.setattr("app.services.job_run_service.load_json_cache", fake_load_json_cache)
     monkeypatch.setattr("app.services.job_run_service.store_json_cache", fake_store_json_cache)
 

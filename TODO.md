@@ -22,6 +22,19 @@ Contract chain:
 
 `URL -> MaterialPackage -> WriterAgent (rewrite_style) -> ArticleDraft -> Revision Chat -> Export`
 
+## Review Follow-ups
+
+These items came out of the latest repo review and are not yet fully closed in code or docs.
+
+- [ ] Add a first-class media ingest abstraction so YouTube URL, uploaded audio, and future subtitle/transcript files share the same source contract.
+- [ ] Extend the current upload fallback beyond audio so local subtitle / transcript files can also be ingested when YouTube access is blocked.
+- [ ] Expose the existing runtime checks in a user-facing preflight/doctor flow so cookies, yt-dlp, JS runtime, backend health, and writable tmp are visible before a long run starts.
+- [ ] Make job cancellation and stage timeout propagation kill child subprocesses and long-running fetches end-to-end.
+- [ ] Tighten YouTube error classification and user guidance for `PO_TOKEN_REQUIRED`, `COOKIE_REQUIRED`, `COOKIE_STALE`, `YOUTUBE_BOT_CHECK`, `VIDEO_REGION_BLOCKED`, `VIDEO_UNAVAILABLE`, and `YOUTUBE_429`.
+- [ ] Add frontend automated tests for history restore, settings persistence, and rewrite/chat request races.
+- [ ] Refresh README and product-contract docs so they match the active ingest + rewrite flow and the new fallback behavior.
+- [ ] Add a runtime supervisor / launcher boundary for the future macOS wrapper.
+
 ## Web UI Development Guide
 
 This guide is the design contract for the two web pages in this repository.

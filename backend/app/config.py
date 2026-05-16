@@ -248,15 +248,6 @@ def get_yt_dlp_auth_args() -> list[str]:
     return []
 
 
-def _resolve_yt_dlp_cookies_file(raw_value: str) -> Path | None:
-    candidate = _normalize_yt_dlp_cookies_path(raw_value)
-    if candidate is None:
-        return None
-    if candidate.is_file():
-        return candidate
-    return None
-
-
 def _normalize_yt_dlp_cookies_path(raw_value: str) -> Path | None:
     candidate = Path(raw_value).expanduser()
     if not candidate.is_absolute():

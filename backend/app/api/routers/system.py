@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 import zipfile
 
 from fastapi import APIRouter, HTTPException
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
 from app.config import ROOT_DIR, get_settings
@@ -130,7 +131,7 @@ async def get_youtube_access_status(
     body: YouTubeAccessStatusRequest,
 ) -> YouTubeAccessStatusResponse:
     try:
-        result = inspect_youtube_access(body.url)
+        result = await run_in_threadpool(inspect_youtube_access, body.url)
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

@@ -96,15 +96,13 @@ def _log_runtime_summary() -> None:
     logger.info(
         "runtime_summary deployment_profile=%s api_auth_token_set=%s "
         "yt_dlp_cookie_mode=%s yt_dlp_cookie_path=%s yt_dlp_cookie_exists=%s "
-        "job_queue_db_path=%s backend_bind_host=%s backend_bind_port=%s",
+        "job_queue_db_path=%s",
         settings.deployment_profile,
         bool(settings.api_auth_token),
         cookie_config.mode,
         cookie_config.effective_path.as_posix() if cookie_config.effective_path else "",
         bool(cookie_config.effective_path and cookie_config.effective_path.exists()),
         settings.job_queue_db_path.as_posix(),
-        "127.0.0.1",
-        8000,
     )
 
 
@@ -130,6 +128,26 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         detail=normalized_detail,
         error_code=error_code,
         retryable=retryable,
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = _resolve_request_id(request)
+    logger.exception(
+        "unhandled_exception request_id=%s method=%s path=%s",
+        request_id,
+        request.method,
+        request.url.path,
+    )
+    from app.api.error_mapping import classify_service_error, build_error_payload
+    classification = classify_service_error(exc)
+    return _standard_error_response(
+        request_id=request_id,
+        status_code=classification.status_code,
+        detail=classification.detail,
+        error_code=classification.error_code,
+        retryable=classification.retryable,
     )
 
 
@@ -228,6 +246,8 @@ _SERVICE_BINDING_NAMES = {
 }
 
 
+# 让测试中 monkeypatch.setattr(app.main, 'fn', mock) 能同时同步到 service_bindings。
+# 原理：替换本模块的 __class__，使 __setattr__ 拦截对 _SERVICE_BINDING_NAMES 的赋值。
 class _ServiceBindingModule(types.ModuleType):
     def __setattr__(self, name: str, value) -> None:
         super().__setattr__(name, value)

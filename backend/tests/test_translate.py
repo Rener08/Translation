@@ -167,7 +167,7 @@ def test_translate_segments_to_chinese_translates_each_segment(monkeypatch) -> N
             json={"output_text": json.dumps({"translations": translations})},
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     result = translate_segments_to_chinese(
         [
@@ -249,7 +249,7 @@ def test_translate_segments_to_chinese_surfaces_openai_errors(monkeypatch) -> No
             json={"error": {"message": "Structured output validation failed."}},
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     try:
         translate_segments_to_chinese(
@@ -298,7 +298,7 @@ def test_translate_segments_to_chinese_supports_deepseek(monkeypatch) -> None:
             },
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     result = translate_segments_to_chinese(
         [{"index": 0, "start": 0.0, "end": 1.0, "text": "Hello everyone."}],
@@ -342,7 +342,7 @@ def test_translate_segments_to_chinese_uses_persistent_cache(monkeypatch) -> Non
             },
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     segments = [{"index": 0, "start": 0.0, "end": 1.0, "text": "Hello everyone."}]
     first = translate_segments_to_chinese(
@@ -414,7 +414,7 @@ def test_translate_segments_to_chinese_retries_empty_deepseek_translation(
             },
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     result = translate_segments_to_chinese(
         [{"index": 8, "start": 0.0, "end": 1.0, "text": "Hello everyone."}],
@@ -496,7 +496,7 @@ def test_translate_segments_to_chinese_retries_only_missing_indices(
             json=body,
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     result = translate_segments_to_chinese(
         [
@@ -561,8 +561,8 @@ def test_translate_segments_to_chinese_supports_lmstudio_model_discovery(
             },
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.get", fake_get)
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.get", fake_get)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     result = translate_segments_to_chinese(
         [{"index": 0, "start": 0.0, "end": 1.0, "text": "Hello everyone."}],
@@ -595,7 +595,7 @@ def test_translate_segments_to_chinese_supports_ollama_plain_text_response(
             },
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     result = translate_segments_to_chinese(
         [{"index": 0, "start": 0.0, "end": 1.0, "text": "Hello everyone."}],
@@ -649,7 +649,7 @@ def test_translate_segments_to_chinese_translates_chunks_with_bounded_concurrenc
             json={"output_text": json.dumps({"translations": translations})},
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     segments = [
         {
@@ -717,7 +717,7 @@ def test_translate_segments_to_chinese_falls_back_to_serial_after_parallel_failu
             json={"output_text": json.dumps({"translations": translations})},
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     segments = [
         {
@@ -772,7 +772,7 @@ def test_translate_segments_to_chinese_handles_parallel_content_errors_locally(
             json={"output_text": json.dumps({"translations": translations})},
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     segments = [
         {
@@ -850,7 +850,7 @@ def test_translate_segments_to_chinese_reduces_concurrency_after_backpressure(
             json={"output_text": json.dumps({"translations": translations})},
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     segments = [
         {
@@ -890,7 +890,7 @@ def test_translate_segments_to_chinese_stops_after_bounded_backpressure_retries(
             json={"error": {"message": "Rate limit exceeded."}},
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     segments = [
         {
@@ -982,7 +982,7 @@ def test_translate_segments_to_chinese_splits_failed_chunk_and_recovers(
             json=body,
         )
 
-    monkeypatch.setattr("app.services.translation_service.httpx.post", fake_post)
+    monkeypatch.setattr("app.services.translation_provider_client.httpx.post", fake_post)
 
     segments = [
         {

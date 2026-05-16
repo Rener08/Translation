@@ -25,7 +25,7 @@ class JobRecord:
     status: JobStatus = "queued"
     progress_value: int = 0
     progress_text: str = "已加入队列"
-    stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None
+    stage: Literal["inspect", "fetch_source", "transcribe", "persist"] | None = None
     timeout_sec: int | None = None
     result: dict[str, Any] | None = None
     error: str | None = None

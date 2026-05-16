@@ -15,7 +15,7 @@ from app.services.content_rewrite_service import (
     ContentRewriteInputError,
     ContentRewriteProviderError,
 )
-from app.services.job_run_service import JobRunError, JobStageTimeoutError
+from app.services.job_run_models import JobRunError, JobStageTimeoutError
 from app.services.speaker_diarization_service import (
     SpeakerDiarizationConfigurationError,
     SpeakerDiarizationRuntimeError,

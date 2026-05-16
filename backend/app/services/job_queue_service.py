@@ -126,7 +126,7 @@ def update_job_progress(
     status: JobStatus | None = None,
     progress_value: int | None = None,
     progress_text: str | None = None,
-    stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None,
+    stage: Literal["inspect", "fetch_source", "transcribe", "persist"] | None = None,
     timeout_sec: int | None = None,
     result: dict[str, Any] | None = None,
     error: str | None = None,

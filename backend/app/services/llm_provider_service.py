@@ -169,6 +169,17 @@ def extract_provider_error_message(response: httpx.Response) -> str:
     return f"Provider request failed with status {response.status_code}."
 
 
+def resolve_provider_api_key(config: dict, provider: str, env_prefix: str) -> str:
+    """Parse api_key from config dict, falling back to env. Returns the key (may be empty).
+    Raises ValueError if the provider requires a key and none is found."""
+    api_key = str(config.get("api_key") or get_env_str(f"{env_prefix}_API_KEY") or "").strip()
+    if provider in {"openai", "deepseek"} and not api_key:
+        raise ValueError(
+            f"{env_prefix}_API_KEY is not set. Add it to your environment, .env file, or request settings."
+        )
+    return api_key
+
+
 def coerce_provider_headers(value: object) -> dict[str, str]:
     if not isinstance(value, dict):
         return {}

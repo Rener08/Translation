@@ -16,6 +16,7 @@ from app.services.llm_provider_service import (
     provider_default_base_url,
     provider_default_model,
     provider_env_prefix,
+    resolve_provider_api_key,
     validate_provider_base_url,
 )
 from app.services.translation_service import (
@@ -98,10 +99,6 @@ def answer_content_question(
         raise ContentChatConfigurationError(
             "transcript_en must not be empty for content chat."
         )
-    if not translation_text:
-        raise ContentChatConfigurationError(
-            "translation_zh must not be empty for content chat."
-        )
     if not question_text:
         raise ContentChatConfigurationError("question must not be empty.")
 
@@ -149,16 +146,10 @@ def _resolve_chat_config(raw_config: dict[str, object] | None) -> ChatProviderCo
         )
 
     env_prefix = provider_env_prefix(provider)
-    api_key = str(
-        config.get("api_key")
-        or get_env_str(f"{env_prefix}_API_KEY")
-        or ""
-    ).strip()
-    requires_api_key = provider in {"openai", "deepseek"}
-    if requires_api_key and not api_key:
-        raise ContentChatConfigurationError(
-            f"{env_prefix}_API_KEY is not set. Add it to your environment, .env file, or request settings."
-        )
+    try:
+        api_key = resolve_provider_api_key(config, provider, env_prefix)
+    except ValueError as error:
+        raise ContentChatConfigurationError(str(error)) from error
 
     base_url = str(
         config.get("base_url")
@@ -230,14 +221,9 @@ def _build_chat_messages(
     context_parts = []
     if video_title and video_title.strip():
         context_parts.append(f"Video title: {video_title.strip()}")
-    context_parts.extend(
-        [
-            "English transcript:",
-            transcript_en,
-            "Chinese translation:",
-            translation_zh,
-        ]
-    )
+    context_parts.extend(["English transcript:", transcript_en])
+    if translation_zh:
+        context_parts.extend(["Chinese translation:", translation_zh])
     context_message = "\n\n".join(context_parts)
 
     messages: list[dict[str, str]] = [

@@ -18,6 +18,7 @@ from app.config import (
     get_yt_dlp_proxy_args,
     get_yt_dlp_youtube_extractor_args,
 )
+from app.services.subprocess_utils import run_subprocess_killable
 
 
 logger = logging.getLogger(__name__)
@@ -173,14 +174,14 @@ def _download_caption_via_yt_dlp(
     ]
 
     try:
-        completed = subprocess.run(
+        completed = run_subprocess_killable(
             command,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
-            timeout=timeout_sec,
+            subprocess_timeout=timeout_sec,
         )
     except subprocess.TimeoutExpired as error:
         logger.error(

@@ -16,6 +16,7 @@ from app.config import (
     get_yt_dlp_remote_components,
     get_yt_dlp_youtube_extractor_args,
 )
+from app.services.subprocess_utils import run_subprocess_killable
 
 logger = logging.getLogger(__name__)
 VIDEO_INFO_CACHE_DIR = ROOT_DIR / "tmp" / "video_info_cache"
@@ -118,14 +119,14 @@ def extract_video_info(url: str) -> dict[str, object]:
     ]
 
     try:
-        completed = subprocess.run(
+        completed = run_subprocess_killable(
             command,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
-            timeout=float(get_settings().yt_dlp_timeout_sec),
+            subprocess_timeout=float(get_settings().yt_dlp_timeout_sec),
         )
     except subprocess.TimeoutExpired as error:
         raise VideoInspectError(

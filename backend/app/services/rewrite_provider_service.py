@@ -14,6 +14,7 @@ from app.services.llm_provider_service import (
     provider_default_base_url,
     provider_default_model,
     provider_env_prefix,
+    resolve_provider_api_key,
     validate_provider_base_url,
 )
 from app.services.translation_service import RETRYABLE_STATUS_CODES
@@ -58,16 +59,10 @@ def resolve_rewrite_config(raw_config: dict[str, object] | None) -> RewriteProvi
         )
 
     env_prefix = provider_env_prefix(provider)
-    api_key = str(
-        config.get("api_key")
-        or get_env_str(f"{env_prefix}_API_KEY")
-        or ""
-    ).strip()
-    requires_api_key = provider in {"openai", "deepseek"}
-    if requires_api_key and not api_key:
-        raise ContentRewriteConfigurationError(
-            f"{env_prefix}_API_KEY is not set. Add it to your environment, .env file, or request settings."
-        )
+    try:
+        api_key = resolve_provider_api_key(config, provider, env_prefix)
+    except ValueError as error:
+        raise ContentRewriteConfigurationError(str(error)) from error
 
     base_url = str(
         config.get("base_url")

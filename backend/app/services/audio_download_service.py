@@ -19,6 +19,7 @@ from app.services.yt_dlp_service import (
     YtDlpNotInstalledError,
     normalize_yt_dlp_error_message,
 )
+from app.services.subprocess_utils import run_subprocess_killable
 
 
 logger = logging.getLogger(__name__)
@@ -97,14 +98,14 @@ def download_audio(url: str, target_dir: Path | None = None) -> AudioDownloadRes
         ]
 
         try:
-            completed = subprocess.run(
+            completed = run_subprocess_killable(
                 command,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
                 errors="replace",
                 check=False,
-                timeout=timeout_sec,
+                subprocess_timeout=timeout_sec,
             )
         except subprocess.TimeoutExpired as error:
             logger.error(

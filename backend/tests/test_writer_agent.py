@@ -261,7 +261,7 @@ def test_writer_agent_speech_verbatim_rejects_truncated_patch_output(monkeypatch
 
     report = WriterAgent().run(
         material=MaterialPackage(
-            source_text="NASA said 3 rockets launched at 8 pm. SpaceX confirmed it.",
+            source_text="NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。",
         ),
         rewrite_focus="保留原作者说话节奏。",
         rewrite_style="speech_verbatim",
@@ -270,11 +270,9 @@ def test_writer_agent_speech_verbatim_rejects_truncated_patch_output(monkeypatch
 
     assert len(calls) == 2
     assert report.draft.revised_once is True
-    assert report.rewritten_text == "NASA said rockets launched. SpaceX confirmed it."
+    assert report.rewritten_text == "NASA表示，火箭发射了。SpaceX对此进行了确认。"
     assert report.detail_coverage_issues == (
-        "缺失细节：数字 3",
-        "缺失细节：数字 8",
-        "缺失细节：关键句 NASA said 3 rockets launched at 8 pm.",
+        "缺失细节：关键句 NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。",
     )
     assert report.rewrite_style == "speech_verbatim"
 

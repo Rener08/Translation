@@ -260,7 +260,7 @@ class JobRunStatusResponse(BaseModel):
     status: Literal["queued", "running", "done", "failed", "cancelled"]
     progress_value: int = 0
     progress_text: str | None = None
-    stage: Literal["inspect", "fetch_source", "transcribe", "translate", "persist"] | None = None
+    stage: Literal["inspect", "fetch_source", "transcribe", "persist"] | None = None
     started_at: str | None = None
     updated_at: str | None = None
     timeout_sec: int | None = None

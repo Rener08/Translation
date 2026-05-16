@@ -398,7 +398,6 @@ def _resolve_job_stage_timeouts_from_env() -> dict[str, int]:
         "inspect": _parse_positive_int_env("JOB_STAGE_TIMEOUT_INSPECT_SEC", 45),
         "fetch_source": _parse_positive_int_env("JOB_STAGE_TIMEOUT_FETCH_SOURCE_SEC", 180),
         "transcribe": _parse_positive_int_env("JOB_STAGE_TIMEOUT_TRANSCRIBE_SEC", 900),
-        "translate": _parse_positive_int_env("JOB_STAGE_TIMEOUT_TRANSLATE_SEC", 900),
         "persist": _parse_positive_int_env("JOB_STAGE_TIMEOUT_PERSIST_SEC", 30),
     }
 

@@ -65,7 +65,7 @@ def test_inspect_video_metadata_extracts_fields(monkeypatch) -> None:
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.yt_dlp_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.yt_dlp_service.run_subprocess_killable", fake_run)
 
     metadata = inspect_video_metadata("https://www.youtube.com/watch?v=abc123xyz")
 
@@ -104,7 +104,7 @@ def test_inspect_video_metadata_uses_player_client_extractor_args(monkeypatch) -
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.yt_dlp_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.yt_dlp_service.run_subprocess_killable", fake_run)
 
     inspect_video_metadata("https://www.youtube.com/watch?v=abc123xyz")
 
@@ -126,7 +126,7 @@ def test_inspect_video_metadata_uses_cache_when_fresh(monkeypatch) -> None:
     def fail_run(*args, **kwargs):
         raise AssertionError("subprocess.run should not be called when cache is fresh")
 
-    monkeypatch.setattr("app.services.yt_dlp_service.subprocess.run", fail_run)
+    monkeypatch.setattr("app.services.yt_dlp_service.run_subprocess_killable", fail_run)
 
     metadata = inspect_video_metadata(url)
 
@@ -144,7 +144,7 @@ def test_inspect_video_metadata_reports_missing_yt_dlp(monkeypatch) -> None:
             stderr="No module named yt_dlp",
         )
 
-    monkeypatch.setattr("app.services.yt_dlp_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.yt_dlp_service.run_subprocess_killable", fake_run)
 
     try:
         inspect_video_metadata("https://www.youtube.com/watch?v=abc123xyz")
@@ -163,7 +163,7 @@ def test_inspect_video_metadata_normalizes_cookie_database_failure(monkeypatch) 
             stderr="ERROR: Could not copy Chrome cookie database. See https://example.com",
         )
 
-    monkeypatch.setattr("app.services.yt_dlp_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.yt_dlp_service.run_subprocess_killable", fake_run)
 
     try:
         inspect_video_metadata("https://www.youtube.com/watch?v=abc123xyz")
@@ -185,7 +185,7 @@ def test_inspect_video_metadata_rejects_unexpected_payload(monkeypatch) -> None:
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.yt_dlp_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.yt_dlp_service.run_subprocess_killable", fake_run)
 
     try:
         inspect_video_metadata("https://www.youtube.com/watch?v=abc123xyz")

@@ -64,7 +64,12 @@ export function useRewriteChat({
 
   const translationText = useMemo(
     () =>
-      jobResult ? buildTranslationText(jobResult.translation_zh.segments) : "",
+      jobResult ? buildTranslationText(jobResult.translation_zh?.segments ?? []) : "",
+    [jobResult],
+  );
+
+  const rewriteSourceText = useMemo(
+    () => jobResult?.transcript_en?.text ?? "",
     [jobResult],
   );
 
@@ -134,16 +139,16 @@ export function useRewriteChat({
   }
 
   useEffect(() => {
-    if (!jobResult || !translationText.trim()) {
+    if (!jobResult || !rewriteSourceText.trim()) {
       return;
     }
     if (skipAutoRewriteForContextRef.current === currentContextId) {
       skipAutoRewriteForContextRef.current = "";
       return;
     }
-    void runRewrite(translationText);
+    void runRewrite(rewriteSourceText);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentContextId, jobResult, rewriteFocus, translationText]);
+  }, [currentContextId, jobResult, rewriteFocus, rewriteSourceText]);
 
   async function runRewrite(sourceText: string) {
     const source = sourceText.trim();
@@ -225,7 +230,7 @@ export function useRewriteChat({
       return;
     }
     const currentRewrite = rewriteText.trim();
-    const sourceText = translationText.trim();
+    const sourceText = rewriteSourceText.trim();
     if (!currentRewrite || !sourceText || detailCoverageIssues.length === 0) {
       return;
     }

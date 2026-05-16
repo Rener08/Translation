@@ -32,7 +32,6 @@ JobCancellationChecker = Callable[[], bool]
 class UploadJobStageTimeouts:
     inspect: int = 30
     transcribe: int = 900
-    translate: int = 900
     persist: int = 30
 
 
@@ -143,7 +142,6 @@ def _resolve_stage_timeouts(raw_value: dict[str, int] | None) -> UploadJobStageT
     return UploadJobStageTimeouts(
         inspect=_normalize_positive_timeout(raw_value.get("inspect"), defaults.inspect),
         transcribe=_normalize_positive_timeout(raw_value.get("transcribe"), defaults.transcribe),
-        translate=_normalize_positive_timeout(raw_value.get("translate"), defaults.translate),
         persist=_normalize_positive_timeout(raw_value.get("persist"), defaults.persist),
     )
 

@@ -117,7 +117,7 @@ def test_download_audio_returns_downloaded_file_path(
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.audio_download_service.run_subprocess_killable", fake_run)
 
     result = download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
 
@@ -154,7 +154,7 @@ def test_download_audio_clamps_concurrent_fragments_to_safe_max(
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.audio_download_service.run_subprocess_killable", fake_run)
 
     result = download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
 
@@ -176,7 +176,7 @@ def test_download_audio_falls_back_to_output_directory_scan_when_stdout_is_na(
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.audio_download_service.run_subprocess_killable", fake_run)
 
     result = download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
 
@@ -198,7 +198,7 @@ def test_download_audio_uses_browser_cookies(monkeypatch, tmp_path: Path) -> Non
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.audio_download_service.run_subprocess_killable", fake_run)
 
     result = download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
 
@@ -224,7 +224,7 @@ def test_download_audio_uses_player_client_extractor_args(
             stderr="",
         )
 
-    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.audio_download_service.run_subprocess_killable", fake_run)
 
     result = download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
 
@@ -246,7 +246,7 @@ def test_download_audio_normalizes_cookie_database_failure(
             stderr="ERROR: Could not copy Chrome cookie database. See https://example.com",
         )
 
-    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.audio_download_service.run_subprocess_killable", fake_run)
 
     try:
         download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
@@ -266,10 +266,10 @@ def test_download_audio_times_out(monkeypatch, tmp_path: Path) -> None:
 
     def fake_run(*args, **kwargs):
         captured_command.extend(args[0])
-        assert kwargs["timeout"] == 1
+        assert kwargs["subprocess_timeout"] == 1
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=1)
 
-    monkeypatch.setattr("app.services.audio_download_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.audio_download_service.run_subprocess_killable", fake_run)
 
     try:
         download_audio("https://www.youtube.com/watch?v=abc123xyz", tmp_path)
@@ -293,11 +293,11 @@ def test_fetch_best_english_captions_times_out_via_yt_dlp_fallback(
         )
 
     def fake_run(*args, **kwargs):
-        assert kwargs["timeout"] == 1
+        assert kwargs["subprocess_timeout"] == 1
         raise subprocess.TimeoutExpired(cmd=args[0], timeout=1)
 
     monkeypatch.setattr("app.services.caption_service.httpx.get", fake_get)
-    monkeypatch.setattr("app.services.caption_service.subprocess.run", fake_run)
+    monkeypatch.setattr("app.services.caption_service.run_subprocess_killable", fake_run)
 
     try:
         fetch_best_english_captions(
