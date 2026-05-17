@@ -22,6 +22,7 @@ import {
   getDefaultSkillConfigNameForRewriteStyle,
   normalizeTranslationModel,
 } from "./lib/job";
+import type { SettingsPreflightResult } from "./lib/types";
 const TRANSLATION_SETTINGS_STORAGE_KEY = "translation-settings";
 const TRANSLATION_PROVIDER_VALUES = new Set([
   "deepseek",
@@ -66,6 +67,9 @@ export default function HomePage() {
   const [settings, setSettings] = useState<TranslationSettings>(defaultSettings);
   const [restoredConversation, setRestoredConversation] =
     useState<RestoredConversationState | null>(null);
+  const [settingsPreflight, setSettingsPreflight] =
+    useState<SettingsPreflightResult | null>(null);
+  const [preflightRequestKey, setPreflightRequestKey] = useState(0);
   const [hasLoadedPreferences, setHasLoadedPreferences] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarQuery, setSidebarQuery] = useState("");
@@ -81,6 +85,7 @@ export default function HomePage() {
   const {
     historyLoading,
     historyError,
+    historyFailureDiagnostic,
     sidebarItems,
     loadHistory,
     openHistorySession,
@@ -91,11 +96,20 @@ export default function HomePage() {
     onOpenSession: ({
       youtubeUrl: nextUrl,
       jobResult: nextResult,
+      restoredSettings: nextSettings,
       restoredConversation: nextConversation,
     }) => {
       invalidateCurrentRun({ cancelBackend: true });
       setYoutubeUrl(nextUrl);
       setUploadedAudioFile(null);
+      setSettingsPreflight(null);
+      setSettings((current) => ({
+        ...current,
+        ...nextSettings,
+        apiKey: "",
+        headersJson: "",
+        model: normalizeTranslationModel(nextSettings.provider, nextSettings.model),
+      }));
       setRestoredConversation(nextConversation);
       setJobResult(nextResult);
       clearJobError();
@@ -106,12 +120,14 @@ export default function HomePage() {
     isRunning,
     jobStatusMessage,
     errorMessage,
+    failureDiagnostic,
     clearJobError,
     invalidateCurrentRun,
     runJob,
     cancelJob,
   } = useJobRunner({
     settings,
+    settingsPreflight,
     youtubeUrl,
     uploadedAudioFile,
     onJobResult: (result) => {
@@ -133,8 +149,10 @@ export default function HomePage() {
     rewriteLoading,
     rewriteError,
     rewriteCopied,
+    rewriteFailureDiagnostic,
     detailCoverageIssues,
     detailPatchLoading,
+    retryRewrite,
     requestDetailPatch,
     messages,
     chatInput,
@@ -247,6 +265,7 @@ export default function HomePage() {
     setUploadedAudioFile(null);
     setJobResult(null);
     setRestoredConversation(null);
+    setSettingsPreflight(null);
     setSidebarQuery("");
     clearJobError();
   }
@@ -265,12 +284,24 @@ export default function HomePage() {
     }
   }
 
+  function handleSettingsChange(nextSettings: TranslationSettings) {
+    setSettings(nextSettings);
+    setSettingsPreflight(null);
+  }
+
   function toggleSidebarCollapsed() {
     setSidebarCollapsed((current) => !current);
   }
 
-  function openSettingsModal() {
+  function openSettingsModal(options?: { runPreflight?: boolean }) {
     setShowSettings(true);
+    if (options?.runPreflight) {
+      setPreflightRequestKey((current) => current + 1);
+    }
+  }
+
+  function handlePreflightResult(result: SettingsPreflightResult | null) {
+    setSettingsPreflight(result);
   }
 
   function expandSidebarAndFocusSearch() {
@@ -303,11 +334,13 @@ export default function HomePage() {
           activeContextId={activeContextId}
           historyLoading={historyLoading}
           historyError={historyError}
+          historyFailureDiagnostic={historyFailureDiagnostic}
           items={sidebarItems}
           searchInputRef={sidebarSearchInputRef}
           onToggleCollapsed={toggleSidebarCollapsed}
           onOpenSearch={expandSidebarAndFocusSearch}
           onNewConversation={clearConversation}
+          onReloadHistory={loadHistory}
           onOpenSettings={openSettingsModal}
           onChangeQuery={setSidebarQuery}
           onSelectItem={handleSidebarItemClick}
@@ -321,10 +354,13 @@ export default function HomePage() {
               isRunning={isRunning}
               jobStatusMessage={jobStatusMessage}
               errorMessage={errorMessage}
+              failureDiagnostic={failureDiagnostic}
               onChangeUrl={handleYoutubeUrlChange}
               onPickAudioFile={handlePickAudioFile}
               onSubmit={runJob}
               onCancel={cancelJob}
+              onOpenSettings={openSettingsModal}
+              onRunPreflight={() => openSettingsModal({ runPreflight: true })}
             />
           ) : (
             <ResultView
@@ -334,6 +370,7 @@ export default function HomePage() {
               rewriteError={rewriteError}
               rewriteText={rewriteText}
               rewriteCopied={rewriteCopied}
+              rewriteFailureDiagnostic={rewriteFailureDiagnostic}
               detailCoverageIssues={detailCoverageIssues}
               detailPatchLoading={detailPatchLoading}
               messages={messages}
@@ -341,12 +378,17 @@ export default function HomePage() {
               chatSubmitting={chatSubmitting}
               chatError={chatError}
               shortcuts={CHAT_SHORTCUTS}
+              restoredConversation={restoredConversation}
               onCopyRewrite={copyRewrite}
               onExportRewrite={exportRewrite}
               onRequestDetailPatch={requestDetailPatch}
+              onRetryRewrite={retryRewrite}
+              onRunPreflight={() => openSettingsModal({ runPreflight: true })}
               onSubmitShortcut={submitChatQuestion}
               onSubmitChat={() => submitChatQuestion(chatInput)}
               onChangeChatInput={setChatInput}
+              onOpenSettings={openSettingsModal}
+              onResetConversation={clearConversation}
             />
           )}
         </section>
@@ -355,7 +397,10 @@ export default function HomePage() {
       {showSettings ? (
         <div
           className="settings-modal-backdrop"
-          onClick={() => setShowSettings(false)}
+          onClick={() => {
+            setShowSettings(false);
+            setPreflightRequestKey(0);
+          }}
           role="presentation"
         >
           <section
@@ -370,7 +415,10 @@ export default function HomePage() {
               <button
                 className="icon-button"
                 type="button"
-                onClick={() => setShowSettings(false)}
+                onClick={() => {
+                  setShowSettings(false);
+                  setPreflightRequestKey(0);
+                }}
                 aria-label="关闭设置"
               >
                 ×
@@ -378,7 +426,13 @@ export default function HomePage() {
             </div>
             <TranslationSettingsPanel
               settings={settings}
-              onChange={setSettings}
+              onChange={handleSettingsChange}
+              preflightRequestKey={preflightRequestKey}
+              onPreflightResult={handlePreflightResult}
+              onCloseSettings={() => {
+                setShowSettings(false);
+                setPreflightRequestKey(0);
+              }}
             />
           </section>
         </div>

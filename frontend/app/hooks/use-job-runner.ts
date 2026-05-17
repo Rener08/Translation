@@ -8,17 +8,28 @@ import {
   TranslationSettings,
   apiFetch,
   buildTranslationConfig,
-  extractApiErrorMessage,
-  loadYouTubeAccessStatus,
   mapJobStageLabel,
   normalizeApiErrorMessage,
   uploadAudioFile,
   waitForJobResult,
 } from "../lib/job";
 
+import {
+  extractApiErrorDetails,
+  loadYouTubeAccessStatus,
+} from "../lib/api";
+
+import type {
+  ApiErrorDetails,
+  FailureDiagnostic,
+  RecoveryAction,
+  SettingsPreflightResult,
+} from "../lib/types";
+
 
 type UseJobRunnerParams = {
   settings: TranslationSettings;
+  settingsPreflight: SettingsPreflightResult | null;
   youtubeUrl: string;
   uploadedAudioFile: File | null;
   onJobResult: (result: JobResult) => void;
@@ -27,6 +38,7 @@ type UseJobRunnerParams = {
 
 export function useJobRunner({
   settings,
+  settingsPreflight,
   youtubeUrl,
   uploadedAudioFile,
   onJobResult,
@@ -36,9 +48,97 @@ export function useJobRunner({
   const [activeJobId, setActiveJobId] = useState("");
   const [jobStatusMessage, setJobStatusMessage] = useState("");
   const [errorMessage, setErrorMessage] = useState("");
+  const [failureDiagnostic, setFailureDiagnostic] =
+    useState<FailureDiagnostic | null>(null);
   const currentRunSeqRef = useRef(0);
   const activeRunControllerRef = useRef<AbortController | null>(null);
   const activeJobIdRef = useRef("");
+
+  function getApiErrorDetails(error: unknown): ApiErrorDetails | null {
+    if (!error || typeof error !== "object") {
+      return null;
+    }
+    const candidate = error as { apiError?: ApiErrorDetails };
+    return candidate.apiError ?? null;
+  }
+
+  function buildRecoveryAction(
+    kind: RecoveryAction["kind"],
+    label: string,
+    description: string,
+    disabled = false,
+  ): RecoveryAction {
+    return {
+      kind,
+      label,
+      description,
+      ...(disabled ? { disabled: true } : {}),
+    };
+  }
+
+  function buildJobFailureDiagnostic({
+    title,
+    message,
+    errorCode,
+    retryable,
+    requestId,
+    stageLabel,
+    details,
+  }: {
+    title: string;
+    message: string;
+    errorCode: string | null;
+    retryable: boolean | null;
+    requestId: string;
+    stageLabel?: string | null;
+    details: string[];
+  }): FailureDiagnostic {
+    const actions: RecoveryAction[] = [
+      buildRecoveryAction("retry-job", "重新提交任务", "用当前输入和设置再跑一次。"),
+      buildRecoveryAction("fallback-audio", "改用本地音频", "如果 YouTube 链路不稳，切换到本地音频上传。"),
+      buildRecoveryAction("run-preflight", "检查环境", "打开设置里的预检面板，复核 cookies 和后端连通性。"),
+    ];
+
+    if (retryable === false && errorCode && errorCode.startsWith("HTTP_")) {
+      actions.unshift(
+        buildRecoveryAction(
+          "open-settings",
+          "检查设置",
+          "先核对模型、API Key 和后端 base_url。",
+        ),
+      );
+    }
+
+    return {
+      source: "job",
+      title,
+      message,
+      details,
+      errorCode,
+      retryable,
+      requestId,
+      stageLabel: stageLabel ?? null,
+      actions,
+    };
+  }
+
+  function setJobFailure(details: FailureDiagnostic) {
+    setFailureDiagnostic(details);
+    setErrorMessage(details.message);
+  }
+
+  function recordJobFailure(args: {
+    title: string;
+    message: string;
+    errorCode: string | null;
+    retryable: boolean | null;
+    requestId: string;
+    stageLabel?: string | null;
+    details: string[];
+  }) {
+    setJobStatusMessage("");
+    setJobFailure(buildJobFailureDiagnostic(args));
+  }
 
   useEffect(() => {
     return () => {
@@ -65,6 +165,7 @@ export function useJobRunner({
     setActiveJobId("");
     setJobStatusMessage("");
     setErrorMessage("");
+    setFailureDiagnostic(null);
   }
 
   function cancelBackendJob(jobId: string) {
@@ -78,10 +179,23 @@ export function useJobRunner({
   }
 
   async function runJob() {
+    if (settingsPreflight && !settingsPreflight.allOk) {
+      recordJobFailure({
+        title: "环境预检未通过",
+        message: settingsPreflight.summary,
+        errorCode: "PREFLIGHT_FAILED",
+        retryable: true,
+        requestId: "",
+        details: settingsPreflight.details,
+      });
+      return;
+    }
+
     let translationConfig: TranslationConfigPayload;
     try {
       translationConfig = buildTranslationConfig(settings);
     } catch (error) {
+      setFailureDiagnostic(null);
       setErrorMessage(
         error instanceof Error ? error.message : "Invalid translation settings.",
       );
@@ -103,12 +217,35 @@ export function useJobRunner({
     setActiveJobId("");
     setIsRunning(true);
     setErrorMessage("");
+    setFailureDiagnostic(null);
     setJobStatusMessage(uploadedAudioFile ? "正在上传文件..." : "正在检查 YouTube 访问...");
 
     try {
       let response: Response;
       if (uploadedAudioFile) {
-        const upload = await uploadAudioFile(uploadedAudioFile);
+        let upload;
+        try {
+          upload = await uploadAudioFile(uploadedAudioFile);
+        } catch (error) {
+          if (!isCurrentRun(runSeq, controller)) {
+            return;
+          }
+          const apiError = getApiErrorDetails(error);
+          recordJobFailure({
+            title: "本地音频上传失败",
+            message:
+              apiError?.message ??
+              (error instanceof Error ? error.message : "Failed to upload local media."),
+            errorCode: apiError?.errorCode ?? "UPLOAD_FAILED",
+            retryable: apiError?.retryable ?? null,
+            requestId: apiError?.requestId ?? "",
+            details: [
+              `输入文件：${uploadedAudioFile.name || "未命名文件"}`,
+              "可以重新选择一个更稳定的音频/视频文件，再尝试提交。",
+            ],
+          });
+          return;
+        }
         if (!isCurrentRun(runSeq, controller)) {
           return;
         }
@@ -124,7 +261,30 @@ export function useJobRunner({
           signal: controller.signal,
         });
       } else {
-        const accessStatus = await loadYouTubeAccessStatus(youtubeUrl);
+        let accessStatus;
+        try {
+          accessStatus = await loadYouTubeAccessStatus(youtubeUrl);
+        } catch (error) {
+          if (!isCurrentRun(runSeq, controller)) {
+            return;
+          }
+          const apiError = getApiErrorDetails(error);
+          recordJobFailure({
+            title: "YouTube 访问预检失败",
+            message:
+              apiError?.message ??
+              (error instanceof Error ? error.message : "Failed to inspect YouTube access."),
+            errorCode: apiError?.errorCode ?? "YOUTUBE_ACCESS_STATUS_FAILED",
+            retryable: apiError?.retryable ?? null,
+            requestId: apiError?.requestId ?? "",
+            stageLabel: "解析视频",
+            details: [
+              `目标链接：${youtubeUrl.trim() || "未提供"}`,
+              "可以重试检查、打开设置复核 cookies，或者改用本地音频上传。",
+            ],
+          });
+          return;
+        }
         if (!isCurrentRun(runSeq, controller)) {
           return;
         }
@@ -133,10 +293,22 @@ export function useJobRunner({
             .map((value) => value.trim())
             .filter(Boolean)
             .join(" ");
-          setErrorMessage(
-            guidance || "当前 YouTube 访问状态异常，请检查 cookies、网络或视频可见性。",
-          );
-          setJobStatusMessage("");
+          recordJobFailure({
+            title: "YouTube 访问状态异常",
+            message:
+              guidance ||
+              "当前 YouTube 访问状态异常，请检查 cookies、网络或视频可见性。",
+            errorCode: accessStatus.error_code?.trim() || "YOUTUBE_ACCESS_BLOCKED",
+            retryable: accessStatus.retryable ?? null,
+            requestId: "",
+            stageLabel: "解析视频",
+            details: [
+              `探测地址：${accessStatus.probe_url || youtubeUrl.trim() || "未提供"}`,
+              accessStatus.video_id ? `视频 ID：${accessStatus.video_id}` : "视频 ID：未解析到",
+              accessStatus.title ? `视频标题：${accessStatus.title}` : "视频标题：未解析到",
+              ...Object.entries(accessStatus.checks || {}).map(([key, value]) => `${key}: ${value}`),
+            ],
+          });
           return;
         }
 
@@ -158,7 +330,21 @@ export function useJobRunner({
       }
 
       if (!response.ok) {
-        throw new Error(await extractApiErrorMessage(response));
+        const apiError = await extractApiErrorDetails(response);
+        recordJobFailure({
+          title: "任务提交失败",
+          message: apiError.message,
+          errorCode: apiError.errorCode,
+          retryable: apiError.retryable,
+          requestId: apiError.requestId,
+          details: [
+            uploadedAudioFile
+              ? `输入文件：${uploadedAudioFile.name || "未命名文件"}`
+              : `目标链接：${youtubeUrl.trim() || "未提供"}`,
+            "可以再次提交同一输入，或者先打开设置检查模型、API Key 和后端地址。",
+          ],
+        });
+        return;
       }
 
       const submission = (await response.json()) as {
@@ -217,20 +403,44 @@ export function useJobRunner({
         return;
       }
       const rawMessage = error instanceof Error ? error.message : "Unknown request error";
+      const apiError = getApiErrorDetails(error);
       if (controller.signal.aborted || rawMessage.includes("Request aborted.")) {
         return;
       }
       if (rawMessage.includes("任务已取消")) {
         setErrorMessage("");
         setJobStatusMessage("任务已取消");
+        setFailureDiagnostic(null);
         return;
       }
       if (/cannot connect to backend api|failed to fetch|network/i.test(rawMessage)) {
-        setErrorMessage("无法连接本地后端（http://localhost:8000）。请先运行 ./start-dev.sh 或 ./start-backend.sh。");
+        recordJobFailure({
+          title: "无法连接本地后端",
+          message:
+            "无法连接本地后端（http://localhost:8000）。请先运行 ./start-dev.sh 或 ./start-backend.sh。",
+          errorCode: apiError?.errorCode || "BACKEND_UNREACHABLE",
+          retryable: true,
+          requestId: apiError?.requestId ?? "",
+          details: [
+            "如果后端已经启动，请检查 8000 端口是不是被另一个 Translation checkout 占用。",
+            "也可以先改用本地音频上传，绕开 YouTube 网络链路。",
+          ],
+        });
       } else {
-        setErrorMessage(normalizeApiErrorMessage(rawMessage));
+        recordJobFailure({
+          title: "任务处理失败",
+          message: apiError?.message ?? normalizeApiErrorMessage(rawMessage),
+          errorCode: apiError?.errorCode || "JOB_FAILED",
+          retryable: apiError?.retryable ?? null,
+          requestId: apiError?.requestId ?? "",
+          details: [
+            uploadedAudioFile
+              ? `输入文件：${uploadedAudioFile.name || "未命名文件"}`
+              : `目标链接：${youtubeUrl.trim() || "未提供"}`,
+            jobStatusMessage ? `最后进度：${jobStatusMessage}` : "没有可复用的阶段进度。",
+          ],
+        });
       }
-      setJobStatusMessage("");
     } finally {
       if (isCurrentRun(runSeq, controller)) {
         if (activeRunControllerRef.current === controller) {
@@ -245,6 +455,7 @@ export function useJobRunner({
 
   function clearJobError() {
     setErrorMessage("");
+    setFailureDiagnostic(null);
   }
 
   function invalidateCurrentRun(options?: { cancelBackend?: boolean }) {
@@ -269,6 +480,7 @@ export function useJobRunner({
     isRunning,
     jobStatusMessage,
     errorMessage,
+    failureDiagnostic,
     setErrorMessage,
     clearJobError,
     invalidateCurrentRun,

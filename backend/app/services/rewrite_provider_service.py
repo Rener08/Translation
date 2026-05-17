@@ -240,7 +240,7 @@ def rewrite_with_ollama(
 def rewrite_generation_settings(rewrite_style: str) -> tuple[float, int]:
     if rewrite_style == "speech_verbatim":
         return 0.7, 32000
-    return 0.4, 12000
+    return 0.4, 20000
 
 
 def _post_json(

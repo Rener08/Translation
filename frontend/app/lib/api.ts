@@ -7,6 +7,11 @@ import type {
   YouTubeAccessStatusResponse,
   JobResult,
   JobRunStatusResponse,
+  PreflightResponse,
+  ProviderTestConnectionResponse,
+  SettingsPreflightResult,
+  ApiErrorDetails,
+  ApiErrorResponseBody,
 } from "./types";
 
 import {
@@ -17,7 +22,7 @@ import {
   getProviderDefaultModel,
 } from "./settings";
 
-import { extractApiErrorMessage, mapJobStageLabel } from "./format";
+import { mapJobStageLabel, normalizeApiErrorMessage } from "./format";
 
 let resolvedApiBaseUrl: string | null = null;
 let lastKnownApiBaseUrl: string | null = null;
@@ -60,6 +65,88 @@ function getApiBaseCandidates(): string[] {
 
 function isNetworkError(error: unknown): boolean {
   return error instanceof TypeError;
+}
+
+function parseApiErrorBody(rawText: string): ApiErrorDetails | null {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as ApiErrorResponseBody;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+
+    const detail =
+      typeof parsed.detail === "string" ? parsed.detail.trim() : "";
+    const errorCode =
+      typeof parsed.error_code === "string" ? parsed.error_code.trim() : "";
+    const requestId =
+      typeof parsed.request_id === "string" ? parsed.request_id.trim() : "";
+    const retryable =
+      typeof parsed.retryable === "boolean" ? parsed.retryable : null;
+
+    return {
+      message: detail || errorCode || trimmed,
+      errorCode,
+      retryable,
+      requestId,
+      status: 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function defaultRetryableForStatus(status: number): boolean | null {
+  if (status === 429 || status === 502 || status === 503 || status === 504) {
+    return true;
+  }
+  if (status === 401 || status === 403 || status === 404) {
+    return false;
+  }
+  return null;
+}
+
+export type ApiError = Error & {
+  apiError: ApiErrorDetails;
+};
+
+function formatApiErrorDetails(details: ApiErrorDetails): string {
+  const parts: string[] = [];
+  if (details.errorCode) {
+    parts.push(`[${details.errorCode}]`);
+  }
+  parts.push(normalizeApiErrorMessage(details.message, details.errorCode));
+  if (details.retryable === true) {
+    parts.push("（可重试）");
+  }
+  if (details.requestId) {
+    parts.push(`request_id=${details.requestId}`);
+  }
+  return parts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+function createApiError(details: ApiErrorDetails): ApiError {
+  const error = new Error(formatApiErrorDetails(details)) as ApiError;
+  error.apiError = details;
+  return error;
+}
+
+function createJobStatusError(
+  message: string,
+  errorCode: string,
+  retryable: boolean | null,
+): ApiError {
+  return createApiError({
+    message,
+    errorCode: errorCode.trim() || "JOB_FAILED",
+    retryable,
+    requestId: "",
+    status: 200,
+  });
 }
 
 async function probeApiBase(base: string): Promise<boolean> {
@@ -214,6 +301,54 @@ export async function apiFetch(
   }
 }
 
+export async function extractApiErrorDetails(
+  response: Response,
+): Promise<ApiErrorDetails> {
+  const rawText = (await response.text()).trim();
+  const fallbackMessage = `Request failed with status ${response.status}`;
+  const defaultErrorCode = `HTTP_${response.status}`;
+
+  if (rawText) {
+    const parsed = parseApiErrorBody(rawText);
+    if (parsed) {
+      return {
+        message: parsed.message,
+        errorCode: parsed.errorCode || defaultErrorCode,
+        retryable: parsed.retryable ?? defaultRetryableForStatus(response.status),
+        requestId: parsed.requestId,
+        status: response.status,
+      };
+    }
+
+    return {
+      message: rawText,
+      errorCode: defaultErrorCode,
+      retryable: defaultRetryableForStatus(response.status),
+      requestId: "",
+      status: response.status,
+    };
+  }
+
+  if (response.status === 502) {
+    return {
+      message:
+        "Upstream video fetch failed while accessing YouTube. For restricted videos only, use YTDLP_COOKIES_FILE as an advanced fallback.",
+      errorCode: defaultErrorCode,
+      retryable: true,
+      requestId: "",
+      status: response.status,
+    };
+  }
+
+  return {
+    message: fallbackMessage,
+    errorCode: defaultErrorCode,
+    retryable: defaultRetryableForStatus(response.status),
+    requestId: "",
+    status: response.status,
+  };
+}
+
 export function parseHeadersJson(headersJson: string): Record<string, string> {
   if (!headersJson.trim()) {
     return {};
@@ -275,7 +410,7 @@ export function buildTranslationConfig(
 export async function loadYtDlpCookies(): Promise<SystemYtDlpCookiesResponse> {
   const response = await apiFetch("/api/system/yt-dlp-cookies");
   if (!response.ok) {
-    throw new Error(await extractApiErrorMessage(response));
+    throw createApiError(await extractApiErrorDetails(response));
   }
   return (await response.json()) as SystemYtDlpCookiesResponse;
 }
@@ -288,7 +423,7 @@ export async function uploadAudioFile(file: File): Promise<UploadAudioResponse> 
     body,
   });
   if (!response.ok) {
-    throw new Error(await extractApiErrorMessage(response));
+    throw createApiError(await extractApiErrorDetails(response));
   }
   return (await response.json()) as UploadAudioResponse;
 }
@@ -304,7 +439,7 @@ export async function loadYouTubeAccessStatus(
     body: JSON.stringify({ url: url.trim() || null }),
   });
   if (!response.ok) {
-    throw new Error(await extractApiErrorMessage(response));
+    throw createApiError(await extractApiErrorDetails(response));
   }
   return (await response.json()) as YouTubeAccessStatusResponse;
 }
@@ -320,7 +455,7 @@ export async function saveYtDlpCookies(
     body: JSON.stringify({ cookies_text: cookiesText }),
   });
   if (!response.ok) {
-    throw new Error(await extractApiErrorMessage(response));
+    throw createApiError(await extractApiErrorDetails(response));
   }
   return (await response.json()) as SystemYtDlpCookiesResponse;
 }
@@ -330,9 +465,72 @@ export async function clearYtDlpCookies(): Promise<SystemYtDlpCookiesResponse> {
     method: "DELETE",
   });
   if (!response.ok) {
-    throw new Error(await extractApiErrorMessage(response));
+    throw createApiError(await extractApiErrorDetails(response));
   }
   return (await response.json()) as SystemYtDlpCookiesResponse;
+}
+
+export async function runPreflight(): Promise<PreflightResponse> {
+  const response = await apiFetch("/api/system/preflight");
+  if (!response.ok) {
+    throw createApiError(await extractApiErrorDetails(response));
+  }
+  return (await response.json()) as PreflightResponse;
+}
+
+export async function testProviderConnection(
+  settings: TranslationSettings,
+): Promise<ProviderTestConnectionResponse> {
+  const response = await apiFetch("/api/provider/test-connection", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(buildTranslationConfig(settings)),
+  });
+  if (!response.ok) {
+    throw createApiError(await extractApiErrorDetails(response));
+  }
+  return (await response.json()) as ProviderTestConnectionResponse;
+}
+
+export async function runSettingsPreflight(
+  settings: TranslationSettings,
+): Promise<SettingsPreflightResult> {
+  const [runtime, provider] = await Promise.all([
+    runPreflight(),
+    testProviderConnection(settings),
+  ]);
+
+  const normalizedModel = normalizeTranslationModel(settings.provider, settings.model);
+  const discoveredModels = provider.discovered_models.map((model) => String(model || "").trim()).filter(Boolean);
+  const modelReady = normalizedModel
+    ? discoveredModels.includes(normalizedModel)
+    : provider.reachable;
+
+  const allOk = runtime.all_ok && provider.reachable && modelReady;
+  const runtimeDetails = runtime.checks.map((check) => `${check.label}: ${check.detail}`);
+  const providerDetails = [
+    provider.message,
+    provider.reachable
+      ? modelReady
+        ? `当前模型 ${normalizedModel || provider.selected_model || "未指定"} 已通过 provider 检查。`
+        : `当前模型 ${normalizedModel || "未指定"} 未出现在 provider 返回的模型列表中。`
+      : "Provider 连接失败，请先检查 API Key 和 base_url。",
+    discoveredModels.length > 0
+      ? `可发现模型：${discoveredModels.slice(0, 4).join("、")}`
+      : "Provider 未返回可发现模型列表。",
+  ];
+
+  return {
+    runtime,
+    provider,
+    allOk,
+    summary: allOk
+      ? "本地运行环境与当前 provider/model 都已通过预检。"
+      : "预检未通过，请先修复失败项后再提交。",
+    details: [...runtimeDetails, ...providerDetails],
+  };
 }
 
 export async function waitForJobResult(
@@ -356,7 +554,7 @@ export async function waitForJobResult(
     }
     const response = await apiFetch(`/api/jobs/${encodeURIComponent(normalizedJobId)}`);
     if (!response.ok) {
-      throw new Error(await extractApiErrorMessage(response));
+      throw createApiError(await extractApiErrorDetails(response));
     }
 
     const data = (await response.json()) as JobRunStatusResponse;
@@ -383,13 +581,14 @@ export async function waitForJobResult(
       } else if (data.retryable) {
         detail = `${detail}（可重试：请稍后重试或重新提交同一链接。）`;
       }
-      if (errorCode) {
-        throw new Error(`[${errorCode}] ${detail}`);
-      }
-      throw new Error(detail);
+      throw createJobStatusError(detail, errorCode || "JOB_FAILED", data.retryable ?? null);
     }
     if (data.status === "cancelled") {
-      throw new Error(data.error || "任务已取消。");
+      throw createJobStatusError(
+        data.error || "任务已取消。",
+        data.error_code || "JOB_CANCELLED",
+        false,
+      );
     }
 
     await new Promise<void>((resolve, reject) => {

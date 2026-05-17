@@ -19,10 +19,10 @@
    - auto captions second
    - audio fallback third
 3. transcription (when audio source)
-4. translation
-5. session persistence
+4. session persistence / content-context creation
 
 `material_transcript` cache stores transcript artifacts by `video/source/language` fingerprint to reduce repeated work.
+The deterministic job pipeline stops at persisted transcript context; Chinese article generation starts in `/api/content-rewrite`.
 
 ### 2) Writing Pipeline (single-agent)
 
@@ -60,3 +60,4 @@ External API response remains compatible. Existing fields (`rewritten_text`, `pr
 ## Legacy Boundary
 
 The old PyQt desktop path has been removed from this checkout.
+The experimental agent-loop package under `backend/app/agents/` is not part of the shipping path and stays off by default.

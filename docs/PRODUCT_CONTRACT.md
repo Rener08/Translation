@@ -6,7 +6,7 @@ Translation is a **link/source to Chinese article** workbench.
 
 Primary product path:
 
-`URL -> MaterialPackage -> WriterAgent (speech_verbatim) -> ArticleDraft -> Revision Chat -> Export`
+`URL -> deterministic ingest -> content_context -> WriterAgent (speech_verbatim) -> ArticleDraft -> Revision Chat -> Export`
 
 The default writing mode is `speech_verbatim`: it pins extracted facts (numbers, dates, names, quotes, turn/conclusion phrases) into a `DetailLedger`, generates the draft once, then runs a single coverage-driven patch when hard items are missing. The legacy `article_longform` mode (uses `ArticleSpec` length budgets and outline/draft/revise) is only used when the user explicitly selects it.
 
@@ -19,12 +19,13 @@ Within `article_longform`, automatic routing is intentionally narrow: it priorit
    - inspect video
    - fetch captions first
    - fallback to audio + Whisper
-   - translate to Chinese
+   - persist transcript context for rewrite
 2. The writing half is agent-shaped:
    - one `WriterAgent` only
    - no multi-agent orchestration in the mainline
+   - `backend/app/agents/` stays experimental and off by default
 3. Web is the only active product UI.
-5. Cookies are not a default path:
+4. Cookies are not a default path:
    - default flow should work without cookie input
    - cookie is an advanced fallback for restricted videos
 

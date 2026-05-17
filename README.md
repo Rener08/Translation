@@ -5,10 +5,12 @@ transcripts, and source material into rewritten Chinese article output.
 
 The current product direction is:
 
-- deterministic media pipeline for inspect -> fetch source -> transcribe -> translate
-- single `WriterAgent` flow for article generation -> validation -> revise once
+- deterministic media pipeline for inspect -> fetch source -> transcribe -> persist content context
+- single `WriterAgent` flow for article generation with default `speech_verbatim` coverage patching and legacy `article_longform` fallback
 - follow-up revision chat for summary, explanation, and secondary edits
 - Web UI as the only active product interface
+- experimental agent-loop code under `backend/app/agents/` is kept off the product mainline
+- shipping gates and mainline acceptance live in [`TODO.md`](TODO.md#mainline-acceptance)
 
 Documentation map:
 
@@ -66,8 +68,8 @@ Current local setup uses:
 - `YTDLP_CONCURRENT_FRAGMENTS`: yt-dlp fragment concurrency for audio downloads; defaults to `1` for a more conservative YouTube access profile
 - `MAX_VIDEO_DURATION_SEC`: reject videos longer than this before job ingest continues
 - `MAX_AUDIO_BYTES`: reject downloaded audio files above this size before transcription
-- `MAX_TRANSCRIPT_CHARS`: reject transcript text above this length before translation
-- `MAX_TRANSLATION_SEGMENTS`: reject transcript segment counts above this limit before translation
+- `MAX_TRANSCRIPT_CHARS`: reject transcript text above this length before rewrite
+- `MAX_TRANSLATION_SEGMENTS`: reject transcript segment counts above this limit before rewrite
 - `API_AUTH_TOKEN`: optional shared secret; when set, **every** `/api/*` request must send `Authorization: Bearer <token>` or header `x-api-token`
 - `API_RATE_LIMIT_PER_MINUTE`: write-request rate limit per client IP (POST/PUT/PATCH/DELETE)
 - `DEPLOYMENT_PROFILE`: use `production` to require `API_AUTH_TOKEN` at startup and disable the localhost CORS defaults
@@ -141,7 +143,7 @@ Install the Python package with the `default` extra so the `yt-dlp-ejs` YouTube 
 `YTDLP_JS_RUNTIMES` can point at `deno`, `node`, `bun`, or `quickjs`; the backend also auto-detects a runtime fallback when available.
 `YTDLP_YOUTUBE_PLAYER_CLIENTS` is optional and maps to yt-dlp's `--extractor-args "youtube:player-client=..."` for advanced YouTube fallback tuning.
 Remote components are opt-in through `YTDLP_REMOTE_COMPONENTS`; leave it empty unless you explicitly need them.
-Audio and subtitle fallback subprocesses use `YTDLP_SUBPROCESS_TIMEOUT_SEC`, while the main job flow enforces the `MAX_*` limits above before Whisper or translation work starts. Audio download fragment concurrency defaults to `1`; raise `YTDLP_CONCURRENT_FRAGMENTS` only if your network and YouTube access are stable.
+Audio and subtitle fallback subprocesses use `YTDLP_SUBPROCESS_TIMEOUT_SEC`, while the main job flow enforces the `MAX_*` limits above before Whisper or rewrite work starts. Audio download fragment concurrency defaults to `1`; raise `YTDLP_CONCURRENT_FRAGMENTS` only if your network and YouTube access are stable.
 
 Install backend dependencies inside the project virtual environment:
 
@@ -396,9 +398,8 @@ Job orchestration notes:
 
 - The backend parses and normalizes the YouTube URL first.
 - Metadata and source selection share the same `yt-dlp` inspection payload, so the job does not inspect the same video twice.
-- The pipeline prefers English captions. If captions are unavailable, it downloads audio to `tmp/`, transcribes in English, then translates to Simplified Chinese.
-- The job request can include `translation_config` so the UI can switch between OpenAI and DeepSeek without editing backend files.
-- `POST /api/jobs/run` submits the full metadata -> source -> transcript -> translation flow to the current in-memory worker queue, while job records are still persisted to SQLite for status recovery.
+- The pipeline prefers English captions. If captions are unavailable, it downloads audio to `tmp/`, transcribes in English, then persists the transcript context for rewrite.
+- `POST /api/jobs/run` submits the full metadata -> source -> transcript -> content-context flow to the current in-memory worker queue, while job records are still persisted to SQLite for status recovery.
 - `GET /api/jobs/{job_id}` polls job progress. `done` responses include `result`, and `failed` responses include `error`.
 - The execution queue is still in-memory and designed for local single-process development. Restarting the backend drops queued and running work, even though persisted job records remain on disk.
 
@@ -489,9 +490,9 @@ See [docs/writing_style_prompt_format.md](docs/writing_style_prompt_format.md) f
 
 - The homepage now uses a minimal centered input layout inspired by notebook-style tools.
 - The initial screen only shows the product title, a short description, one large input box, and one start button.
-- A small built-in settings section lets you pick the translation provider and optionally override API key, base URL, model, and custom headers.
+- A small built-in settings section lets you pick the provider and optionally override API key, base URL, model, and custom headers.
 - The result area keeps four states visually distinct: ready, processing, completed, and failed.
-- Successful runs can feed transcript and translation content into the rewrite pipeline.
+- Successful runs feed transcript content into the rewrite pipeline.
 - The web app is rewrite-first: the main result view prioritizes Chinese rewritten output, with `Content Chat` as a secondary follow-up layer.
 - The web app includes a session history sidebar with search for reopening recent runs and reviewing saved rewrite/chat state.
 - The web app preserves raw rewrite text separately from the rendered view so copy and export keep Markdown structure intact.
@@ -512,8 +513,8 @@ Recommended local loop:
 1. Start backend on port `8000`.
 2. Start frontend on port `3000`.
 3. Enter a YouTube link.
-4. Run deterministic ingest: inspect -> captions/audio -> transcribe -> translate.
-5. Let `POST /api/content-rewrite` run through `WriterAgent` (`spec -> outline -> draft -> quality check -> revise once`).
+4. Run deterministic ingest: inspect -> captions/audio -> transcribe -> persist content context.
+5. Let `POST /api/content-rewrite` run through `WriterAgent` (`speech_verbatim` coverage loop by default, `article_longform` outline/draft/revise when explicitly selected).
 6. Continue revision in chat and export the article.
 
 Web frontend loop for component development:
@@ -521,7 +522,7 @@ Web frontend loop for component development:
 1. Start backend on port `8000`.
 2. Start frontend on port `3000`.
 3. Open the frontend page.
-4. Enter a YouTube link and complete the same inspect -> source -> transcribe -> translate -> rewrite flow.
+4. Enter a YouTube link and complete the same inspect -> source -> transcribe -> rewrite flow.
 5. Verify that rewrite output is available from the result panel.
 
 ## Current Phase Scope
@@ -548,10 +549,10 @@ Web frontend loop for component development:
 - Prioritizes manual English captions, then automatic English captions, then audio-only download
 - Downloads audio-only files into `tmp/`
 - Transcribes local audio files through `faster-whisper`
-- Translates transcript segments through the OpenAI responses API
-- Translates transcript segments through either OpenAI or DeepSeek
-- Submits the full metadata -> source -> transcript -> translation flow through the in-memory job queue
-- Exposes `POST /api/content-rewrite` as a single `WriterAgent` writing layer on top of the translation pipeline
+- Supports the standalone `POST /api/translate` endpoint through the OpenAI responses API
+- Supports the standalone `POST /api/translate` endpoint through either OpenAI or DeepSeek
+- Submits the full metadata -> source -> transcript -> content-context flow through the in-memory job queue
+- Exposes `POST /api/content-rewrite` as a single `WriterAgent` writing layer on top of the persisted transcript pipeline
 - Supports web-selected writing prompts / skills for rewrite requests
 - Validates selected writing prompts before rewrite, blocking empty bodies and broken placeholders
 - If the selected rewrite prompt contains `{{transcript}}`, backend injects source text into that prompt directly
@@ -567,10 +568,10 @@ Web frontend loop for component development:
 - Supports opening the exported file location after save
 - Includes backend/frontend runtime log export for debugging
 - Persists local session history for the job run, rewrite result, and chat turns
-- Persists intermediate debugging artifacts including inspect metadata, source mode, transcript text, and translated text
+- Persists intermediate debugging artifacts including inspect metadata, source mode, transcript text, rewrite output, and chat turns
 - Keeps session-history writes atomic per `content_context_id` so rewrite and chat updates do not clobber each other
 - Exposes `GET /api/session-history` and `GET /api/session-history/{content_context_id}` for local history viewing and search-backed reopening
-- Stores explicit saved sections for raw transcript, translated Chinese, rewritten Chinese, and chat follow-ups
+- Stores explicit saved sections for raw transcript, rewritten Chinese, and chat follow-ups
 - Remembers the last provider, model, source mode, and style selection in the web app
 - Shows explicit busy state and clearer captions vs audio progress in the web app
 - Normalizes user-facing errors for cookie, auth, upstream disconnect, and Whisper failures
@@ -591,13 +592,13 @@ Web frontend loop for component development:
 - YouTube parsing and video inspection logic are covered by backend tests.
 - Source-fetch logic is covered by backend tests.
 - Transcription logic is covered by backend tests.
-- Translation logic is covered by backend tests.
+- Rewrite flow and the auxiliary translate endpoint are covered by backend tests.
 - Full job orchestration is covered by backend tests.
 - `POST /api/video/fetch-source` was verified on a public video and returned `captions`.
 - Audio download was verified with a real file written to `tmp/dQw4w9WgXcQ.webm`.
 - Frontend UI was updated to a minimal centered layout and verified with local build and page load checks.
 - Translation provider switching and request-level translation settings are covered by backend tests.
-- Real end-to-end translation depends on valid provider credentials and available billing/quota.
+- Real end-to-end rewrite depends on valid provider credentials and available billing/quota.
 - Real `POST /api/jobs/run` audio fallback depends on a working local Whisper model download and local CPU time, not on `OPENAI_API_KEY`.
 - Python, pip, node, and npm are installed and available.
 

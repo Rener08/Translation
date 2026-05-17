@@ -69,6 +69,44 @@ export type ApiErrorResponseBody = {
   request_id?: unknown;
 };
 
+export type ApiErrorDetails = {
+  message: string;
+  errorCode: string;
+  retryable: boolean | null;
+  requestId: string;
+  status: number;
+};
+
+export type RecoveryActionKind =
+  | "retry"
+  | "retry-job"
+  | "retry-rewrite"
+  | "retry-detail-patch"
+  | "fallback-audio"
+  | "open-settings"
+  | "run-preflight"
+  | "reload-history"
+  | "reset-session";
+
+export type RecoveryAction = {
+  kind: RecoveryActionKind;
+  label: string;
+  description: string;
+  disabled?: boolean;
+};
+
+export type FailureDiagnostic = {
+  source: "job" | "rewrite" | "detail_patch" | "preflight" | "history";
+  title: string;
+  message: string;
+  details: string[];
+  errorCode: string | null;
+  retryable: boolean | null;
+  requestId: string;
+  stageLabel?: string | null;
+  actions: RecoveryAction[];
+};
+
 // Not re-exported from job.ts — internal use only
 export type ParsedApiError = {
   message: string;
@@ -136,6 +174,35 @@ export type SystemYtDlpCookiesResponse = {
   exists: boolean;
   cookies_text: string;
   byte_count: number;
+};
+
+export type PreflightCheck = {
+  name: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+};
+
+export type PreflightResponse = {
+  checks: PreflightCheck[];
+  all_ok: boolean;
+};
+
+export type ProviderTestConnectionResponse = {
+  ok: boolean;
+  provider: TranslationProvider;
+  reachable: boolean;
+  selected_model: string | null;
+  discovered_models: string[];
+  message: string;
+};
+
+export type SettingsPreflightResult = {
+  runtime: PreflightResponse;
+  provider: ProviderTestConnectionResponse;
+  allOk: boolean;
+  summary: string;
+  details: string[];
 };
 
 export type YouTubeAccessStatusResponse = {

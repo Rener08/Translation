@@ -43,6 +43,8 @@ class SessionRepository:
         source_type: str,
         translation_provider: str | None,
         translation_model: str | None,
+        translation_base_url: str | None = None,
+        skill_config_name: str | None = None,
         transcript_en_text: str,
         transcript_en_segments: list[dict[str, Any]],
         translation_zh_text: str,
@@ -72,6 +74,12 @@ class SessionRepository:
             payload["source_type"] = self._normalize_optional_text(source_type)
             payload["translation_provider"] = self._normalize_optional_text(translation_provider)
             payload["translation_model"] = self._normalize_optional_text(translation_model)
+            payload["translation_base_url"] = self._normalize_optional_text(
+                translation_base_url
+            ) or self._normalize_optional_text(payload.get("translation_base_url"))
+            payload["skill_config_name"] = self._normalize_optional_text(skill_config_name) or self._normalize_optional_text(
+                payload.get("skill_config_name")
+            )
             payload["transcript_en_text"] = transcript_en_text.strip()
             payload["transcript_en_segments"] = self._normalize_dict_list(transcript_en_segments)
             payload["translation_zh_text"] = translation_zh_text.strip()
@@ -96,18 +104,20 @@ class SessionRepository:
     def record_rewrite_result(
         self,
         *,
-        content_context_id: str,
-        rewrite_style: str | None = None,
-        rewrite_focus: str | None,
-        rewrite_source_text: str,
-        rewritten_text: str,
-        rewrite_quality_issues: list[str] | None = None,
-        rewrite_detail_coverage_issues: list[str] | None = None,
-        rewrite_provider: str,
-        rewrite_model: str,
-        writer_trace_id: str | None = None,
-        writer_policy_version: str | None = None,
-        writer_prompt_version: str | None = None,
+            content_context_id: str,
+            rewrite_style: str | None = None,
+            rewrite_focus: str | None,
+            rewrite_source_text: str,
+            rewritten_text: str,
+            rewrite_quality_issues: list[str] | None = None,
+            rewrite_detail_coverage_issues: list[str] | None = None,
+            rewrite_provider: str,
+            rewrite_model: str,
+            translation_base_url: str | None = None,
+            skill_config_name: str | None = None,
+            writer_trace_id: str | None = None,
+            writer_policy_version: str | None = None,
+            writer_prompt_version: str | None = None,
     ) -> None:
         normalized_id = self._normalize_key(content_context_id)
         if not normalized_id:
@@ -129,10 +139,80 @@ class SessionRepository:
             )
             payload["rewrite_provider"] = self._normalize_optional_text(rewrite_provider)
             payload["rewrite_model"] = self._normalize_optional_text(rewrite_model)
+            payload["rewrite_base_url"] = self._normalize_optional_text(
+                translation_base_url
+            ) or self._normalize_optional_text(payload.get("rewrite_base_url"))
+            payload["translation_base_url"] = self._normalize_optional_text(
+                translation_base_url
+            ) or self._normalize_optional_text(payload.get("translation_base_url"))
+            payload["skill_config_name"] = self._normalize_optional_text(skill_config_name) or self._normalize_optional_text(
+                payload.get("skill_config_name")
+            )
+            payload["rewrite_failure_error_code"] = None
+            payload["rewrite_failure_message"] = None
+            payload["rewrite_failure_retryable"] = None
+            payload["rewrite_failure_details"] = []
             payload["writer_trace_id"] = self._normalize_optional_text(writer_trace_id)
             payload["writer_policy_version"] = self._normalize_optional_text(writer_policy_version)
             payload["writer_prompt_version"] = self._normalize_optional_text(writer_prompt_version)
             payload["chat_turns"] = self._normalize_chat_turns(payload.get("chat_turns"))
+
+            persistent_cache_service.store_json_cache(
+                self.namespace, normalized_id, payload
+            )
+
+    def record_rewrite_failure(
+        self,
+        *,
+        content_context_id: str,
+        rewrite_style: str | None = None,
+        rewrite_focus: str | None,
+        rewrite_source_text: str,
+        rewrite_provider: str | None = None,
+        rewrite_model: str | None = None,
+        translation_base_url: str | None = None,
+        skill_config_name: str | None = None,
+        rewrite_failure_error_code: str | None = None,
+        rewrite_failure_message: str | None = None,
+        rewrite_failure_retryable: bool | None = None,
+        rewrite_failure_details: list[str] | None = None,
+    ) -> None:
+        normalized_id = self._normalize_key(content_context_id)
+        if not normalized_id:
+            return
+
+        now = self._now_iso()
+        with self._session_history_lock(normalized_id):
+            payload = self.load_session_history(normalized_id) or {}
+            payload["content_context_id"] = normalized_id
+            payload["created_at"] = str(payload.get("created_at") or now)
+            payload["updated_at"] = now
+            payload["rewrite_style"] = self._normalize_optional_text(rewrite_style)
+            payload["rewrite_focus"] = self._normalize_optional_text(rewrite_focus)
+            payload["rewrite_source_text"] = rewrite_source_text.strip()
+            payload["rewrite_provider"] = self._normalize_optional_text(rewrite_provider)
+            payload["rewrite_model"] = self._normalize_optional_text(rewrite_model)
+            payload["rewrite_base_url"] = self._normalize_optional_text(
+                translation_base_url
+            ) or self._normalize_optional_text(payload.get("rewrite_base_url"))
+            payload["translation_base_url"] = self._normalize_optional_text(
+                translation_base_url
+            ) or self._normalize_optional_text(payload.get("translation_base_url"))
+            payload["skill_config_name"] = self._normalize_optional_text(skill_config_name) or self._normalize_optional_text(
+                payload.get("skill_config_name")
+            )
+            payload["rewrite_failure_error_code"] = self._normalize_optional_text(
+                rewrite_failure_error_code
+            )
+            payload["rewrite_failure_message"] = self._normalize_optional_text(
+                rewrite_failure_message
+            )
+            payload["rewrite_failure_retryable"] = (
+                bool(rewrite_failure_retryable)
+                if rewrite_failure_retryable is not None
+                else None
+            )
+            payload["rewrite_failure_details"] = self._normalize_text_list(rewrite_failure_details)
 
             persistent_cache_service.store_json_cache(
                 self.namespace, normalized_id, payload
@@ -303,6 +383,27 @@ class SessionRepository:
             normalized.get("rewrite_provider")
         )
         normalized["rewrite_model"] = self._normalize_optional_text(normalized.get("rewrite_model"))
+        normalized["rewrite_base_url"] = self._normalize_optional_text(
+            normalized.get("rewrite_base_url")
+        )
+        normalized["translation_base_url"] = self._normalize_optional_text(
+            normalized.get("translation_base_url")
+        )
+        normalized["skill_config_name"] = self._normalize_optional_text(
+            normalized.get("skill_config_name")
+        )
+        normalized["rewrite_failure_error_code"] = self._normalize_optional_text(
+            normalized.get("rewrite_failure_error_code")
+        )
+        normalized["rewrite_failure_message"] = self._normalize_optional_text(
+            normalized.get("rewrite_failure_message")
+        )
+        normalized["rewrite_failure_retryable"] = self._normalize_optional_bool(
+            normalized.get("rewrite_failure_retryable")
+        )
+        normalized["rewrite_failure_details"] = self._normalize_text_list(
+            normalized.get("rewrite_failure_details")
+        )
         normalized["writer_trace_id"] = self._normalize_optional_text(normalized.get("writer_trace_id"))
         normalized["writer_policy_version"] = self._normalize_optional_text(
             normalized.get("writer_policy_version")
@@ -375,6 +476,11 @@ class SessionRepository:
     def _normalize_optional_text(self, value: object | None) -> str | None:
         text = self._normalize_text(value)
         return text or None
+
+    def _normalize_optional_bool(self, value: object | None) -> bool | None:
+        if isinstance(value, bool):
+            return value
+        return None
 
     def _payload_matches_account(self, payload_account_id: object | None, account_id: object | None) -> bool:
         normalized_account_id = self._normalize_text(account_id)

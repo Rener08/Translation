@@ -2,8 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 
-import { JobResult, apiFetch, extractApiErrorMessage } from "../lib/job";
-
+import {
+  JobResult,
+  TranslationSettings,
+  apiFetch,
+  defaultSettings,
+  extractApiErrorMessage,
+  getDefaultSkillConfigNameForRewriteStyle,
+  normalizeTranslationModel,
+} from "../lib/job";
+import type { FailureDiagnostic, RecoveryAction } from "../lib/types";
 
 export type SessionHistorySummary = {
   content_context_id: string;
@@ -21,6 +29,10 @@ export type SessionHistoryDetail = {
   video_duration_sec?: number | null;
   video_uploader?: string | null;
   source_type?: "captions" | "audio" | null;
+  source_mode?: "subtitle_first" | "force_audio" | null;
+  translation_provider?: string | null;
+  translation_model?: string | null;
+  translation_base_url?: string | null;
   transcript_en_text?: string;
   transcript_en_segments?: Array<{
     index: number;
@@ -39,6 +51,17 @@ export type SessionHistoryDetail = {
   rewritten_text?: string;
   rewrite_provider?: string | null;
   rewrite_model?: string | null;
+  rewrite_base_url?: string | null;
+  rewrite_style?: "speech_verbatim" | "article_longform" | null;
+  skill_config_name?: "kazix" | "latepost" | null;
+  rewrite_focus?: string | null;
+  rewrite_source_text?: string;
+  rewrite_quality_issues?: string[];
+  rewrite_detail_coverage_issues?: string[];
+  rewrite_failure_error_code?: string | null;
+  rewrite_failure_message?: string | null;
+  rewrite_failure_retryable?: boolean | null;
+  rewrite_failure_details?: string[];
   chat_turns?: Array<{
     role: "user" | "assistant";
     content: string;
@@ -46,11 +69,139 @@ export type SessionHistoryDetail = {
   }>;
 };
 
+export type RestoredSettingsSnapshot = Pick<
+  TranslationSettings,
+  "provider" | "sourceMode" | "baseUrl" | "model" | "rewriteStyle" | "skillConfigName"
+>;
+
+export type RestoredFailureState = {
+  source: FailureDiagnostic["source"];
+  message: string;
+  errorCode: string | null;
+  retryable: boolean | null;
+  details: string[];
+};
+
 export type RestoredConversationState = {
   rewrittenText: string;
   rewriteProviderLabel: string;
   messages: Array<{ role: "user" | "assistant"; content: string }>;
+  detailCoverageIssues: string[];
+  failure: RestoredFailureState | null;
 };
+
+export function buildRestoredSessionState(data: SessionHistoryDetail): {
+  youtubeUrl: string;
+  restoredSettings: RestoredSettingsSnapshot;
+  jobResult: JobResult;
+  restoredConversation: RestoredConversationState | null;
+} {
+  const rewrittenText = String(data.rewritten_text || "").trim();
+  const translationProvider = String(
+    data.rewrite_provider || data.translation_provider || defaultSettings.provider,
+  ).trim();
+  const rewriteProvider = translationProvider;
+  const rewriteModel = String(
+    data.rewrite_model || data.translation_model || defaultSettings.model,
+  ).trim();
+  const rewriteBaseUrl = String(
+    data.rewrite_base_url || data.translation_base_url || "",
+  ).trim();
+  const rewriteStyle = (data.rewrite_style ?? defaultSettings.rewriteStyle) as RestoredSettingsSnapshot["rewriteStyle"];
+  const skillConfigName =
+    data.skill_config_name ??
+    getDefaultSkillConfigNameForRewriteStyle(rewriteStyle);
+  const sourceMode = (data.source_mode ?? defaultSettings.sourceMode) as RestoredSettingsSnapshot["sourceMode"];
+  const normalizedModel = normalizeTranslationModel(
+    rewriteProvider as RestoredSettingsSnapshot["provider"],
+    rewriteModel,
+  );
+  const rewriteProviderLabel =
+    rewriteProvider && normalizedModel
+      ? `${rewriteProvider} · ${normalizedModel}`
+      : rewriteProvider || normalizedModel;
+  const restoredMessages = Array.isArray(data.chat_turns)
+    ? data.chat_turns
+        .filter(
+          (turn): turn is { role: "user" | "assistant"; content: string } =>
+            !!turn &&
+            (turn.role === "user" || turn.role === "assistant") &&
+            typeof turn.content === "string" &&
+            turn.content.trim().length > 0,
+        )
+        .map((turn) => ({ role: turn.role, content: turn.content }))
+    : [];
+  const detailCoverageIssues = Array.isArray(data.rewrite_detail_coverage_issues)
+    ? data.rewrite_detail_coverage_issues
+        .map((issue) => String(issue || "").trim())
+        .filter(Boolean)
+    : [];
+  const failureMessage = String(data.rewrite_failure_message || "").trim();
+  const failureErrorCode = String(data.rewrite_failure_error_code || "").trim();
+  const failureDetails = Array.isArray(data.rewrite_failure_details)
+    ? data.rewrite_failure_details
+        .map((detail) => String(detail || "").trim())
+        .filter(Boolean)
+    : [];
+  const failure =
+    failureMessage || failureErrorCode
+      ? {
+          source:
+            detailCoverageIssues.length > 0 ? ("detail_patch" as const) : ("rewrite" as const),
+          message: failureMessage || "上次改写失败。",
+          errorCode: failureErrorCode || null,
+          retryable:
+            typeof data.rewrite_failure_retryable === "boolean"
+              ? data.rewrite_failure_retryable
+              : null,
+          details: failureDetails,
+        }
+      : null;
+
+  return {
+    youtubeUrl: data.video_url ?? "",
+    restoredSettings: {
+      provider: rewriteProvider as RestoredSettingsSnapshot["provider"],
+      sourceMode,
+      baseUrl: rewriteBaseUrl,
+      model: normalizedModel,
+      rewriteStyle,
+      skillConfigName,
+    },
+    jobResult: {
+      ok: true,
+      video: {
+        video_id: data.video_id ?? "",
+        title: data.video_title ?? "未命名视频",
+        thumbnail: data.video_thumbnail ?? null,
+        duration_sec: data.video_duration_sec ?? null,
+        uploader: data.video_uploader ?? null,
+      },
+      source_type: data.source_type ?? "captions",
+      content_context_id: data.content_context_id,
+      transcript_en: {
+        text: data.transcript_en_text ?? "",
+        segments: data.transcript_en_segments ?? [],
+      },
+      translation_zh: {
+        segments: data.translation_zh_segments ?? [],
+      },
+    },
+    restoredConversation:
+      rewrittenText ||
+      restoredMessages.length > 0 ||
+      detailCoverageIssues.length > 0 ||
+      failure
+        ? {
+            rewrittenText,
+            rewriteProviderLabel,
+            messages: restoredMessages,
+            detailCoverageIssues,
+            failure,
+          }
+        : null,
+  };
+}
 
 export type SearchHistoryItem = {
   url: string;
@@ -80,6 +231,7 @@ type UseSessionHistoryParams = {
   onOpenSession: (payload: {
     youtubeUrl: string;
     jobResult: JobResult;
+    restoredSettings: RestoredSettingsSnapshot;
     restoredConversation: RestoredConversationState | null;
   }) => void;
 };
@@ -95,6 +247,50 @@ export function useSessionHistory({
   const [historyItems, setHistoryItems] = useState<SessionHistorySummary[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState("");
+  const [historyFailureDiagnostic, setHistoryFailureDiagnostic] =
+    useState<FailureDiagnostic | null>(null);
+
+  function buildRecoveryAction(
+    kind: RecoveryAction["kind"],
+    label: string,
+    description: string,
+    disabled = false,
+  ): RecoveryAction {
+    return {
+      kind,
+      label,
+      description,
+      ...(disabled ? { disabled: true } : {}),
+    };
+  }
+
+  function setHistoryFailure(
+    title: string,
+    message: string,
+    errorCode: string | null,
+    retryable: boolean | null,
+    details: string[],
+  ) {
+    const diagnostic: FailureDiagnostic = {
+      source: "history",
+      title,
+      message,
+      details,
+      errorCode,
+      retryable,
+      requestId: "",
+      actions: [
+        buildRecoveryAction("reload-history", "重新加载历史", "再次读取本地会话历史。"),
+      ],
+    };
+    setHistoryFailureDiagnostic(diagnostic);
+    setHistoryError(message);
+  }
+
+  function clearHistoryFailure() {
+    setHistoryFailureDiagnostic(null);
+    setHistoryError("");
+  }
 
   useEffect(() => {
     try {
@@ -117,7 +313,7 @@ export function useSessionHistory({
 
   async function loadHistory() {
     setHistoryLoading(true);
-    setHistoryError("");
+    clearHistoryFailure();
     try {
       const response = await apiFetch("/api/session-history?limit=30");
       if (!response.ok) {
@@ -126,8 +322,14 @@ export function useSessionHistory({
       const data = (await response.json()) as { items?: SessionHistorySummary[] };
       setHistoryItems(Array.isArray(data.items) ? data.items : []);
     } catch (error) {
-      setHistoryError(
-        error instanceof Error ? error.message : "Failed to load history.",
+      const message = error instanceof Error ? error.message : "Failed to load history.";
+      setHistoryError(message);
+      setHistoryFailure(
+        "历史加载失败",
+        message,
+        null,
+        true,
+        ["请稍后重新加载历史，或检查后端是否可访问。"],
       );
     } finally {
       setHistoryLoading(false);
@@ -136,6 +338,7 @@ export function useSessionHistory({
 
   useEffect(() => {
     void loadHistory();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function recordSearchHistory(url: string, title: string) {
@@ -169,57 +372,22 @@ export function useSessionHistory({
         throw new Error(await extractApiErrorMessage(response));
       }
       const data = (await response.json()) as SessionHistoryDetail;
-      const rewrittenText = String(data.rewritten_text || "").trim();
-      const rewriteProvider = String(data.rewrite_provider || "").trim();
-      const rewriteModel = String(data.rewrite_model || "").trim();
-      const rewriteProviderLabel =
-        rewriteProvider && rewriteModel
-          ? `${rewriteProvider} · ${rewriteModel}`
-          : rewriteProvider || rewriteModel;
-      const restoredMessages = Array.isArray(data.chat_turns)
-        ? data.chat_turns
-            .filter(
-              (turn): turn is { role: "user" | "assistant"; content: string } =>
-                !!turn &&
-                (turn.role === "user" || turn.role === "assistant") &&
-                typeof turn.content === "string" &&
-                turn.content.trim().length > 0,
-            )
-            .map((turn) => ({ role: turn.role, content: turn.content }))
-        : [];
+      clearHistoryFailure();
+
+      const restored = buildRestoredSessionState(data);
       onOpenSession({
-        youtubeUrl: data.video_url ?? "",
-        jobResult: {
-          ok: true,
-          video: {
-            video_id: data.video_id ?? "",
-            title: data.video_title ?? "未命名视频",
-            thumbnail: data.video_thumbnail ?? null,
-            duration_sec: data.video_duration_sec ?? null,
-            uploader: data.video_uploader ?? null,
-          },
-          source_type: data.source_type ?? "captions",
-          content_context_id: data.content_context_id,
-          transcript_en: {
-            text: data.transcript_en_text ?? "",
-            segments: data.transcript_en_segments ?? [],
-          },
-          translation_zh: {
-            segments: data.translation_zh_segments ?? [],
-          },
-        },
-        restoredConversation:
-          rewrittenText || restoredMessages.length > 0
-            ? {
-                rewrittenText,
-                rewriteProviderLabel,
-                messages: restoredMessages,
-              }
-            : null,
+        ...restored,
       });
     } catch (error) {
-      setHistoryError(
-        error instanceof Error ? error.message : "Failed to open history session.",
+      const message =
+        error instanceof Error ? error.message : "Failed to open history session.";
+      setHistoryError(message);
+      setHistoryFailure(
+        "历史重开失败",
+        message,
+        null,
+        true,
+        ["请重新尝试打开相同会话，或重新加载历史列表。"],
       );
     }
   }
@@ -277,6 +445,7 @@ export function useSessionHistory({
   return {
     historyLoading,
     historyError,
+    historyFailureDiagnostic,
     sidebarItems,
     loadHistory,
     openHistorySession,

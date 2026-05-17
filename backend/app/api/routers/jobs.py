@@ -315,6 +315,11 @@ def _persist_job_session(
                 if translation_config and translation_config.get("model")
                 else None
             ),
+            translation_base_url=(
+                str(translation_config.get("base_url"))
+                if translation_config and translation_config.get("base_url")
+                else None
+            ),
             transcript_en_text=result.transcript_en.text,
             transcript_en_segments=[
                 {

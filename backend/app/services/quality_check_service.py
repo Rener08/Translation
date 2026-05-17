@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from app.services.detail_ledger import (
     DetailLedger,
@@ -20,6 +21,7 @@ class QualityIssue:
     matched: str
     message: str
     fix_hint: str
+    severity: Literal["hard", "soft"] = "hard"
 
 
 @dataclass(frozen=True)
@@ -154,8 +156,54 @@ def _check_output_length(
             matched=str(length),
             message=f"输出字数 {length} 超过最高限制 {spec.max_chars}",
             fix_hint=f"请精简内容至 {spec.max_chars} 字以内",
-        ))
+            ))
     return issues
+
+
+def _check_soft_output_length_ratio(
+    *,
+    text: str,
+    source_text: str,
+    spec: SkillOutputSpec,
+) -> list[QualityIssue]:
+    ratio_min = spec.source_length_ratio_min
+    ratio_max = spec.source_length_ratio_max
+    if ratio_min is None and ratio_max is None:
+        return []
+
+    normalized_source = (source_text or "").strip()
+    if not normalized_source:
+        return []
+
+    source_length = len(normalized_source)
+    if source_length <= 0:
+        return []
+
+    min_ratio = ratio_min if ratio_min is not None else 0.0
+    max_ratio = ratio_max if ratio_max is not None else 1.0
+    if max_ratio < min_ratio:
+        min_ratio, max_ratio = max_ratio, min_ratio
+
+    min_chars = max(1, round(source_length * min_ratio))
+    max_chars = max(min_chars, round(source_length * max_ratio))
+    current_chars = len((text or "").strip())
+    if min_chars <= current_chars <= max_chars:
+        return []
+
+    return [
+        QualityIssue(
+            severity="soft",
+            layer="L2 篇幅建议",
+            check_type="output_length_ratio",
+            position=-1,
+            matched=str(current_chars),
+            message=(
+                f"输出字数 {current_chars} 建议控制在原文长度的 "
+                f"{int(min_ratio * 100)}%-{int(max_ratio * 100)}%（约 {min_chars}-{max_chars} 字）"
+            ),
+            fix_hint="请按原文篇幅比例适当压缩或扩展。",
+        )
+    ]
 
 
 _CHECK_DISPATCH: dict[str, callable] = {
@@ -206,8 +254,15 @@ def check_article_quality(
             layers_passed += 1
         all_issues.extend(layer_issues)
 
+    soft_length_issues = _check_soft_output_length_ratio(
+        text=text,
+        source_text=source_text,
+        spec=skill_config.output,
+    )
+    all_issues.extend(soft_length_issues)
+
     return QualityReport(
-        passed=len(all_issues) == 0,
+        passed=all(issue.severity != "hard" for issue in all_issues),
         issues=tuple(all_issues),
         layers_checked=layers_checked,
         layers_passed=layers_passed,
@@ -216,10 +271,11 @@ def check_article_quality(
 
 def build_revision_prompt(report: QualityReport) -> str:
     """Build a revision prompt from quality issues."""
-    if not report.issues:
+    hard_issues = [issue for issue in report.issues if issue.severity == "hard"]
+    if not hard_issues:
         return ""
     lines = ["请修订以下问题，只改有问题的部分，保留其余内容："]
-    for i, issue in enumerate(report.issues, 1):
+    for i, issue in enumerate(hard_issues, 1):
         if issue.position >= 0:
             lines.append(f"{i}. 第{issue.position}字处{issue.message}，{issue.fix_hint}")
         else:

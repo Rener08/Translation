@@ -1,5 +1,8 @@
+"use client";
+
 import { useEffect, useState } from "react";
 
+import { PreflightPanel } from "./preflight-panel";
 import {
   clearYtDlpCookies,
   DEEPSEEK_MODEL_OPTIONS,
@@ -12,15 +15,22 @@ import {
   type TranslationProvider,
   type TranslationSettings,
 } from "../lib/job";
+import type { SettingsPreflightResult } from "../lib/types";
 
 type TranslationSettingsPanelProps = {
   settings: TranslationSettings;
   onChange: (nextSettings: TranslationSettings) => void;
+  preflightRequestKey: number;
+  onPreflightResult: (result: SettingsPreflightResult | null) => void;
+  onCloseSettings?: () => void;
 };
 
 export function TranslationSettingsPanel({
   settings,
   onChange,
+  preflightRequestKey,
+  onPreflightResult,
+  onCloseSettings,
 }: TranslationSettingsPanelProps) {
   const modelPlaceholder = getProviderModelPlaceholder(settings.provider);
   const [cookiesText, setCookiesText] = useState("");
@@ -35,7 +45,7 @@ export function TranslationSettingsPanel({
       : settings.provider === "openai"
         ? "粘贴 OpenAI API Key"
         : "本地模型通常不需要 API Key";
-  const cookiesCanEdit = cookiesConfigured && Boolean(cookiesEffectivePath);
+  const cookiesSaveAvailable = cookiesConfigured && Boolean(cookiesEffectivePath);
 
   async function refreshCookies() {
     setCookiesLoading(true);
@@ -63,7 +73,7 @@ export function TranslationSettingsPanel({
   const modelOptions = isDeepseekProvider ? DEEPSEEK_MODEL_OPTIONS : [];
 
   async function handleSaveCookies() {
-    if (!cookiesCanEdit) {
+    if (!cookiesSaveAvailable) {
       setCookiesError("请先在 .env 中设置 YTDLP_COOKIES_FILE 的绝对路径，再保存 cookies。");
       return;
     }
@@ -82,7 +92,7 @@ export function TranslationSettingsPanel({
   }
 
   async function handleClearCookies() {
-    if (!cookiesCanEdit) {
+    if (!cookiesSaveAvailable) {
       setCookiesError("当前没有可编辑的 cookies 文件路径。");
       return;
     }
@@ -224,16 +234,19 @@ export function TranslationSettingsPanel({
           <span>cookies.txt</span>
           <textarea
             className="settings-cookie-textarea"
-            placeholder={
-              cookiesCanEdit
-                ? "粘贴 Netscape 格式的 cookies.txt 内容。"
-                : "请先在 .env 中配置 YTDLP_COOKIES_FILE 绝对路径。"
-            }
+            placeholder="粘贴 Netscape 格式的 cookies.txt 内容。"
             value={cookiesText}
             onChange={(event) => setCookiesText(event.target.value)}
             spellCheck={false}
-            disabled={cookiesLoading || cookiesSaving || !cookiesCanEdit}
+            disabled={cookiesLoading || cookiesSaving}
+            readOnly={cookiesLoading || cookiesSaving}
           />
+          {!cookiesSaveAvailable ? (
+            <p className="settings-cookie-note">
+              当前没有可写的 cookies 文件路径。你可以先粘贴内容，但要真正保存到磁盘，
+              需要在 `.env` 中设置 `YTDLP_COOKIES_FILE` 的绝对路径并重启后端。
+            </p>
+          ) : null}
         </label>
 
         <div className="settings-cookie-actions">
@@ -241,7 +254,7 @@ export function TranslationSettingsPanel({
             className="settings-cookie-button settings-cookie-button-primary"
             type="button"
             onClick={() => void handleSaveCookies()}
-            disabled={cookiesLoading || cookiesSaving || !cookiesCanEdit}
+            disabled={cookiesLoading || cookiesSaving}
           >
             {cookiesSaving ? "保存中..." : "保存 cookies"}
           </button>
@@ -249,7 +262,7 @@ export function TranslationSettingsPanel({
             className="settings-cookie-button"
             type="button"
             onClick={() => void handleClearCookies()}
-            disabled={cookiesLoading || cookiesSaving || !cookiesCanEdit}
+            disabled={cookiesLoading || cookiesSaving || !cookiesSaveAvailable}
           >
             清空文件
           </button>
@@ -259,6 +272,13 @@ export function TranslationSettingsPanel({
           <p className="settings-cookie-error">{cookiesError}</p>
         ) : null}
       </section>
+
+      <PreflightPanel
+        settings={settings}
+        requestKey={preflightRequestKey}
+        onResult={onPreflightResult}
+        onCloseSettings={onCloseSettings}
+      />
     </section>
   );
 }

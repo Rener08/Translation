@@ -9,9 +9,10 @@ It does not assume auth, cloud deployment, mobile, or a generic multi-agent plat
 
 Current target loop:
 
-1. Input YouTube URL
-2. Build `MaterialPackage` from deterministic ingest
-3. Run `WriterAgent` in the user's selected `rewrite_style`:
+1. Input YouTube URL or local audio upload
+2. Build `content_context_id` from deterministic ingest
+   (`inspect -> captions/audio -> transcribe -> persist`)
+3. Run `WriterAgent` in the user's selected `rewrite_style` against the persisted source text:
    - default `speech_verbatim`: `DetailLedger -> draft -> coverage check -> single patch for missing hard items`
    - explicit `article_longform`: legacy `resolve ArticleSpec -> outline -> draft -> validate -> revise once`
 4. Surface remaining gaps as `detail_coverage_issues` for an optional "patch again" action
@@ -20,7 +21,7 @@ Current target loop:
 
 Contract chain:
 
-`URL -> MaterialPackage -> WriterAgent (rewrite_style) -> ArticleDraft -> Revision Chat -> Export`
+`URL / upload -> content_context_id -> WriterAgent (rewrite_style) -> ArticleDraft -> Revision Chat -> Export`
 
 ## Review Follow-ups
 
@@ -32,8 +33,90 @@ These items came out of the latest repo review and are not yet fully closed in c
 - [ ] Make job cancellation and stage timeout propagation kill child subprocesses and long-running fetches end-to-end.
 - [ ] Tighten YouTube error classification and user guidance for `PO_TOKEN_REQUIRED`, `COOKIE_REQUIRED`, `COOKIE_STALE`, `YOUTUBE_BOT_CHECK`, `VIDEO_REGION_BLOCKED`, `VIDEO_UNAVAILABLE`, and `YOUTUBE_429`.
 - [ ] Add frontend automated tests for history restore, settings persistence, and rewrite/chat request races.
-- [ ] Refresh README and product-contract docs so they match the active ingest + rewrite flow and the new fallback behavior.
+- [x] Refresh README, product-contract, architecture, CONTRIBUTING, and backlog docs so they match the active ingest + rewrite flow and the new fallback behavior.
 - [ ] Add a runtime supervisor / launcher boundary for the future macOS wrapper.
+
+## Mainline Acceptance
+
+These are the shipping gates for the current product path. They do not depend on `backend/app/agents/`.
+
+- [ ] `YouTube URL -> content_context_id -> WriterAgent -> article draft -> revision chat -> export` runs end to end.
+- [ ] Local audio upload uses the same mainline path and can be reopened from history.
+- [ ] YouTube failures surface structured diagnostics and an explicit fallback action.
+- [ ] Rewrite failures and detail-patch failures keep the user on the page with a retry path.
+- [ ] History reopen restores the usable article context, not just the source metadata.
+- [ ] Backend tests, frontend lint, and frontend build stay green.
+
+### Frontend Acceptance
+
+These are the user-visible checks that must hold on the web UI before the mainline can be treated as stable.
+
+- [ ] `检查环境` CTA opens a real preflight/doctor flow, not just the settings panel shell.
+- [ ] Settings preflight checks both local runtime readiness and the currently selected provider/model/API key, then feeds that result back into submit gating.
+- [ ] Preflight, history, and failure states show structured diagnostics with `error_code`, `retryable`, and a concrete recovery action instead of a single generic string.
+- [ ] Reopening a session restores the historical settings semantics, including `provider`, `model`, and `rewriteStyle`, so retry/continue actions use the original session context.
+- [ ] Reopening a session preserves `detailCoverageIssues`, failure state, and patch eligibility so the user can see what was still missing.
+- [ ] The result page shows the original transcript/material alongside the rewrite output and chat so users can verify source fidelity and debug bad rewrites.
+
+## Experimental Agent Loop
+
+`backend/app/agents/` is an experimental package. It is kept for research and future evaluation, not as the shipping roadmap for this checkout.
+
+Current experimental direction:
+
+**参考仓库**（从易到难）：
+- ⭐ OpenAI Agents Python（单 agent + tool calling + handoff）
+- ⭐ AI Agents From Scratch（agent loop 结构 + checkpoint）
+- Microsoft AI Agents for Beginners（入门课程 + 简单 agent）
+- pguso AI Agents From Scratch（不用框架，从零写 agent loop）
+- LangGraph 101（notebook 教程，状态机式 agent）
+- 不借鉴：LangGraph/CrewAI 的多 agent 编排（太重，不适合单 agent 场景）
+
+### Phase 1: Agent Loop 基础架构（研究）
+
+**目标**: 包裹现有 pipeline，实现 observe → decide → act → check 循环，但只作为实验验证，不进入主线验收。
+
+- [ ] 1.1 定义 AgentState（`backend/app/agents/state.py`）
+- [ ] 1.2 定义 AgentAction（`backend/app/agents/action.py`）
+- [ ] 1.3 实现 Agent Loop（`backend/app/agents/loop.py`）
+- [ ] 1.4 包裹现有 Pipeline
+- [ ] 1.5 单元测试
+
+### Phase 2: Tool Calling + Error Recovery（研究）
+
+**目标**: 验证工具调用和重试策略是否真的能提升质量，而不是增加复杂度。
+
+- [ ] 2.1 定义 Tool 接口（`backend/app/agents/tools.py`）
+- [ ] 2.2 实现基础 Tools
+- [ ] 2.3 Tool Registry
+- [ ] 2.4 Error Recovery 逻辑
+- [ ] 2.5 集成到 Agent Loop
+
+### Phase 3: Checkpoint + Trace（研究）
+
+**目标**: 验证中断恢复和执行回放是否值得产品化。
+
+- [ ] 3.1 Checkpoint Schema（`backend/app/models/checkpoint.py`）
+- [ ] 3.2 Checkpoint 持久化
+- [ ] 3.3 Checkpoint 恢复逻辑
+- [ ] 3.4 Execution Trace
+- [ ] 3.5 Trace 可视化（可选）
+
+**研究验收标准**：
+- [ ] Agent loop 可以完整执行现有 pipeline
+- [ ] LLM 可以调用 3 个基础工具
+- [ ] Rate limit 错误自动重试
+- [ ] 中断后可以从 checkpoint 恢复
+- [ ] Execution trace 记录完整
+- [ ] 所有现有产品测试通过，且默认主线不依赖该功能
+
+**备注**：实验能力默认关闭，任何产品化决定都必须先回到主线验收门槛。
+
+## Test Status
+
+- [x] `backend/tests/test_jobs_run.py` is green on the current checkout; the old translation-stage cleanup note is stale.
+- [x] `backend/tests/test_writer_agent.py::test_writer_agent_speech_verbatim_rejects_truncated_patch_output` already uses Chinese source text and passes.
+- [ ] Frontend automated tests still need to be added for history restore, settings persistence, and rewrite/chat request races.
 
 ## Web UI Development Guide
 
@@ -82,15 +165,15 @@ This page is the post-run workspace.
   - Keep the top-row toggle and new-chat controls in the same placement.
   - Keep settings in the lower-left corner.
 - Main area:
-  - Use one large central task area for translated content and follow-up discussion.
-  - Translation output and content Q&A should live in the same conversation-style container.
+  - Use one large central task area for the article draft and follow-up discussion.
+  - The article draft and content Q&A should live in the same conversation-style container.
   - Remove the assistant icon and any redundant helper decorations.
-  - Do not split translation and chat into separate right-side panels.
+  - Do not split the article draft and chat into separate right-side panels.
   - Copy and export actions should sit near the content header and align with the text block.
   - The output should read like direct Chinese content, not like a tool dashboard.
 - Behavior:
   - The result page should feel like a single working document.
-  - The input for follow-up questions should attach to the same pane as the translation result.
+  - The input for follow-up questions should attach to the same pane as the article result.
   - The page should not re-show the YouTube URL as a visible content block.
 
 ### Acceptance checks
@@ -102,35 +185,11 @@ This page is the post-run workspace.
 - No extra subtitle appears under the product title.
 - No secondary right sidebar appears on the result page.
 - Copy and export controls are aligned with the main content header.
-- Translation output and chat content share one main result surface.
-
-## In Progress（当前未完成）
-
-架构改造：主流水线移除翻译步骤，WriterAgent 直接处理英文输入。后端代码已完成，测试修复未完成。
-
-### 测试修复（在 Mac 上继续）
-
-- [ ] `tests/test_jobs_run.py` — 9 个测试仍有 `monkeypatch.setattr("app.services.job_run_service.translate_segments_to_chinese", ...)` 需要删除，对应断言改为 `assert result.translation_zh_segments == []`：
-  - `test_run_video_job_transcribes_audio_source`
-  - `test_run_video_job_with_translation_config_forwards_force_audio_mode`
-  - `test_run_video_job_falls_back_to_single_segment_when_transcript_has_no_segments`
-  - `test_run_video_job_forwards_translation_config`
-  - `test_run_video_job_can_attach_speakers_when_enabled`
-  - `test_run_video_job_merges_caption_lines_before_translation`（改为检查 `result.transcript_en.segments`）
-  - `test_run_video_job_emits_stage_progress_in_order`（删除 `translate` stage）
-  - `test_run_video_job_cancels_at_stage_boundary_before_translate`（改为在 `persist` 阶段取消）
-  - `test_run_video_job_reuses_material_transcript_cache`
-- [ ] `tests/test_writer_agent.py::test_writer_agent_speech_verbatim_rejects_truncated_patch_output` — `MaterialPackage(source_text=...)` 还是英文，需改为中文（`"NASA表示，3枚火箭于晚上8点发射。SpaceX对此进行了确认。"`）
-
-### 前端更新（Phase 4）
-
-- [ ] 移除"翻译中"进度步骤，改写流程直接显示"改写中"
-- [ ] 历史记录里 `translation_zh_text` 为空时前端不崩溃（加 fallback）
-- [ ] 可选：加"查看逐段翻译"按钮（按需触发 `/api/translate`）
+- Article draft and chat content share one main result surface.
 
 ## Done
 
-- [x] Local FastAPI backend for inspect -> fetch source -> transcribe -> translate
+- [x] Local FastAPI backend for inspect -> fetch source -> transcribe -> persist content context
 - [x] Native macOS desktop app for local testing
 - [x] Desktop app auto-starts backend when needed
 - [x] Rewrite-first desktop result area
@@ -174,7 +233,7 @@ This page is the post-run workspace.
   - full prompt containing `{{transcript}}` wins
   - otherwise backend-managed rewrite references and routing win
 - [x] Add one integration test for the full desktop-facing rewrite path:
-  - translated text generated
+  - rewrite output generated
   - selected prompt passed through
   - rewritten Chinese returned
 - [x] Add better rewrite error reporting in backend responses:
@@ -189,15 +248,13 @@ This page is the post-run workspace.
 - [x] Persist local session history
   - URL
   - transcript source
-  - translation result
-  - rewritten result
+  - rewrite result
   - chat turns
 - [x] Add local history sidebar in desktop app
 - [x] Add search over local history
 - [x] Add “reopen previous run” flow from history
 - [x] Add explicit result sections in saved data:
   - raw transcript
-  - translated Chinese
   - rewritten Chinese
   - chat follow-ups
 - [x] Add richer export formats from desktop app
@@ -230,7 +287,7 @@ This page is the post-run workspace.
   - inspect metadata
   - fetched source mode
   - transcript text
-  - translated text
+  - rewrite output
 - [x] Add a lightweight local run log view inside desktop app
 - [x] Normalize user-facing errors for:
   - yt-dlp cookie failures
@@ -259,7 +316,7 @@ This page is the post-run workspace.
 - [x] Remove old translation-only wording from entry and sidebar
 - [x] Reposition cookie hints as advanced fallback only
 - [x] Remove unreferenced legacy frontend components and dead helper exports
-- [x] Promote article draft as the only primary result block (transcript/translation in details)
+- [x] Promote article draft as the only primary result block (transcript/source details)
 
 ## MVP manual smoke (repeat before releases)
 

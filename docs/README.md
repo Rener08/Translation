@@ -17,11 +17,13 @@ Current source-of-truth notes:
 - Rewrite output is stored separately from the rendered Markdown so copy/export/history replay preserve the original structure.
 - Session history writes are atomic per `content_context_id` so rewrite and chat updates do not overwrite each other.
 - Imported writing prompts are validated before rewrite so empty bodies and broken placeholders fail fast.
-- The writing layer now runs through a single `WriterAgent` flow: spec -> outline -> draft -> quality check -> revise once.
+- The writing layer now runs through a single `WriterAgent` flow: `speech_verbatim` uses a `DetailLedger` coverage loop by default, while `article_longform` keeps the legacy outline/draft/validate/revise path only when explicitly selected.
 - Web is the only active product UI.
-- The app persists inspect metadata, source mode, transcript text, and translated text for local debugging.
+- The app persists inspect metadata, source mode, transcript text, rewrite output, and chat turns for local debugging.
 - Cookie guidance is advanced fallback only for restricted videos.
 - The web frontend is the primary user-facing workflow.
+- Experimental agent-loop code under `backend/app/agents/` is not part of the shipping contract.
+- Mainline acceptance and shipping gates live in [`TODO.md`](../TODO.md#mainline-acceptance).
 
 ## 2. Runtime Prompt And Style Assets
 

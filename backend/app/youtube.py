@@ -452,6 +452,7 @@ class SessionHistoryDetailResponse(BaseModel):
     updated_at: str
     translation_provider: str | None = None
     translation_model: str | None = None
+    translation_base_url: str | None = None
     transcript_en_text: str = ""
     transcript_en_segments: list[TranscriptSegmentResponse] = Field(default_factory=list)
     translation_zh_text: str = ""
@@ -463,6 +464,13 @@ class SessionHistoryDetailResponse(BaseModel):
     rewrite_detail_coverage_issues: list[str] = Field(default_factory=list)
     rewrite_provider: str | None = None
     rewrite_model: str | None = None
+    rewrite_base_url: str | None = None
+    rewrite_style: RewriteStyle | None = None
+    skill_config_name: str | None = None
+    rewrite_failure_error_code: str | None = None
+    rewrite_failure_message: str | None = None
+    rewrite_failure_retryable: bool | None = None
+    rewrite_failure_details: list[str] = Field(default_factory=list)
     chat_turns: list[SessionHistoryTurnResponse] = Field(default_factory=list)
 
 

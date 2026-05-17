@@ -15,6 +15,7 @@ __all__ = [
     "append_chat_exchange",
     "list_session_history",
     "load_session_history",
+    "record_rewrite_failure",
     "record_rewrite_result",
     "upsert_job_session",
 ]
@@ -34,6 +35,8 @@ def upsert_job_session(
     source_type: str,
     translation_provider: str | None,
     translation_model: str | None,
+    translation_base_url: str | None = None,
+    skill_config_name: str | None = None,
     transcript_en_text: str,
     transcript_en_segments: list[dict[str, Any]],
     translation_zh_text: str,
@@ -52,6 +55,8 @@ def upsert_job_session(
         source_type=source_type,
         translation_provider=translation_provider,
         translation_model=translation_model,
+        translation_base_url=translation_base_url,
+        skill_config_name=skill_config_name,
         transcript_en_text=transcript_en_text,
         transcript_en_segments=transcript_en_segments,
         translation_zh_text=translation_zh_text,
@@ -70,6 +75,8 @@ def record_rewrite_result(
     rewrite_detail_coverage_issues: list[str] | None = None,
     rewrite_provider: str,
     rewrite_model: str,
+    translation_base_url: str | None = None,
+    skill_config_name: str | None = None,
     writer_trace_id: str | None = None,
     writer_policy_version: str | None = None,
     writer_prompt_version: str | None = None,
@@ -84,9 +91,42 @@ def record_rewrite_result(
         rewrite_detail_coverage_issues=rewrite_detail_coverage_issues,
         rewrite_provider=rewrite_provider,
         rewrite_model=rewrite_model,
+        translation_base_url=translation_base_url,
+        skill_config_name=skill_config_name,
         writer_trace_id=writer_trace_id,
         writer_policy_version=writer_policy_version,
         writer_prompt_version=writer_prompt_version,
+    )
+
+
+def record_rewrite_failure(
+    *,
+    content_context_id: str,
+    rewrite_style: str | None = None,
+    rewrite_focus: str | None,
+    rewrite_source_text: str,
+    rewrite_provider: str | None = None,
+    rewrite_model: str | None = None,
+    translation_base_url: str | None = None,
+    skill_config_name: str | None = None,
+    rewrite_failure_error_code: str | None = None,
+    rewrite_failure_message: str | None = None,
+    rewrite_failure_retryable: bool | None = None,
+    rewrite_failure_details: list[str] | None = None,
+) -> None:
+    default_session_repository.record_rewrite_failure(
+        content_context_id=content_context_id,
+        rewrite_style=rewrite_style,
+        rewrite_focus=rewrite_focus,
+        rewrite_source_text=rewrite_source_text,
+        rewrite_provider=rewrite_provider,
+        rewrite_model=rewrite_model,
+        translation_base_url=translation_base_url,
+        skill_config_name=skill_config_name,
+        rewrite_failure_error_code=rewrite_failure_error_code,
+        rewrite_failure_message=rewrite_failure_message,
+        rewrite_failure_retryable=rewrite_failure_retryable,
+        rewrite_failure_details=rewrite_failure_details,
     )
 
 

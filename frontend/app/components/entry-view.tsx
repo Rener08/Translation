@@ -1,6 +1,9 @@
+"use client";
+
 import { useRef } from "react";
 
 import { ArrowUp, CircleX, Plus } from "lucide-react";
+import type { FailureDiagnostic } from "../lib/types";
 
 type EntryViewProps = {
   youtubeUrl: string;
@@ -8,10 +11,13 @@ type EntryViewProps = {
   isRunning: boolean;
   jobStatusMessage: string;
   errorMessage: string;
+  failureDiagnostic: FailureDiagnostic | null;
   onChangeUrl: (value: string) => void;
   onPickAudioFile: (file: File | null) => void;
   onSubmit: () => void;
   onCancel: () => void;
+  onOpenSettings: () => void;
+  onRunPreflight: () => void;
 };
 
 export function EntryView({
@@ -20,10 +26,13 @@ export function EntryView({
   isRunning,
   jobStatusMessage,
   errorMessage,
+  failureDiagnostic,
   onChangeUrl,
   onPickAudioFile,
   onSubmit,
   onCancel,
+  onOpenSettings,
+  onRunPreflight,
 }: EntryViewProps) {
   const hasUploadedAudio = selectedAudioName.trim().length > 0;
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -33,6 +42,49 @@ export function EntryView({
       return;
     }
     fileInputRef.current?.click();
+  }
+
+  function renderAction(action: FailureDiagnostic["actions"][number]) {
+    if (action.kind === "retry-job") {
+      return (
+        <button
+          key={action.kind}
+          type="button"
+          className="diagnostic-action"
+          onClick={() => void onSubmit()}
+          disabled={action.disabled}
+        >
+          {action.label}
+        </button>
+      );
+    }
+    if (action.kind === "fallback-audio") {
+      return (
+        <button
+          key={action.kind}
+          type="button"
+          className="diagnostic-action"
+          onClick={openFilePicker}
+          disabled={action.disabled}
+        >
+          {action.label}
+        </button>
+      );
+    }
+    if (action.kind === "open-settings" || action.kind === "run-preflight") {
+      return (
+        <button
+          key={action.kind}
+          type="button"
+          className="diagnostic-action"
+          onClick={action.kind === "run-preflight" ? onRunPreflight : onOpenSettings}
+          disabled={action.disabled}
+        >
+          {action.label}
+        </button>
+      );
+    }
+    return null;
   }
 
   return (
@@ -109,6 +161,32 @@ export function EntryView({
 
       {jobStatusMessage ? <p className="entry-status">{jobStatusMessage}</p> : null}
       {errorMessage ? <p className="entry-error">{errorMessage}</p> : null}
+      {failureDiagnostic ? (
+        <div className="diagnostic-shell entry-diagnostic-shell">
+          <div className="diagnostic-header">
+            <div>
+              <p className="diagnostic-kicker">任务恢复</p>
+              <h3>{failureDiagnostic.title}</h3>
+            </div>
+            {failureDiagnostic.errorCode ? (
+              <span className="diagnostic-tag">{failureDiagnostic.errorCode}</span>
+            ) : null}
+          </div>
+          <p className="diagnostic-message">{failureDiagnostic.message}</p>
+          {failureDiagnostic.details.length > 0 ? (
+            <ul className="diagnostic-list">
+              {failureDiagnostic.details.map((detail) => (
+                <li key={detail}>{detail}</li>
+              ))}
+            </ul>
+          ) : null}
+          <div className="diagnostic-actions">
+          {failureDiagnostic.actions
+              .map((action) => renderAction(action))
+              .filter(Boolean)}
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

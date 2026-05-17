@@ -596,6 +596,34 @@ def test_select_rewrite_template_routes_transcript_first_to_transcript_template(
     assert selected.body == "逐字稿模板"
 
 
+def test_select_rewrite_template_prefers_article_focus_over_timestamped_transcript() -> None:
+    references = RewriteReferences(
+        article_template="一页版模板",
+        content_methodology="方法论",
+        style_examples="示例",
+        skill_guide="规则",
+        category_templates={
+            "09_interview_transcript_sync": "逐字稿模板",
+            "06_infra_cloud_model_platform": "平台模板",
+            "01_big_company_war": "公司战役模板",
+        },
+        section_title_rules="标题规则",
+    )
+
+    selected = _select_rewrite_template(
+        source_text=(
+            "00:12 主持人：先问一个问题。\n"
+            "00:33 嘉宾：我们先从组织调整说起。\n"
+            "这是一段关于 compute、model、platform 和 energy 的长篇报道素材。"
+        ),
+        rewrite_focus="请改写成晚点式基础设施分析稿。",
+        references=references,
+    )
+
+    assert selected.key == "06_infra_cloud_model_platform"
+    assert selected.body == "平台模板"
+
+
 def test_select_rewrite_template_routes_explicit_transcript_sync_request() -> None:
     references = RewriteReferences(
         article_template="一页版模板",

@@ -65,7 +65,7 @@ LASTPOST_TEMPLATE_SPECS: tuple[LastpostTemplateSpec, ...] = (
         filename="03_product_review.md",
         keywords=(
             "实测", "上手", "评测", "体验", "试用", "跑分", "提示词",
-            "工作流", "任务", "agent", "功能", "可用性", "失败点", "纠错",
+            "工作流", "任务", "功能", "可用性", "失败点", "纠错",
         ),
         strong_keywords=("测了", "测试", "使用过程", "真实任务", "复现"),
         priority=1,
@@ -187,9 +187,15 @@ def select_rewrite_template(
                 route_reason="用户明确要求逐字稿/同步稿，按访谈同步模板处理。",
             )
 
+    article_like_focus = _article_like_output_requested(rewrite_focus)
     routable_specs = tuple(
         spec for spec in LASTPOST_TEMPLATE_SPECS if spec.key in LASTPOST_ROUTABLE_TEMPLATE_KEYS
     )
+    if article_like_focus:
+        routable_specs = tuple(
+            spec for spec in routable_specs
+            if spec.key != "09_interview_transcript_sync"
+        )
     scored = _score_template_specs(
         specs=routable_specs,
         normalized_text=normalized,
@@ -242,6 +248,23 @@ def _explicit_transcript_sync_requested(*, rewrite_focus: str, source_text: str)
     # interview markers even when the desired output is a rewritten article.
     _ = source_text
     return False
+
+
+def _article_like_output_requested(rewrite_focus: str) -> bool:
+    normalized_focus = (rewrite_focus or "").lower()
+    article_markers = (
+        "文章",
+        "报道",
+        "分析稿",
+        "深度",
+        "长文",
+        "基础设施",
+        "平台",
+        "模型",
+        "云",
+        "成稿",
+    )
+    return any(marker in normalized_focus for marker in article_markers)
 
 
 def _score_template_specs(

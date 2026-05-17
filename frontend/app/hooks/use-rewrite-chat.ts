@@ -16,6 +16,14 @@ import {
   rewriteExportBasename,
 } from "../lib/job";
 
+import { extractApiErrorDetails } from "../lib/api";
+
+import type {
+  ApiErrorDetails,
+  FailureDiagnostic,
+  RecoveryAction,
+} from "../lib/types";
+
 
 export type ThreadMessage = {
   role: "user" | "assistant";
@@ -31,6 +39,14 @@ type UseRewriteChatParams = {
     rewrittenText: string;
     rewriteProviderLabel: string;
     messages: Array<{ role: "user" | "assistant"; content: string }>;
+    detailCoverageIssues: string[];
+    failure: {
+      source: FailureDiagnostic["source"];
+      message: string;
+      errorCode: string | null;
+      retryable: boolean | null;
+      details: string[];
+    } | null;
   } | null;
 };
 
@@ -47,6 +63,8 @@ export function useRewriteChat({
   const [rewriteCopied, setRewriteCopied] = useState(false);
   const [detailCoverageIssues, setDetailCoverageIssues] = useState<string[]>([]);
   const [detailPatchLoading, setDetailPatchLoading] = useState(false);
+  const [rewriteFailureDiagnostic, setRewriteFailureDiagnostic] =
+    useState<FailureDiagnostic | null>(null);
 
   const [messages, setMessages] = useState<ThreadMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -61,6 +79,85 @@ export function useRewriteChat({
   const patchAbortRef = useRef<AbortController | null>(null);
   const chatAbortRef = useRef<AbortController | null>(null);
   const currentContextId = jobResult?.content_context_id ?? "";
+
+  function getApiErrorDetails(error: unknown): ApiErrorDetails | null {
+    if (!error || typeof error !== "object") {
+      return null;
+    }
+    const candidate = error as { apiError?: unknown };
+    return (candidate.apiError ?? null) as ApiErrorDetails | null;
+  }
+
+  function buildRecoveryAction(
+    kind: RecoveryAction["kind"],
+    label: string,
+    description: string,
+    disabled = false,
+  ): RecoveryAction {
+    return {
+      kind,
+      label,
+      description,
+      ...(disabled ? { disabled: true } : {}),
+    };
+  }
+
+  function buildRewriteFailureDiagnostic({
+    source,
+    title,
+    message,
+    errorCode,
+    retryable,
+    requestId,
+    details,
+    allowPatchRetry,
+  }: {
+    source: FailureDiagnostic["source"];
+    title: string;
+    message: string;
+    errorCode: string | null;
+    retryable: boolean | null;
+    requestId: string;
+    details: string[];
+    allowPatchRetry: boolean;
+  }): FailureDiagnostic {
+    const actions: RecoveryAction[] = [
+      buildRecoveryAction(
+        source === "detail_patch" ? "retry-detail-patch" : "retry-rewrite",
+        source === "detail_patch" ? "重试补细节" : "重新改写",
+        source === "detail_patch"
+          ? "再次在现有草稿上补齐缺失细节。"
+          : "用当前素材和设置重新生成改写结果。",
+      ),
+      buildRecoveryAction(
+        "open-settings",
+        "检查设置",
+        "打开设置检查模型、API Key、base_url 和写作风格。",
+      ),
+      buildRecoveryAction(
+        "retry-detail-patch",
+        "补足细节",
+        "在已有改写上再次补齐漏掉的细节。",
+        !allowPatchRetry,
+      ),
+    ];
+
+    return {
+      source,
+      title,
+      message,
+      details,
+      errorCode,
+      retryable,
+      requestId,
+      actions,
+    };
+  }
+
+  function recordRewriteFailure(args: Parameters<typeof buildRewriteFailureDiagnostic>[0]) {
+    setRewriteFailureDiagnostic(buildRewriteFailureDiagnostic(args));
+    setRewriteError(args.message);
+  }
 
   const translationText = useMemo(
     () =>
@@ -88,6 +185,7 @@ export function useRewriteChat({
     setRewriteLoading(false);
     setDetailPatchLoading(false);
     setChatSubmitting(false);
+    setRewriteFailureDiagnostic(null);
     if (!currentContextId) {
       setMessages([]);
       setRewriteText("");
@@ -97,11 +195,40 @@ export function useRewriteChat({
     }
     const hasRestoredRewrite = restoredConversation?.rewrittenText.trim().length;
     const hasRestoredMessages = (restoredConversation?.messages.length ?? 0) > 0;
-    if (hasRestoredRewrite || hasRestoredMessages) {
+    const hasRestoredCoverageIssues =
+      (restoredConversation?.detailCoverageIssues.length ?? 0) > 0;
+    const hasRestoredFailure = Boolean(restoredConversation?.failure);
+    if (
+      hasRestoredRewrite ||
+      hasRestoredMessages ||
+      hasRestoredCoverageIssues ||
+      hasRestoredFailure
+    ) {
       setMessages(restoredConversation?.messages ?? []);
       setRewriteText(restoredConversation?.rewrittenText ?? "");
       setRewriteError("");
       setRewriteProviderLabel(restoredConversation?.rewriteProviderLabel ?? "");
+      setDetailCoverageIssues(restoredConversation?.detailCoverageIssues ?? []);
+      if (restoredConversation?.failure) {
+        setRewriteError(restoredConversation.failure.message);
+        setRewriteFailureDiagnostic(
+          buildRewriteFailureDiagnostic({
+            source: restoredConversation.failure.source,
+            title:
+              restoredConversation.failure.source === "detail_patch"
+                ? "补细节失败"
+                : "改写失败",
+            message: restoredConversation.failure.message,
+            errorCode: restoredConversation.failure.errorCode,
+            retryable: restoredConversation.failure.retryable,
+            requestId: "",
+            details: restoredConversation.failure.details,
+            allowPatchRetry:
+              restoredConversation.failure.source === "detail_patch" ||
+              (restoredConversation?.detailCoverageIssues.length ?? 0) > 0,
+          }),
+        );
+      }
       skipAutoRewriteForContextRef.current = currentContextId;
       return;
     }
@@ -109,6 +236,7 @@ export function useRewriteChat({
     setRewriteText("");
     setRewriteError("");
     setRewriteProviderLabel("");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentContextId, restoredConversation]);
 
   useEffect(() => {
@@ -159,6 +287,7 @@ export function useRewriteChat({
     try {
       translationConfig = buildTranslationConfig(settings);
     } catch (error) {
+      setRewriteFailureDiagnostic(null);
       setRewriteError(
         error instanceof Error ? error.message : "Invalid rewrite settings.",
       );
@@ -173,6 +302,7 @@ export function useRewriteChat({
     rewriteAbortRef.current = controller;
     setRewriteLoading(true);
     setRewriteError("");
+    setRewriteFailureDiagnostic(null);
     setRewriteText("");
     setRewriteCopied(false);
     setDetailCoverageIssues([]);
@@ -194,7 +324,22 @@ export function useRewriteChat({
         return;
       }
       if (!response.ok) {
-        throw new Error(await extractApiErrorMessage(response));
+        const apiError = await extractApiErrorDetails(response);
+        recordRewriteFailure({
+          source: "rewrite",
+          title: "改写失败",
+          message: apiError.message,
+          errorCode: apiError.errorCode,
+          retryable: apiError.retryable,
+          requestId: apiError.requestId,
+          details: [
+            `写作风格：${settings.rewriteStyle}`,
+            `模型：${settings.provider}${settings.model.trim() ? ` / ${settings.model.trim()}` : ""}`,
+            rewriteFocus.trim() ? `改写重点：${rewriteFocus.trim()}` : "没有额外的改写重点。",
+          ],
+          allowPatchRetry: false,
+        });
+        return;
       }
       const data = (await response.json()) as {
         rewritten_text: string;
@@ -207,6 +352,7 @@ export function useRewriteChat({
       setDetailCoverageIssues(
         Array.isArray(data.detail_coverage_issues) ? data.detail_coverage_issues : [],
       );
+      setRewriteFailureDiagnostic(null);
     } catch (error) {
       if (!isCurrentRequest(contextVersion, requestSeq, "rewrite", controller)) {
         return;
@@ -214,7 +360,23 @@ export function useRewriteChat({
       if (controller.signal.aborted) {
         return;
       }
-      setRewriteError(error instanceof Error ? error.message : "Failed to rewrite content.");
+      const apiError = getApiErrorDetails(error);
+      recordRewriteFailure({
+        source: "rewrite",
+        title: "改写失败",
+        message:
+          apiError?.message ??
+          (error instanceof Error ? error.message : "Failed to rewrite content."),
+        errorCode: apiError?.errorCode ?? "REWRITE_FAILED",
+        retryable: apiError?.retryable ?? null,
+        requestId: apiError?.requestId ?? "",
+        details: [
+          `写作风格：${settings.rewriteStyle}`,
+          `模型：${settings.provider}${settings.model.trim() ? ` / ${settings.model.trim()}` : ""}`,
+          rewriteFocus.trim() ? `改写重点：${rewriteFocus.trim()}` : "没有额外的改写重点。",
+        ],
+        allowPatchRetry: detailCoverageIssues.length > 0,
+      });
     } finally {
       if (isCurrentRequest(contextVersion, requestSeq, "rewrite", controller)) {
         if (rewriteAbortRef.current === controller) {
@@ -238,6 +400,7 @@ export function useRewriteChat({
     try {
       translationConfig = buildTranslationConfig(settings);
     } catch (error) {
+      setRewriteFailureDiagnostic(null);
       setRewriteError(
         error instanceof Error ? error.message : "Invalid rewrite settings.",
       );
@@ -273,6 +436,7 @@ export function useRewriteChat({
     setDetailPatchLoading(true);
     setRewriteError("");
     setRewriteCopied(false);
+    setRewriteFailureDiagnostic(null);
     try {
       const response = await apiFetch("/api/content-rewrite", {
         method: "POST",
@@ -291,7 +455,21 @@ export function useRewriteChat({
         return;
       }
       if (!response.ok) {
-        throw new Error(await extractApiErrorMessage(response));
+        const apiError = await extractApiErrorDetails(response);
+        recordRewriteFailure({
+          source: "detail_patch",
+          title: "补细节失败",
+          message: apiError.message,
+          errorCode: apiError.errorCode,
+          retryable: apiError.retryable,
+          requestId: apiError.requestId,
+          details: [
+            `剩余缺失细节：${detailCoverageIssues.length} 处`,
+            rewriteFocus.trim() ? `当前改写重点：${rewriteFocus.trim()}` : "没有额外的改写重点。",
+          ],
+          allowPatchRetry: true,
+        });
+        return;
       }
       const data = (await response.json()) as {
         rewritten_text: string;
@@ -304,6 +482,7 @@ export function useRewriteChat({
       setDetailCoverageIssues(
         Array.isArray(data.detail_coverage_issues) ? data.detail_coverage_issues : [],
       );
+      setRewriteFailureDiagnostic(null);
     } catch (error) {
       if (!isCurrentRequest(contextVersion, requestSeq, "patch", controller)) {
         return;
@@ -311,7 +490,22 @@ export function useRewriteChat({
       if (controller.signal.aborted) {
         return;
       }
-      setRewriteError(error instanceof Error ? error.message : "Failed to patch details.");
+      const apiError = getApiErrorDetails(error);
+      recordRewriteFailure({
+        source: "detail_patch",
+        title: "补细节失败",
+        message:
+          apiError?.message ??
+          (error instanceof Error ? error.message : "Failed to patch details."),
+        errorCode: apiError?.errorCode ?? "DETAIL_PATCH_FAILED",
+        retryable: apiError?.retryable ?? null,
+        requestId: apiError?.requestId ?? "",
+        details: [
+          `剩余缺失细节：${detailCoverageIssues.length} 处`,
+          rewriteFocus.trim() ? `当前改写重点：${rewriteFocus.trim()}` : "没有额外的改写重点。",
+        ],
+        allowPatchRetry: true,
+      });
     } finally {
       if (isCurrentRequest(contextVersion, requestSeq, "patch", controller)) {
         if (patchAbortRef.current === controller) {
@@ -320,6 +514,10 @@ export function useRewriteChat({
         setDetailPatchLoading(false);
       }
     }
+  }
+
+  async function retryRewrite() {
+    await runRewrite(rewriteSourceText);
   }
 
   async function copyRewrite() {
@@ -478,7 +676,9 @@ export function useRewriteChat({
     rewriteCopied,
     detailCoverageIssues,
     detailPatchLoading,
+    rewriteFailureDiagnostic,
     requestDetailPatch,
+    retryRewrite,
     messages,
     chatInput,
     chatSubmitting,

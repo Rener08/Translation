@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.services.content_context_service import create_content_context
+from app.services.content_rewrite_service import ContentRewriteProviderError
 from app.services.job_run_service import JobRunResult
 from app.services import persistent_cache_service
 from app.services.session_history_service import (
@@ -127,6 +128,7 @@ def test_jobs_run_persists_session_history(monkeypatch, tmp_path: Path) -> None:
             "translation_config": {
                 "provider": "deepseek",
                 "api_key": "test-key",
+                "base_url": "https://api.deepseek.com",
                 "model": "deepseek-chat",
             },
         },
@@ -161,6 +163,7 @@ def test_jobs_run_persists_session_history(monkeypatch, tmp_path: Path) -> None:
     assert detail_body["video_thumbnail"] == "https://example.com/thumb.jpg"
     assert detail_body["source_mode"] == "subtitle_first"
     assert detail_body["source_type"] == "captions"
+    assert detail_body["translation_base_url"] == "https://api.deepseek.com"
     assert detail_body["transcript_en_text"] == "Hello everyone.\nWelcome back."
     assert detail_body["translation_zh_text"] == ""
     assert detail_body["chat_turns"] == []
@@ -195,9 +198,11 @@ def test_content_rewrite_updates_session_history(monkeypatch, tmp_path: Path) ->
             "content_context_id": content_context_id,
             "source_text": "大家好。\n欢迎回来。",
             "rewrite_focus": "请改成更口语化。",
+            "skill_config_name": "kazix",
             "translation_config": {
                 "provider": "deepseek",
                 "api_key": "test-key",
+                "base_url": "https://api.deepseek.com",
                 "model": "deepseek-chat",
             },
         },
@@ -215,6 +220,59 @@ def test_content_rewrite_updates_session_history(monkeypatch, tmp_path: Path) ->
     assert detail_body["rewrite_quality_issues"] == []
     assert detail_body["rewrite_provider"] == "deepseek"
     assert detail_body["rewrite_model"] == "deepseek-chat"
+    assert detail_body["rewrite_base_url"] == "https://api.deepseek.com"
+    assert detail_body["skill_config_name"] == "kazix"
+
+
+def test_content_rewrite_failure_persists_session_diagnostic(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    _use_tmp_cache(monkeypatch, tmp_path)
+    content_context_id = create_content_context(
+        video_title="Test video",
+        transcript_en="Hello everyone.\nWelcome back.",
+        translation_zh="大家好。\n欢迎回来。",
+    )
+
+    def fake_run_writer_agent(**kwargs):
+        raise ContentRewriteProviderError("上游模型服务返回错误。")
+
+    monkeypatch.setattr("app.main.run_writer_agent", fake_run_writer_agent)
+
+    response = client.post(
+        "/api/content-rewrite",
+        json={
+            "content_context_id": content_context_id,
+            "source_text": "大家好。\n欢迎回来。",
+            "rewrite_focus": "请改成更口语化。",
+            "skill_config_name": "kazix",
+            "translation_config": {
+                "provider": "deepseek",
+                "api_key": "test-key",
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-chat",
+            },
+        },
+    )
+
+    assert response.status_code == 502
+
+    history_detail = client.get(f"/api/session-history/{content_context_id}")
+    assert history_detail.status_code == 200
+    detail_body = history_detail.json()
+    assert detail_body["rewrite_failure_error_code"] == "UPSTREAM_ERROR"
+    assert detail_body["rewrite_failure_message"] == "上游模型服务返回错误。"
+    assert detail_body["rewrite_failure_retryable"] is True
+    assert detail_body["rewrite_failure_details"] == [
+        "写作风格：speech_verbatim",
+        "技能配置：kazix",
+        "改写重点：请改成更口语化。",
+        "来源文本长度：10",
+        "provider：deepseek",
+        "model：deepseek-chat",
+        "base_url：https://api.deepseek.com",
+    ]
 
 
 def test_session_history_endpoints_filter_by_account_id(monkeypatch, tmp_path: Path) -> None:
@@ -236,6 +294,7 @@ def test_session_history_endpoints_filter_by_account_id(monkeypatch, tmp_path: P
         source_type="captions",
         translation_provider="deepseek",
         translation_model="deepseek-chat",
+        translation_base_url="https://api.deepseek.com",
         transcript_en_text="Hello everyone.\nWelcome back.",
         transcript_en_segments=[],
         translation_zh_text="大家好。\n欢迎回来。",
@@ -326,6 +385,7 @@ def test_session_history_writes_merge_atomically(monkeypatch, tmp_path: Path) ->
         source_type="captions",
         translation_provider="deepseek",
         translation_model="deepseek-chat",
+        translation_base_url="https://api.deepseek.com",
         transcript_en_text="Hello everyone.\nWelcome back.",
         transcript_en_segments=[],
         translation_zh_text="大家好。\n欢迎回来。",
@@ -373,6 +433,7 @@ def test_session_history_writes_merge_atomically(monkeypatch, tmp_path: Path) ->
             "rewritten_text": "这是改写后的版本。",
             "rewrite_provider": "deepseek",
             "rewrite_model": "deepseek-chat",
+            "translation_base_url": "https://api.deepseek.com",
             "writer_trace_id": "writer-trace-merge-test",
             "writer_policy_version": "policy-merge-test",
             "writer_prompt_version": "prompt-merge-test",
@@ -410,6 +471,7 @@ def test_session_history_writes_merge_atomically(monkeypatch, tmp_path: Path) ->
     assert detail["writer_trace_id"] == "writer-trace-merge-test"
     assert detail["writer_policy_version"] == "policy-merge-test"
     assert detail["writer_prompt_version"] == "prompt-merge-test"
+    assert detail["rewrite_base_url"] == "https://api.deepseek.com"
     assert len(detail["chat_turns"]) == 2
     assert detail["chat_turns"][0]["role"] == "user"
     assert detail["chat_turns"][1]["role"] == "assistant"
@@ -426,6 +488,7 @@ def test_session_history_rejects_unsafe_context_id(monkeypatch, tmp_path: Path) 
         source_type="captions",
         translation_provider="deepseek",
         translation_model="deepseek-chat",
+        translation_base_url="https://api.deepseek.com",
         transcript_en_text="text",
         transcript_en_segments=[],
         translation_zh_text="文本",

@@ -7,6 +7,7 @@ from typing import Literal, Protocol
 from app.services.article_generation_service import (
     ArticleSpec,
     ArticleValidationResult,
+    measure_source_text_length,
     resolve_article_spec,
     validate_generated_article,
 )
@@ -29,6 +30,7 @@ from app.services.detail_ledger import (
 from app.services.detail_ledger_refiner import refine_detail_ledger_with_llm
 from app.services.prompt_validation import validate_rewrite_prompt
 from app.services.quality_check_service import (
+    QualityIssue,
     QualityReport,
     build_revision_prompt,
     check_article_quality,
@@ -274,12 +276,78 @@ class SpeechVerbatimPipeline:
             return False
         return True
 
+    def _build_length_guidance(self, source_text: str) -> str | None:
+        output = getattr(self._skill_config, "output", None)
+        ratio_min = getattr(output, "source_length_ratio_min", None)
+        ratio_max = getattr(output, "source_length_ratio_max", None)
+        if ratio_min is None and ratio_max is None:
+            return None
+
+        source_length = measure_source_text_length(source_text)
+        if source_length <= 0:
+            return None
+
+        min_ratio = ratio_min if ratio_min is not None else 0.0
+        max_ratio = ratio_max if ratio_max is not None else 1.0
+        if max_ratio < min_ratio:
+            min_ratio, max_ratio = max_ratio, min_ratio
+
+        min_chars = max(1, round(source_length * min_ratio))
+        max_chars = max(min_chars, round(source_length * max_ratio))
+        suggested_sections = 5 if source_length >= 10000 else 4 if source_length >= 6000 else 3
+        suggested_chars_per_section = max(1, round(((min_chars + max_chars) / 2) / suggested_sections))
+        return (
+            f"篇幅建议：总长度尽量控制在原文的 {int(ratio_min * 100)}%-{int(ratio_max * 100)}% "
+            f"之间，当前原文约 {source_length} 字，建议输出约 {min_chars}-{max_chars} 字。"
+            f"建议分 {suggested_sections} 段左右，每段约 {suggested_chars_per_section} 字。"
+        )
+
 
 class ArticleLongformPipeline:
     """Pipeline for article_longform style: outline → draft → validate → revise."""
 
+    _MAX_REVISION_ROUNDS = 6
+
     def __init__(self, skill_config: SkillConfig):
         self._skill_config = skill_config
+
+    def _resolve_length_bounds(self, source_text: str) -> tuple[int, int, int] | None:
+        output = getattr(self._skill_config, "output", None)
+        ratio_min = getattr(output, "source_length_ratio_min", None)
+        ratio_max = getattr(output, "source_length_ratio_max", None)
+        if ratio_min is None and ratio_max is None:
+            return None
+
+        source_length = measure_source_text_length(source_text)
+        if source_length <= 0:
+            return None
+
+        min_ratio = ratio_min if ratio_min is not None else 0.0
+        max_ratio = ratio_max if ratio_max is not None else 1.0
+        if max_ratio < min_ratio:
+            min_ratio, max_ratio = max_ratio, min_ratio
+
+        min_chars = max(1, round(source_length * min_ratio))
+        max_chars = max(min_chars, round(source_length * max_ratio))
+        return source_length, min_chars, max_chars
+
+    def _build_length_guidance(self, source_text: str) -> str | None:
+        bounds = self._resolve_length_bounds(source_text)
+        if bounds is None:
+            return None
+        source_length, min_chars, max_chars = bounds
+        output = getattr(self._skill_config, "output", None)
+        ratio_min = getattr(output, "source_length_ratio_min", 0.0) or 0.0
+        ratio_max = getattr(output, "source_length_ratio_max", 1.0) or 1.0
+        if ratio_max < ratio_min:
+            ratio_min, ratio_max = ratio_max, ratio_min
+        suggested_sections = 5 if source_length >= 10000 else 4 if source_length >= 6000 else 3
+        suggested_chars_per_section = max(1, round(((min_chars + max_chars) / 2) / suggested_sections))
+        return (
+            f"篇幅建议：总长度尽量控制在原文的 {int(ratio_min * 100)}%-{int(ratio_max * 100)}% "
+            f"之间，当前原文约 {source_length} 字，建议输出约 {min_chars}-{max_chars} 字。"
+            f"建议分 {suggested_sections} 段左右，每段约 {suggested_chars_per_section} 字。"
+        )
 
     def execute(
         self,
@@ -293,6 +361,8 @@ class ArticleLongformPipeline:
         normalized_source = material.source_text
         article_source = material.article_input_text()
         spec = resolve_article_spec(normalized_source)
+        length_bounds = self._resolve_length_bounds(normalized_source)
+        length_guidance = self._build_length_guidance(normalized_source)
         detail_ledger = build_detail_ledger(article_source)
         topic_ledger = build_longform_topic_ledger(article_source)
         longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
@@ -302,7 +372,10 @@ class ArticleLongformPipeline:
         planning_result = rewrite_content(
             source_text=article_source,
             rewrite_focus=_build_outline_prompt(
-                spec=spec, rewrite_focus=rewrite_focus,
+                spec=spec,
+                rewrite_focus=rewrite_focus,
+                length_guidance=length_guidance,
+                soft_length_mode=bool(length_guidance),
                 detail_ledger_text=longform_ledger.to_prompt_text(),
             ),
             rewrite_style="article_longform",
@@ -317,7 +390,11 @@ class ArticleLongformPipeline:
         draft_result = rewrite_content(
             source_text=article_source,
             rewrite_focus=_build_draft_prompt(
-                spec=spec, rewrite_focus=rewrite_focus, outline=outline,
+                spec=spec,
+                rewrite_focus=rewrite_focus,
+                outline=outline,
+                length_guidance=length_guidance,
+                soft_length_mode=bool(length_guidance),
                 detail_ledger_text=longform_ledger.to_prompt_text(),
             ),
             rewrite_style="article_longform",
@@ -325,59 +402,72 @@ class ArticleLongformPipeline:
             skill_config=self._skill_config,
             cancellation_checker=cancellation_checker,
         )
-        validation = validate_generated_article(draft_result.rewritten_text, spec)
+        validation = (
+            _build_soft_validation(draft_result.rewritten_text)
+            if length_guidance
+            else validate_generated_article(draft_result.rewritten_text, spec)
+        )
+        final_result = draft_result
+        revised_once = False
         quality_report = check_article_quality(
             draft_result.rewritten_text,
             normalized_source,
             self._skill_config,
             longform_ledger,
         )
-        final_result = draft_result
-        revised_once = False
+        soft_length_issues = tuple(
+            issue
+            for issue in quality_report.issues
+            if issue.severity == "soft" and issue.check_type == "output_length_ratio"
+        )
 
-        if not quality_report.passed:
+        revision_round = 0
+        while revision_round < self._MAX_REVISION_ROUNDS and (
+            not quality_report.passed or soft_length_issues
+        ):
             revised_once = True
             revise_prompt = _build_article_longform_revision_prompt(
-                previous_article=draft_result.rewritten_text,
+                previous_article=final_result.rewritten_text,
                 spec=spec,
                 validation=validation,
                 quality_report=quality_report,
+                length_guidance=length_guidance,
             )
+            if soft_length_issues:
+                revise_prompt += _build_article_longform_length_expansion_prompt(
+                    previous_article=final_result.rewritten_text,
+                    spec=spec,
+                    soft_length_issues=soft_length_issues,
+                    length_guidance=length_guidance,
+                    source_length_bounds=length_bounds,
+                )
             if callable(cancellation_checker) and cancellation_checker():
                 raise ContentRewriteInputError("Rewrite cancelled.")
             final_result = rewrite_content(
-                source_text=draft_result.rewritten_text,
+                source_text=article_source,
                 rewrite_focus=revise_prompt,
                 rewrite_style="article_longform",
                 rewrite_config=rewrite_config,
                 skill_config=self._skill_config,
                 cancellation_checker=cancellation_checker,
             )
-            validation = validate_generated_article(final_result.rewritten_text, spec)
-            post_quality_report = check_article_quality(
+            validation = (
+                _build_soft_validation(final_result.rewritten_text)
+                if length_guidance
+                else validate_generated_article(final_result.rewritten_text, spec)
+            )
+            quality_report = check_article_quality(
                 final_result.rewritten_text,
                 normalized_source,
                 self._skill_config,
                 longform_ledger,
             )
-            if not post_quality_report.passed:
-                second_revise_prompt = _build_article_longform_revision_prompt(
-                    previous_article=final_result.rewritten_text,
-                    spec=spec,
-                    validation=validation,
-                    quality_report=post_quality_report,
-                )
-                if callable(cancellation_checker) and cancellation_checker():
-                    raise ContentRewriteInputError("Rewrite cancelled.")
-                final_result = rewrite_content(
-                    source_text=final_result.rewritten_text,
-                    rewrite_focus=second_revise_prompt,
-                    rewrite_style="article_longform",
-                    rewrite_config=rewrite_config,
-                    skill_config=self._skill_config,
-                    cancellation_checker=cancellation_checker,
-                )
-                validation = validate_generated_article(final_result.rewritten_text, spec)
+            soft_length_issues = tuple(
+                issue
+                for issue in quality_report.issues
+                if issue.severity == "soft" and issue.check_type == "output_length_ratio"
+            )
+            revision_round += 1
 
         return WriterRunReport(
             rewritten_text=final_result.rewritten_text,
@@ -448,7 +538,7 @@ def _build_comprehensive_revise_prompt(
     *, previous_article: str, spec: ArticleSpec, validation: ArticleValidationResult,
     style_issues: tuple[str, ...], missing_details: tuple,
 ) -> str:
-    parts = ["请修订以下问题，只改有问题的部分，保留其余内容。", ""]
+    parts = ["请修订下面这版文章，只改有问题的部分，保留其余内容。", ""]
     if not validation.ok:
         for issue in validation.issues:
             parts.append(f"- 结构问题：{issue}")
@@ -456,7 +546,7 @@ def _build_comprehensive_revise_prompt(
         parts.append(f"- 风格问题：{issue}")
     for item in missing_details[:6]:
         parts.append(f"- 缺失细节：{item.kind} {item.text}")
-    parts.extend(["", "要求：只输出修订后的正文，不要解释。"])
+    parts.extend(["", "处理原则：仅返回修订后的正文，不要解释。"])
     return "\n".join(parts)
 
 
@@ -466,6 +556,7 @@ def _build_article_longform_revision_prompt(
     spec: ArticleSpec,
     validation: ArticleValidationResult,
     quality_report: QualityReport,
+    length_guidance: str | None = None,
 ) -> str:
     style_issues = tuple(issue.message for issue in quality_report.issues)
     prompt = _build_comprehensive_revise_prompt(
@@ -478,25 +569,91 @@ def _build_article_longform_revision_prompt(
     return (
         prompt
         + "\n\n"
-        "额外要求：\n"
+        + (f"篇幅标准：{length_guidance}\n" if length_guidance else "")
+        + "补充原则：\n"
         "- 直接把全文重写成第三视角文章，不要保留问答式、逐字稿式或时间块同步式表达。\n"
         "- 如果原文是访谈或播客，把对话内容融合成连续叙事，而不是拆成主持人/嘉宾轮流发言。\n"
         "- 除原文直接引语外，不要再出现我/我们/咱们/本人作为叙述主语。\n"
+        "- 报道主语优先使用事件、变化、机制、平台和边界，不要让人物发言顺序主导段落顺序。\n"
         "- 如果仍然像翻译稿，请重新组织段落结构，而不是只改几个句子。"
     )
 
 
+def _build_article_longform_length_expansion_prompt(
+    *,
+    previous_article: str,
+    spec: ArticleSpec,
+    soft_length_issues: tuple[QualityIssue, ...],
+    length_guidance: str | None = None,
+    source_length_bounds: tuple[int, int, int] | None = None,
+) -> str:
+    issue_lines = "\n".join(f"- {issue.message}" for issue in soft_length_issues)
+    current_chars = measure_source_text_length(previous_article)
+    target_line = ""
+    if source_length_bounds is not None:
+        source_length, min_chars, max_chars = source_length_bounds
+        deficit = max(0, min_chars - current_chars)
+        target_line = (
+            f"当前稿件约 {current_chars} 字，原文约 {source_length} 字，"
+            f"目标区间 {min_chars}-{max_chars} 字，"
+            f"当前至少还需要补足约 {deficit} 字。"
+        )
+    guidance_line = (
+        f"篇幅标准：{length_guidance}"
+        if length_guidance
+        else f"篇幅标准：总长度尽量达到 {spec.min_total_chars}-{spec.max_total_chars} 字。"
+    )
+    prompt_parts = [
+        "\n\n请基于下面这版内容进行一次扩写式重写，目标是补足篇幅和报道层次，不要只做局部润色。",
+        guidance_line,
+    ]
+    if target_line:
+        prompt_parts.append(target_line)
+    prompt_parts.extend(
+        [
+            "- 这不是摘要压缩任务，而是扩写任务；如果当前稿子偏短，请补出机制、代价、边界、对比和下一步判断。",
+            "- 叙事主语优先使用事件、变化、系统、平台和产业链，不要沿着演讲顺序逐条复述。",
+            "- 继续保持报道视角，不要把人物发言顺序当成段落顺序。",
+            "- 每一段都要有明确的事实锚点或机制锚点，避免空泛判断。",
+            "- 如果仍然像逐字稿，先重组结构，再补充细节。",
+            f"当前软长度提示：\n{issue_lines}",
+            "待扩写文本：",
+            previous_article.strip(),
+        ]
+    )
+    return "\n".join(prompt_parts) + "\n"
+
+
 def _build_outline_prompt(
     *, spec: ArticleSpec, rewrite_focus: str | None, detail_ledger_text: str | None = None,
+    length_guidance: str | None = None,
+    soft_length_mode: bool = False,
 ) -> str:
     focus_text = (rewrite_focus or "科技深度中文文章").strip()
-    prompt = (
-        "请基于原始素材先给出写作规划。\n\n"
-        f"写作目标：{focus_text}\n"
-        f"目标字数：{spec.target_total_chars}（允许 {spec.min_total_chars}-{spec.max_total_chars}）\n"
-        f"段落数：{spec.min_sections}-{spec.max_sections}（推荐 {spec.recommended_sections}）\n\n"
-        "只输出一个简短大纲，每行一个要点。"
+    prompt_lines = [
+        "请基于原始素材先给出写作规划。",
+        "",
+        f"写作目标：{focus_text}",
+        "写作视角：报道视角，围绕变化、机制和边界组织，不要按人物发言顺序列提纲。",
+    ]
+    if soft_length_mode:
+        prompt_lines.append(
+            f"篇幅要求：{length_guidance or '总长度尽量控制在原文的 40%-65% 之间。'}"
+        )
+    else:
+        prompt_lines.append(
+            f"目标字数：{spec.target_total_chars}（允许 {spec.min_total_chars}-{spec.max_total_chars}）"
+        )
+    prompt_lines.extend(
+        [
+            f"段落数：{spec.min_sections}-{spec.max_sections}（推荐 {spec.recommended_sections}）",
+            "",
+            "只输出一个简短大纲，每行一个要点。",
+        ]
     )
+    prompt = "\n".join(prompt_lines)
+    if length_guidance and not soft_length_mode:
+        prompt += f"\n\n{length_guidance}"
     if detail_ledger_text:
         prompt += f"\n\n必须保留的关键细节：\n{detail_ledger_text}"
     return prompt
@@ -505,19 +662,41 @@ def _build_outline_prompt(
 def _build_draft_prompt(
     *, spec: ArticleSpec, rewrite_focus: str | None, outline: tuple[str, ...],
     detail_ledger_text: str | None = None,
+    length_guidance: str | None = None,
+    soft_length_mode: bool = False,
 ) -> str:
     focus_text = (rewrite_focus or "保留原意并提升中文可读性").strip()
     outline_text = "\n".join(f"- {line}" for line in outline) if outline else "- 按素材主线组织段落"
-    prompt = (
-        "请按以下要求输出中文文章初稿。\n\n"
-        f"写作目标：{focus_text}\n"
-        f"总字数：{spec.min_total_chars}-{spec.max_total_chars}（目标 {spec.target_total_chars}）\n"
-        f"段落数：{spec.min_sections}-{spec.max_sections}（推荐 {spec.recommended_sections}）\n"
-        f"每段字数：{spec.min_chars_per_section}-{spec.max_chars_per_section}（建议 {spec.target_chars_per_section}）\n\n"
-        "大纲：\n"
-        f"{outline_text}\n\n"
-        "要求：不编造事实，段落之间空行，只输出正文。"
+    prompt_lines = [
+        "请按以下要求输出中文文章初稿。",
+        "",
+        f"写作目标：{focus_text}",
+        "视角要求：第三视角报道写法，人物只作为信息来源，不要让发言顺序主导段落顺序。",
+    ]
+    if soft_length_mode:
+        prompt_lines.append(
+            f"篇幅要求：{length_guidance or '总长度尽量控制在原文的 40%-65% 之间。'}"
+        )
+    else:
+        prompt_lines.extend(
+            [
+                f"总字数：{spec.min_total_chars}-{spec.max_total_chars}（目标 {spec.target_total_chars}）",
+                f"每段字数：{spec.min_chars_per_section}-{spec.max_chars_per_section}（建议 {spec.target_chars_per_section}）",
+            ]
+        )
+    prompt_lines.extend(
+        [
+            f"段落数：{spec.min_sections}-{spec.max_sections}（推荐 {spec.recommended_sections}）",
+            "",
+            "大纲：",
+            outline_text,
+            "",
+            "要求：不编造事实，段落之间空行，只输出正文。",
+        ]
     )
+    prompt = "\n".join(prompt_lines)
+    if length_guidance and not soft_length_mode:
+        prompt += f"\n\n{length_guidance}"
     if detail_ledger_text:
         prompt += f"\n\n必须保留的关键细节：\n{detail_ledger_text}"
     return prompt

@@ -13,6 +13,8 @@ class SkillOutputSpec:
     max_chars: int
     min_sections: int
     max_sections: int
+    source_length_ratio_min: float | None = None
+    source_length_ratio_max: float | None = None
 
 
 @dataclass(frozen=True)
@@ -47,6 +49,8 @@ def load_skill_config(path: Path) -> SkillConfig:
         max_chars=output_raw.get("max_chars", 0),
         min_sections=sections.get("min", 0),
         max_sections=sections.get("max", 0),
+        source_length_ratio_min=output_raw.get("source_length_ratio_min"),
+        source_length_ratio_max=output_raw.get("source_length_ratio_max"),
     )
 
     constraints: list[StyleConstraint] = []

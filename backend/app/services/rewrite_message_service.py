@@ -1,3 +1,4 @@
+from app.services.article_generation_service import measure_source_text_length
 from app.services.rewrite_template_service import RewriteReferences, select_rewrite_template
 
 SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
@@ -12,18 +13,20 @@ SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
 6. 只输出整理后的正文。
 """.strip()
 
-ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = """
+ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = “””
 你是一名中文文章改写助手。
 
 任务：
-1. 基于用户提供的原始内容进行"改写"，不是凭空重写。
-2. 保留原文事实、观点顺序和关键信息，不编造新事实。
-3. 如果原始内容是访谈、播客、问答或字幕稿，必须把它改写成第三视角的文章，不要保留逐字同步、时间块列表或问答壳。
-4. 如果原文里有安全、商业闭环、内部实践、合作、监管、算力部署等高价值信息，这些通常是文章骨架，不能压缩成背景。
-5. 严格遵守用户给出的改写要求和约束。
-6. 默认输出简体中文。
-7. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
-""".strip()
+1. 基于用户提供的原始内容进行完整改写，不是总结或摘要。
+2. 逐段翻译/改写所有内容，保留所有段落、细节、例子、数字、人名、地名、时间、引用。
+3. 保留原文事实、观点顺序和关键信息，不编造新事实，不省略段落。
+4. 如果原始内容是访谈、播客、问答或字幕稿，必须把它改写成第三视角的报道文章，不要保留逐字同步、时间块列表或问答壳。
+5. 第三视角不是把人称换成他/她，而是把叙述重心放在事件、变化、机制、代价和边界上；不要让人物发言顺序主导段落顺序。
+6. 如果原文里有安全、商业闭环、内部实践、合作、监管、算力部署等高价值信息，这些通常是文章骨架，不能压缩成背景。
+7. 严格遵守用户给出的改写要求、约束和长度要求。
+8. 默认输出简体中文。
+9. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
+“””.strip()
 
 DEFAULT_REWRITE_FOCUS = (
     "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。"
@@ -94,6 +97,7 @@ def build_rewrite_messages(
     )
 
     constraint_lines = []
+    length_guidance_line = ""
     if skill_config is not None:
         for c in skill_config.constraints:
             if c.constraint_type == "forbidden_word" and c.enabled:
@@ -101,6 +105,9 @@ def build_rewrite_messages(
         if skill_config.perspective == "third_person":
             constraint_lines.append(
                 "- 使用第三视角成文，除原文直接引用外，不使用我/我们/咱们/本人作为叙述主语。"
+            )
+            constraint_lines.append(
+                "- 第三视角要写成报道视角：正文主语优先是事件、变化、机制、平台和边界，不要让人物发言顺序主导段落顺序。"
             )
             constraint_lines.append(
                 "- 如果原始内容是访谈、播客、问答或字幕稿，请改写成报道型文章，不要保留逐字同步、时间块列表或问答壳。"
@@ -111,6 +118,10 @@ def build_rewrite_messages(
             constraint_lines.append(
                 "- 主题脉络中的每一项都要在正文里得到呼应；如果某项不能展开，也要用一句话交代，不要完全遗漏。"
             )
+        length_guidance_line = _build_length_guidance_line(
+            source_text=source_text,
+            skill_config=skill_config,
+        )
     else:
         constraint_lines.append(
             "- 使用第三视角成文，除原文直接引用外，不使用我/我们/咱们/本人作为叙述主语。"
@@ -125,6 +136,8 @@ def build_rewrite_messages(
             "- 主题脉络中的每一项都要在正文里得到呼应；如果某项不能展开，也要用一句话交代，不要完全遗漏。"
         )
     constraint_block = "\n".join(constraint_lines)
+    if length_guidance_line:
+        constraint_block = f"{constraint_block}\n{length_guidance_line}" if constraint_block else length_guidance_line
 
     user_prompt = (
         "请改写以下内容。\n\n"
@@ -155,6 +168,31 @@ def build_rewrite_messages(
         {"role": "system", "content": reference_context},
         {"role": "user", "content": user_prompt},
     ]
+
+
+def _build_length_guidance_line(*, source_text: str, skill_config) -> str:
+    output = getattr(skill_config, "output", None)
+    ratio_min = getattr(output, "source_length_ratio_min", None)
+    ratio_max = getattr(output, "source_length_ratio_max", None)
+    if ratio_min is None and ratio_max is None:
+        return ""
+
+    normalized_source = (source_text or "").strip()
+    source_length = measure_source_text_length(normalized_source)
+    if source_length <= 0:
+        return ""
+
+    min_ratio = ratio_min if ratio_min is not None else 0.0
+    max_ratio = ratio_max if ratio_max is not None else 1.0
+    if max_ratio < min_ratio:
+        min_ratio, max_ratio = max_ratio, min_ratio
+
+    min_chars = max(1, round(source_length * min_ratio))
+    max_chars = max(min_chars, round(source_length * max_ratio))
+    return (
+        f"- 篇幅建议：总长度尽量控制在原文的 {int(min_ratio * 100)}%-{int(max_ratio * 100)}% "
+        f"之间，当前原文约 {source_length} 字，建议输出约 {min_chars}-{max_chars} 字。"
+    )
 
 
 def _build_speech_verbatim_messages(

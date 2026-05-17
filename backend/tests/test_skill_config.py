@@ -20,6 +20,11 @@ def test_load_latepost_config():
     cfg = load_skill_config(LATEPOST_SKILL_DIR / "config.yaml")
     assert cfg.style_name == "晚点"
     assert cfg.perspective == "third_person"
+    assert cfg.output.min_chars == 0
+    assert cfg.output.target_chars == 0
+    assert cfg.output.max_chars == 0
+    assert cfg.output.source_length_ratio_min == 0.4
+    assert cfg.output.source_length_ratio_max == 0.65
 
 
 def test_constraints_merged():

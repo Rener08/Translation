@@ -30,6 +30,11 @@ npm install
 - Writer skill eval report:  
   `python3 scripts/evaluate_writer_skill.py --manifest backend/tests/fixtures/writer_skill_eval/samples.json`
 - Frontend: `cd frontend && npm run build`
+- Experimental agent-loop tests under `backend/tests/test_agent_*` are a separate
+  research lane. Run them when you touch `backend/app/agents/`, but do not treat
+  them as a blocker for the main product gate unless that package is explicitly
+  promoted into the shipping path.
+- Mainline acceptance is defined in [`TODO.md`](TODO.md#mainline-acceptance).
 
 If you change the desktop launcher or startup scripts, please also verify the
 local run path described in `README.md`.
@@ -40,7 +45,7 @@ Before merging backend queue/routes/UI paths changes, run through:
 
 1. `GET http://localhost:8000/health` returns `{"status":"ok"}`.
 2. `GET http://localhost:8000/readyz` returns `200` with `checks.tmp_writable` and `checks.job_queue_db` equal to `ok`.
-3. Paste a **short public** YouTube URL in the web app, complete ingest → translation → article draft appears.
+3. Paste a **short public** YouTube URL in the web app, complete ingest → rewrite → article draft appears.
 4. **Export** article Markdown and confirm the file ends with source title/link attribution footer.
 5. Optional: restart backend mid-queue job once and confirm UI reports retry/interrupted messaging (`JOB_INTERRUPTED_RESTART`).
 

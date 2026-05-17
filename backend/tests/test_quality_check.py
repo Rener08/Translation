@@ -46,8 +46,10 @@ def _make_latepost_config() -> SkillConfig:
         style_name="晚点",
         perspective="third_person",
         output=SkillOutputSpec(
-            min_chars=2000, target_chars=4000, max_chars=6000,
+            min_chars=0, target_chars=0, max_chars=0,
             min_sections=3, max_sections=6,
+            source_length_ratio_min=0.4,
+            source_length_ratio_max=0.65,
         ),
         constraints=(
             StyleConstraint("forbidden_word", "说白了", ""),
@@ -129,6 +131,31 @@ def test_output_length_ok():
     report = check_article_quality(text, "", cfg)
     length_issues = [i for i in report.issues if i.check_type == "output_length"]
     assert len(length_issues) == 0
+
+
+def test_output_length_ratio_is_soft():
+    cfg = SkillConfig(
+        style_name="晚点",
+        perspective="third_person",
+        output=SkillOutputSpec(
+            min_chars=0, target_chars=0, max_chars=0,
+            min_sections=3, max_sections=6,
+            source_length_ratio_min=0.4,
+            source_length_ratio_max=0.65,
+        ),
+        constraints=(),
+        perspective_markers=(),
+        template_routing_enabled=True,
+        content_filters=(),
+        quality_layers=(),
+    )
+    source = "a" * 2000
+    text = "b" * 500
+    report = check_article_quality(text, source, cfg)
+    ratio_issues = [i for i in report.issues if i.check_type == "output_length_ratio"]
+    assert len(ratio_issues) == 1
+    assert ratio_issues[0].severity == "soft"
+    assert report.passed
 
 
 def test_detail_coverage_missing():

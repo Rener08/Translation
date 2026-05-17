@@ -1,5 +1,7 @@
 """WriterAgent: orchestrates content rewriting pipelines."""
 
+import os
+
 from app.services.content_rewrite_service import (
     ContentRewriteInputError,
     ContentRewriteResult,
@@ -77,6 +79,33 @@ class WriterAgent:
             normalized_style,
             config,
         )
+
+        # Phase 1.4: Feature flag for agent loop
+        use_agent_loop = os.getenv("USE_AGENT_LOOP", "false").lower() == "true"
+
+        if use_agent_loop:
+            # Use agent loop wrapper
+            import asyncio
+            from app.agents.loop import run_agent_loop
+
+            # Run async agent loop in sync context
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(run_agent_loop(
+                    agent=self,
+                    material=self._with_reference_text(material, reference_text),
+                    rewrite_focus=normalized_focus,
+                    rewrite_style=normalized_style,
+                    rewrite_config=rewrite_config,
+                    skill_config=config,
+                    llm_call_fn=llm_call_fn,
+                    cancellation_checker=cancellation_checker,
+                ))
+            finally:
+                loop.close()
+
+        # Original pipeline execution
         return self._execute_pipeline(
             self._select_strategy(normalized_style, skill_config=config, llm_call_fn=llm_call_fn),
             self._with_reference_text(material, reference_text),
