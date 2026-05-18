@@ -153,6 +153,12 @@ async def content_rewrite(
 
     quality_issues = list(getattr(result, "quality_issues", ()) or [])
     detail_coverage_issues = list(getattr(result, "detail_coverage_issues", ()) or [])
+    loop_state_snapshot = getattr(result, "loop_state_snapshot", {}) or {}
+    last_action = getattr(result, "last_action", "") or ""
+    budget_usage = getattr(result, "budget_usage", {}) or {}
+    failure_stage = getattr(result, "failure_stage", None)
+    next_recommended_action = getattr(result, "next_recommended_action", None)
+    covered_facts_summary = list(getattr(result, "covered_facts_summary", ()) or [])
 
     if body.content_context_id:
         try:
@@ -176,6 +182,12 @@ async def content_rewrite(
                 writer_trace_id=getattr(result, "writer_trace_id", ""),
                 writer_policy_version=getattr(result, "writer_policy_version", ""),
                 writer_prompt_version=getattr(result, "writer_prompt_version", ""),
+                loop_state_snapshot=loop_state_snapshot,
+                last_action=last_action,
+                budget_usage=budget_usage,
+                failure_stage=failure_stage,
+                next_recommended_action=next_recommended_action,
+                covered_facts_summary=covered_facts_summary,
             )
         except Exception:
             logger.warning(
@@ -190,6 +202,12 @@ async def content_rewrite(
         rewritten_text=result.rewritten_text,
         quality_issues=quality_issues,
         detail_coverage_issues=detail_coverage_issues,
+        loop_state_snapshot=loop_state_snapshot,
+        last_action=last_action,
+        budget_usage=budget_usage,
+        failure_stage=failure_stage,
+        next_recommended_action=next_recommended_action,
+        covered_facts_summary=covered_facts_summary,
     )
 
 
@@ -238,6 +256,7 @@ def _persist_rewrite_failure(
             rewrite_failure_message=classification.detail,
             rewrite_failure_retryable=classification.retryable,
             rewrite_failure_details=details,
+            failure_stage=None,
         )
     except Exception:
         logger.warning("Failed to persist rewrite failure for %s", content_context_id)

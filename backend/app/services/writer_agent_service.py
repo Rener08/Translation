@@ -8,6 +8,7 @@ from app.services.content_rewrite_service import (
     DEFAULT_REWRITE_STYLE,
     RewriteStyle,
 )
+from app.services.rewrite_loop_executor import run_article_longform_loop
 from app.services.pipelines import (
     ArticleDraft,
     ArticleLongformPipeline,
@@ -83,27 +84,16 @@ class WriterAgent:
         # Phase 1.4: Feature flag for agent loop
         use_agent_loop = os.getenv("USE_AGENT_LOOP", "false").lower() == "true"
 
-        if use_agent_loop:
-            # Use agent loop wrapper
-            import asyncio
-            from app.agents.loop import run_agent_loop
-
-            # Run async agent loop in sync context
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                return loop.run_until_complete(run_agent_loop(
-                    agent=self,
-                    material=self._with_reference_text(material, reference_text),
-                    rewrite_focus=normalized_focus,
-                    rewrite_style=normalized_style,
-                    rewrite_config=rewrite_config,
-                    skill_config=config,
-                    llm_call_fn=llm_call_fn,
-                    cancellation_checker=cancellation_checker,
-                ))
-            finally:
-                loop.close()
+        if use_agent_loop and normalized_style == "article_longform":
+            return run_article_longform_loop(
+                material=self._with_reference_text(material, reference_text),
+                rewrite_focus=normalized_focus,
+                rewrite_style=normalized_style,
+                rewrite_config=rewrite_config,
+                skill_config=config,
+                llm_call_fn=llm_call_fn,
+                cancellation_checker=cancellation_checker,
+            )
 
         # Original pipeline execution
         return self._execute_pipeline(
@@ -192,4 +182,10 @@ def run_writer_agent(
         writer_trace_id=report.writer_trace_id,
         writer_policy_version=report.writer_policy_version,
         writer_prompt_version=report.writer_prompt_version,
+        loop_state_snapshot=getattr(report, "loop_state_snapshot", {}),
+        last_action=getattr(report, "last_action", ""),
+        budget_usage=getattr(report, "budget_usage", {}),
+        failure_stage=getattr(report, "failure_stage", None),
+        next_recommended_action=getattr(report, "next_recommended_action", None),
+        covered_facts_summary=getattr(report, "covered_facts_summary", ()),
     )

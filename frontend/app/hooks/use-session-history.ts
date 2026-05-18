@@ -41,6 +41,7 @@ export type SessionHistoryDetail = {
     text: string;
     speaker?: string | null;
   }>;
+  translation_zh_text?: string;
   translation_zh_segments?: Array<{
     index: number;
     start: number;
@@ -62,6 +63,12 @@ export type SessionHistoryDetail = {
   rewrite_failure_message?: string | null;
   rewrite_failure_retryable?: boolean | null;
   rewrite_failure_details?: string[];
+  loop_state_snapshot?: Record<string, unknown> | null;
+  last_action?: string | null;
+  budget_usage?: Record<string, unknown> | null;
+  failure_stage?: string | null;
+  next_recommended_action?: string | null;
+  covered_facts_summary?: string[];
   chat_turns?: Array<{
     role: "user" | "assistant";
     content: string;
@@ -88,6 +95,12 @@ export type RestoredConversationState = {
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   detailCoverageIssues: string[];
   failure: RestoredFailureState | null;
+  loopStateSnapshot: Record<string, unknown>;
+  lastAction: string;
+  budgetUsage: Record<string, unknown>;
+  failureStage: string | null;
+  nextRecommendedAction: string | null;
+  coveredFactsSummary: string[];
 };
 
 export function buildRestoredSessionState(data: SessionHistoryDetail): {
@@ -136,6 +149,17 @@ export function buildRestoredSessionState(data: SessionHistoryDetail): {
         .map((issue) => String(issue || "").trim())
         .filter(Boolean)
     : [];
+  const loopStateSnapshot =
+    data.loop_state_snapshot && typeof data.loop_state_snapshot === "object" && !Array.isArray(data.loop_state_snapshot)
+      ? { ...data.loop_state_snapshot }
+      : {};
+  const lastAction = String(data.last_action || "").trim();
+  const budgetUsage =
+    data.budget_usage && typeof data.budget_usage === "object" && !Array.isArray(data.budget_usage)
+      ? { ...data.budget_usage }
+      : {};
+  const failureStage = String(data.failure_stage || "").trim() || null;
+  const nextRecommendedAction = String(data.next_recommended_action || "").trim() || null;
   const failureMessage = String(data.rewrite_failure_message || "").trim();
   const failureErrorCode = String(data.rewrite_failure_error_code || "").trim();
   const failureDetails = Array.isArray(data.rewrite_failure_details)
@@ -143,6 +167,18 @@ export function buildRestoredSessionState(data: SessionHistoryDetail): {
         .map((detail) => String(detail || "").trim())
         .filter(Boolean)
     : [];
+  const coveredFactsSummary = Array.isArray(data.covered_facts_summary)
+    ? data.covered_facts_summary
+        .map((item) => String(item || "").trim())
+        .filter(Boolean)
+    : [];
+  const hasLoopMetadata =
+    Object.keys(loopStateSnapshot).length > 0 ||
+    lastAction.length > 0 ||
+    Object.keys(budgetUsage).length > 0 ||
+    failureStage !== null ||
+    nextRecommendedAction !== null ||
+    coveredFactsSummary.length > 0;
   const failure =
     failureMessage || failureErrorCode
       ? {
@@ -191,6 +227,7 @@ export function buildRestoredSessionState(data: SessionHistoryDetail): {
       rewrittenText ||
       restoredMessages.length > 0 ||
       detailCoverageIssues.length > 0 ||
+      hasLoopMetadata ||
       failure
         ? {
             rewrittenText,
@@ -198,6 +235,12 @@ export function buildRestoredSessionState(data: SessionHistoryDetail): {
             messages: restoredMessages,
             detailCoverageIssues,
             failure,
+            loopStateSnapshot,
+            lastAction,
+            budgetUsage,
+            failureStage,
+            nextRecommendedAction,
+            coveredFactsSummary,
           }
         : null,
   };

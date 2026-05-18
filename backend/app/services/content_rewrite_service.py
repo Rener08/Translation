@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from app.services.llm_provider_service import clean_model_output_text
@@ -68,6 +68,12 @@ class ContentRewriteResult:
     writer_trace_id: str = ""
     writer_policy_version: str = ""
     writer_prompt_version: str = ""
+    loop_state_snapshot: dict[str, object] = field(default_factory=dict)
+    last_action: str = ""
+    budget_usage: dict[str, object] = field(default_factory=dict)
+    failure_stage: str | None = None
+    next_recommended_action: str | None = None
+    covered_facts_summary: tuple[str, ...] = ()
 
 
 def rewrite_content(

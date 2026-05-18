@@ -410,6 +410,12 @@ class ContentRewriteResponse(BaseModel):
     rewritten_text: str
     quality_issues: list[str] = Field(default_factory=list)
     detail_coverage_issues: list[str] = Field(default_factory=list)
+    loop_state_snapshot: dict[str, object] = Field(default_factory=dict)
+    last_action: str | None = None
+    budget_usage: dict[str, object] = Field(default_factory=dict)
+    failure_stage: str | None = None
+    next_recommended_action: str | None = None
+    covered_facts_summary: list[str] = Field(default_factory=list)
 
 
 class SessionHistoryTurnResponse(BaseModel):
@@ -471,6 +477,12 @@ class SessionHistoryDetailResponse(BaseModel):
     rewrite_failure_message: str | None = None
     rewrite_failure_retryable: bool | None = None
     rewrite_failure_details: list[str] = Field(default_factory=list)
+    loop_state_snapshot: dict[str, object] = Field(default_factory=dict)
+    last_action: str | None = None
+    budget_usage: dict[str, object] = Field(default_factory=dict)
+    failure_stage: str | None = None
+    next_recommended_action: str | None = None
+    covered_facts_summary: list[str] = Field(default_factory=list)
     chat_turns: list[SessionHistoryTurnResponse] = Field(default_factory=list)
 
 

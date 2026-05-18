@@ -163,6 +163,12 @@ export type ContentRewriteResponse = {
   rewritten_text: string;
   quality_issues?: string[];
   detail_coverage_issues?: string[];
+  loop_state_snapshot?: Record<string, unknown> | null;
+  last_action?: string | null;
+  budget_usage?: Record<string, unknown> | null;
+  failure_stage?: string | null;
+  next_recommended_action?: string | null;
+  covered_facts_summary?: string[];
 };
 
 export type SystemYtDlpCookiesResponse = {

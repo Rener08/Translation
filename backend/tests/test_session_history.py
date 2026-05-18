@@ -275,6 +275,63 @@ def test_content_rewrite_failure_persists_session_diagnostic(
     ]
 
 
+def test_record_rewrite_result_persists_loop_fields(monkeypatch, tmp_path: Path) -> None:
+    _use_tmp_cache(monkeypatch, tmp_path)
+    content_context_id = create_content_context(
+        video_title="Test video",
+        transcript_en="Hello everyone.\nWelcome back.",
+        translation_zh="大家好。\n欢迎回来。",
+    )
+
+    upsert_job_session(
+        content_context_id=content_context_id,
+        video_id="abc123xyz",
+        video_url="https://www.youtube.com/watch?v=abc123xyz",
+        video_title="Test video",
+        source_mode="subtitle_first",
+        source_type="captions",
+        translation_provider="deepseek",
+        translation_model="deepseek-chat",
+        translation_base_url="https://api.deepseek.com",
+        transcript_en_text="Hello everyone.\nWelcome back.",
+        transcript_en_segments=[],
+        translation_zh_text="大家好。\n欢迎回来。",
+        translation_zh_segments=[],
+    )
+
+    record_rewrite_result(
+        content_context_id=content_context_id,
+        rewrite_style="article_longform",
+        rewrite_focus="请写成长文。",
+        rewrite_source_text="大家好。\n欢迎回来。",
+        rewritten_text="第一段。\n\n第二段。",
+        rewrite_quality_issues=["too short"],
+        rewrite_detail_coverage_issues=["missing detail"],
+        rewrite_provider="deepseek",
+        rewrite_model="deepseek-chat",
+        translation_base_url="https://api.deepseek.com",
+        skill_config_name="latepost",
+        writer_trace_id="trace-123",
+        writer_policy_version="policy-123",
+        writer_prompt_version="prompt-123",
+        loop_state_snapshot={"state": {"rounds_left": 2}},
+        last_action="expand",
+        budget_usage={"spent_tokens": 321},
+        failure_stage="validation",
+        next_recommended_action="patch",
+        covered_facts_summary=("fact-1", "fact-2"),
+    )
+
+    detail = load_session_history(content_context_id)
+    assert detail is not None
+    assert detail["loop_state_snapshot"] == {"state": {"rounds_left": 2}}
+    assert detail["last_action"] == "expand"
+    assert detail["budget_usage"] == {"spent_tokens": 321}
+    assert detail["failure_stage"] == "validation"
+    assert detail["next_recommended_action"] == "patch"
+    assert detail["covered_facts_summary"] == ["fact-1", "fact-2"]
+
+
 def test_session_history_endpoints_filter_by_account_id(monkeypatch, tmp_path: Path) -> None:
     _use_tmp_cache(monkeypatch, tmp_path)
     content_context_id = create_content_context(

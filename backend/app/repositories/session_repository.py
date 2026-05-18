@@ -104,20 +104,26 @@ class SessionRepository:
     def record_rewrite_result(
         self,
         *,
-            content_context_id: str,
-            rewrite_style: str | None = None,
-            rewrite_focus: str | None,
-            rewrite_source_text: str,
-            rewritten_text: str,
-            rewrite_quality_issues: list[str] | None = None,
-            rewrite_detail_coverage_issues: list[str] | None = None,
-            rewrite_provider: str,
-            rewrite_model: str,
-            translation_base_url: str | None = None,
-            skill_config_name: str | None = None,
-            writer_trace_id: str | None = None,
-            writer_policy_version: str | None = None,
-            writer_prompt_version: str | None = None,
+        content_context_id: str,
+        rewrite_style: str | None = None,
+        rewrite_focus: str | None,
+        rewrite_source_text: str,
+        rewritten_text: str,
+        rewrite_quality_issues: list[str] | None = None,
+        rewrite_detail_coverage_issues: list[str] | None = None,
+        rewrite_provider: str,
+        rewrite_model: str,
+        translation_base_url: str | None = None,
+        skill_config_name: str | None = None,
+        writer_trace_id: str | None = None,
+        writer_policy_version: str | None = None,
+        writer_prompt_version: str | None = None,
+        loop_state_snapshot: dict[str, Any] | None = None,
+        last_action: str | None = None,
+        budget_usage: dict[str, Any] | None = None,
+        failure_stage: str | None = None,
+        next_recommended_action: str | None = None,
+        covered_facts_summary: list[str] | tuple[str, ...] | None = None,
     ) -> None:
         normalized_id = self._normalize_key(content_context_id)
         if not normalized_id:
@@ -155,6 +161,14 @@ class SessionRepository:
             payload["writer_trace_id"] = self._normalize_optional_text(writer_trace_id)
             payload["writer_policy_version"] = self._normalize_optional_text(writer_policy_version)
             payload["writer_prompt_version"] = self._normalize_optional_text(writer_prompt_version)
+            payload["loop_state_snapshot"] = self._normalize_json_value(loop_state_snapshot)
+            payload["last_action"] = self._normalize_optional_text(last_action) or ""
+            payload["budget_usage"] = self._normalize_json_value(budget_usage)
+            payload["failure_stage"] = self._normalize_optional_text(failure_stage)
+            payload["next_recommended_action"] = self._normalize_optional_text(
+                next_recommended_action
+            )
+            payload["covered_facts_summary"] = self._normalize_text_list(covered_facts_summary)
             payload["chat_turns"] = self._normalize_chat_turns(payload.get("chat_turns"))
 
             persistent_cache_service.store_json_cache(
@@ -176,6 +190,7 @@ class SessionRepository:
         rewrite_failure_message: str | None = None,
         rewrite_failure_retryable: bool | None = None,
         rewrite_failure_details: list[str] | None = None,
+        failure_stage: str | None = None,
     ) -> None:
         normalized_id = self._normalize_key(content_context_id)
         if not normalized_id:
@@ -213,6 +228,12 @@ class SessionRepository:
                 else None
             )
             payload["rewrite_failure_details"] = self._normalize_text_list(rewrite_failure_details)
+            payload["loop_state_snapshot"] = {}
+            payload["last_action"] = ""
+            payload["budget_usage"] = {}
+            payload["failure_stage"] = self._normalize_optional_text(failure_stage)
+            payload["next_recommended_action"] = None
+            payload["covered_facts_summary"] = []
 
             persistent_cache_service.store_json_cache(
                 self.namespace, normalized_id, payload
@@ -411,6 +432,18 @@ class SessionRepository:
         normalized["writer_prompt_version"] = self._normalize_optional_text(
             normalized.get("writer_prompt_version")
         )
+        normalized["loop_state_snapshot"] = self._normalize_json_value(
+            normalized.get("loop_state_snapshot")
+        )
+        normalized["last_action"] = self._normalize_optional_text(normalized.get("last_action")) or ""
+        normalized["budget_usage"] = self._normalize_json_value(normalized.get("budget_usage"))
+        normalized["failure_stage"] = self._normalize_optional_text(normalized.get("failure_stage"))
+        normalized["next_recommended_action"] = self._normalize_optional_text(
+            normalized.get("next_recommended_action")
+        )
+        normalized["covered_facts_summary"] = self._normalize_text_list(
+            normalized.get("covered_facts_summary")
+        )
         normalized["chat_turns"] = self._normalize_chat_turns(normalized.get("chat_turns"))
         return normalized
 
@@ -446,7 +479,7 @@ class SessionRepository:
         return turns
 
     def _normalize_text_list(self, value: object | None) -> list[str]:
-        if not isinstance(value, list):
+        if not isinstance(value, (list, tuple)):
             return []
 
         normalized: list[str] = []
@@ -455,6 +488,11 @@ class SessionRepository:
             if text:
                 normalized.append(text)
         return normalized
+
+    def _normalize_json_value(self, value: object | None) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        return {}
 
     def _preview_text(self, value: object | None, limit: int = 120) -> str:
         text = self._normalize_text(value)

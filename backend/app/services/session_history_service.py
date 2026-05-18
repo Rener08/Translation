@@ -80,6 +80,12 @@ def record_rewrite_result(
     writer_trace_id: str | None = None,
     writer_policy_version: str | None = None,
     writer_prompt_version: str | None = None,
+    loop_state_snapshot: dict[str, Any] | None = None,
+    last_action: str | None = None,
+    budget_usage: dict[str, Any] | None = None,
+    failure_stage: str | None = None,
+    next_recommended_action: str | None = None,
+    covered_facts_summary: list[str] | tuple[str, ...] | None = None,
 ) -> None:
     default_session_repository.record_rewrite_result(
         content_context_id=content_context_id,
@@ -96,6 +102,12 @@ def record_rewrite_result(
         writer_trace_id=writer_trace_id,
         writer_policy_version=writer_policy_version,
         writer_prompt_version=writer_prompt_version,
+        loop_state_snapshot=loop_state_snapshot,
+        last_action=last_action,
+        budget_usage=budget_usage,
+        failure_stage=failure_stage,
+        next_recommended_action=next_recommended_action,
+        covered_facts_summary=covered_facts_summary,
     )
 
 
@@ -113,6 +125,7 @@ def record_rewrite_failure(
     rewrite_failure_message: str | None = None,
     rewrite_failure_retryable: bool | None = None,
     rewrite_failure_details: list[str] | None = None,
+    failure_stage: str | None = None,
 ) -> None:
     default_session_repository.record_rewrite_failure(
         content_context_id=content_context_id,
@@ -127,6 +140,7 @@ def record_rewrite_failure(
         rewrite_failure_message=rewrite_failure_message,
         rewrite_failure_retryable=rewrite_failure_retryable,
         rewrite_failure_details=rewrite_failure_details,
+        failure_stage=failure_stage,
     )
 
 

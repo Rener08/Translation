@@ -13,7 +13,7 @@ SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
 6. 只输出整理后的正文。
 """.strip()
 
-ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = “””
+ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = """
 你是一名中文文章改写助手。
 
 任务：
@@ -26,7 +26,7 @@ ARTICLE_LONGFORM_ASSISTANT_INSTRUCTIONS = “””
 7. 严格遵守用户给出的改写要求、约束和长度要求。
 8. 默认输出简体中文。
 9. 只输出改写后的正文，不要输出解释、标题前缀或分析过程。
-“””.strip()
+""".strip()
 
 DEFAULT_REWRITE_FOCUS = (
     "保留原作者的说话节奏和口吻，只做轻度整理，不要总结化重写。"

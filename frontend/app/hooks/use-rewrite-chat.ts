@@ -47,6 +47,12 @@ type UseRewriteChatParams = {
       retryable: boolean | null;
       details: string[];
     } | null;
+    loopStateSnapshot: Record<string, unknown>;
+    lastAction: string;
+    budgetUsage: Record<string, unknown>;
+    failureStage: string | null;
+    nextRecommendedAction: string | null;
+    coveredFactsSummary: string[];
   } | null;
 };
 
@@ -198,11 +204,19 @@ export function useRewriteChat({
     const hasRestoredCoverageIssues =
       (restoredConversation?.detailCoverageIssues.length ?? 0) > 0;
     const hasRestoredFailure = Boolean(restoredConversation?.failure);
+    const hasRestoredLoopMetadata =
+      Object.keys(restoredConversation?.loopStateSnapshot ?? {}).length > 0 ||
+      Object.keys(restoredConversation?.budgetUsage ?? {}).length > 0 ||
+      String(restoredConversation?.lastAction || "").trim().length > 0 ||
+      String(restoredConversation?.failureStage || "").trim().length > 0 ||
+      String(restoredConversation?.nextRecommendedAction || "").trim().length > 0 ||
+      (restoredConversation?.coveredFactsSummary.length ?? 0) > 0;
     if (
       hasRestoredRewrite ||
       hasRestoredMessages ||
       hasRestoredCoverageIssues ||
-      hasRestoredFailure
+      hasRestoredFailure ||
+      hasRestoredLoopMetadata
     ) {
       setMessages(restoredConversation?.messages ?? []);
       setRewriteText(restoredConversation?.rewrittenText ?? "");
