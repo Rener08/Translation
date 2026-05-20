@@ -85,6 +85,7 @@ def rewrite_content(
     detail_ledger: str | None = None,
     skill_config=None,
     cancellation_checker=None,
+    skip_prompt_validation: bool = False,
 ) -> ContentRewriteResult:
     normalized_source = str(source_text or "").strip()
     if not normalized_source:
@@ -103,14 +104,20 @@ def rewrite_content(
                 "改写提示为空。请重新选择写作风格，或移除空白 rewrite_focus 后重试。"
             )
 
-    prompt_validation = validate_rewrite_prompt(normalized_focus)
-    if not prompt_validation.is_valid:
-        raise ContentRewriteInputError("；".join(prompt_validation.errors))
+    if skip_prompt_validation:
+        prompt_validation = None
+    else:
+        prompt_validation = validate_rewrite_prompt(normalized_focus)
+        if not prompt_validation.is_valid:
+            raise ContentRewriteInputError("；".join(prompt_validation.errors))
 
     normalized_style = _normalize_rewrite_style(rewrite_style)
     config = resolve_rewrite_config(rewrite_config)
     references = None
-    if not prompt_validation.has_transcript_placeholder and normalized_style != "speech_verbatim":
+    if (
+        (prompt_validation is None or not prompt_validation.has_transcript_placeholder)
+        and normalized_style != "speech_verbatim"
+    ):
         references = load_rewrite_references()
     messages = build_rewrite_messages(
         source_text=normalized_source,

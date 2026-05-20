@@ -22,7 +22,6 @@ Current source-of-truth notes:
 - The app persists inspect metadata, source mode, transcript text, rewrite output, and chat turns for local debugging.
 - Cookie guidance is advanced fallback only for restricted videos.
 - The web frontend is the primary user-facing workflow.
-- Experimental agent-loop code under `backend/app/agents/` is not part of the shipping contract.
 - Mainline acceptance and shipping gates live in [`TODO.md`](../TODO.md#mainline-acceptance).
 
 ## 2. Runtime Prompt And Style Assets

@@ -257,14 +257,13 @@ def test_content_rewrite_endpoint_returns_rewritten_text(monkeypatch) -> None:
     )
 
     assert response.status_code == 200
-    assert response.json() == {
-        "ok": True,
-        "provider": "deepseek",
-        "model": "deepseek-chat",
-        "rewritten_text": "这是改写后的版本。",
-        "quality_issues": [],
-        "detail_coverage_issues": [],
-    }
+    body = response.json()
+    assert body["ok"] is True
+    assert body["provider"] == "deepseek"
+    assert body["model"] == "deepseek-chat"
+    assert body["rewritten_text"] == "这是改写后的版本。"
+    assert body["quality_issues"] == []
+    assert body["detail_coverage_issues"] == []
 
 
 def test_content_rewrite_endpoint_loads_reference_text_from_context(

@@ -136,6 +136,15 @@ def test_preflight_endpoint_reports_runtime_and_provider_readiness(monkeypatch) 
         return PreflightCheck(name=name, label=label, ok=ok, detail=detail)
 
     monkeypatch.setattr(
+        "app.api.routers.system.build_readyz_checks",
+        lambda: {
+            "tmp_writable": "ok",
+            "job_queue_db": "ok",
+            "yaml_available": "ok",
+            "yt_dlp_cookies": "ok",
+        },
+    )
+    monkeypatch.setattr(
         "app.api.routers.system._check_job_queue_db",
         lambda: make_check("job_queue_db", "job_queue_db", True, "job queue ok"),
     )
@@ -188,6 +197,7 @@ def test_preflight_endpoint_reports_runtime_and_provider_readiness(monkeypatch) 
     body = response.json()
     assert body["all_ok"] is False
     assert [check["name"] for check in body["checks"]] == [
+        "backend_readyz",
         "job_queue_db",
         "yaml_available",
         "yt_dlp",
@@ -199,6 +209,8 @@ def test_preflight_endpoint_reports_runtime_and_provider_readiness(monkeypatch) 
         "rewrite_provider",
     ]
     provider_checks = {check["name"]: check for check in body["checks"]}
+    assert provider_checks["backend_readyz"]["ok"] is True
+    assert provider_checks["backend_readyz"]["detail"] == "readyz ok"
     assert provider_checks["translation_provider"]["ok"] is True
     assert provider_checks["rewrite_provider"]["ok"] is False
     assert "无法访问" in provider_checks["rewrite_provider"]["detail"]

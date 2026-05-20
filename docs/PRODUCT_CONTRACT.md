@@ -23,7 +23,6 @@ Within `article_longform`, automatic routing is intentionally narrow: it priorit
 2. The writing half is agent-shaped:
    - one `WriterAgent` only
    - no multi-agent orchestration in the mainline
-   - `backend/app/agents/` stays experimental and off by default
 3. Web is the only active product UI.
 4. Cookies are not a default path:
    - default flow should work without cookie input

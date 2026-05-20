@@ -29,16 +29,16 @@ These items came out of the latest repo review and are not yet fully closed in c
 
 - [ ] Add a first-class media ingest abstraction so YouTube URL, uploaded audio, and future subtitle/transcript files share the same source contract.
 - [ ] Extend the current upload fallback beyond audio so local subtitle / transcript files can also be ingested when YouTube access is blocked.
-- [ ] Expose the existing runtime checks in a user-facing preflight/doctor flow so cookies, yt-dlp, JS runtime, backend health, and writable tmp are visible before a long run starts.
-- [ ] Make job cancellation and stage timeout propagation kill child subprocesses and long-running fetches end-to-end.
-- [ ] Tighten YouTube error classification and user guidance for `PO_TOKEN_REQUIRED`, `COOKIE_REQUIRED`, `COOKIE_STALE`, `YOUTUBE_BOT_CHECK`, `VIDEO_REGION_BLOCKED`, `VIDEO_UNAVAILABLE`, and `YOUTUBE_429`.
-- [ ] Add frontend automated tests for history restore, settings persistence, and rewrite/chat request races.
+- [x] Expose the existing runtime checks in a user-facing preflight/doctor flow so cookies, yt-dlp, JS runtime, backend health, and writable tmp are visible before a long run starts.
+- [x] Make job cancellation and stage timeout propagation kill child subprocesses and long-running fetches end-to-end.
+- [x] Tighten YouTube error classification and user guidance for `PO_TOKEN_REQUIRED`, `COOKIE_REQUIRED`, `COOKIE_STALE`, `YOUTUBE_BOT_CHECK`, `VIDEO_REGION_BLOCKED`, `VIDEO_UNAVAILABLE`, and `YOUTUBE_429`.
+- [x] Add frontend automated tests for history restore, settings persistence, and rewrite/chat request races.
 - [x] Refresh README, product-contract, architecture, CONTRIBUTING, and backlog docs so they match the active ingest + rewrite flow and the new fallback behavior.
 - [ ] Add a runtime supervisor / launcher boundary for the future macOS wrapper.
 
 ## Mainline Acceptance
 
-These are the shipping gates for the current product path. They do not depend on `backend/app/agents/`.
+These are the shipping gates for the current product path. They do not depend on the deleted experimental branch.
 
 - [ ] `YouTube URL -> content_context_id -> WriterAgent -> article draft -> revision chat -> export` runs end to end.
 - [ ] Local audio upload uses the same mainline path and can be reopened from history.
@@ -51,72 +51,21 @@ These are the shipping gates for the current product path. They do not depend on
 
 These are the user-visible checks that must hold on the web UI before the mainline can be treated as stable.
 
-- [ ] `检查环境` CTA opens a real preflight/doctor flow, not just the settings panel shell.
-- [ ] Settings preflight checks both local runtime readiness and the currently selected provider/model/API key, then feeds that result back into submit gating.
+- [x] `检查环境` CTA opens a real preflight/doctor flow, not just the settings panel shell.
+- [x] Settings preflight checks both local runtime readiness and the currently selected provider/model/API key, then feeds that result back into submit gating.
 - [ ] Preflight, history, and failure states show structured diagnostics with `error_code`, `retryable`, and a concrete recovery action instead of a single generic string.
 - [ ] Reopening a session restores the historical settings semantics, including `provider`, `model`, and `rewriteStyle`, so retry/continue actions use the original session context.
 - [ ] Reopening a session preserves `detailCoverageIssues`, failure state, and patch eligibility so the user can see what was still missing.
 - [ ] The result page shows the original transcript/material alongside the rewrite output and chat so users can verify source fidelity and debug bad rewrites.
 
-## Experimental Agent Loop
-
-`backend/app/agents/` is an experimental package. It is kept for research and future evaluation, not as the shipping roadmap for this checkout.
-
-Current experimental direction:
-
-**参考仓库**（从易到难）：
-- ⭐ OpenAI Agents Python（单 agent + tool calling + handoff）
-- ⭐ AI Agents From Scratch（agent loop 结构 + checkpoint）
-- Microsoft AI Agents for Beginners（入门课程 + 简单 agent）
-- pguso AI Agents From Scratch（不用框架，从零写 agent loop）
-- LangGraph 101（notebook 教程，状态机式 agent）
-- 不借鉴：LangGraph/CrewAI 的多 agent 编排（太重，不适合单 agent 场景）
-
-### Phase 1: Agent Loop 基础架构（研究）
-
-**目标**: 包裹现有 pipeline，实现 observe → decide → act → check 循环，但只作为实验验证，不进入主线验收。
-
-- [ ] 1.1 定义 AgentState（`backend/app/agents/state.py`）
-- [ ] 1.2 定义 AgentAction（`backend/app/agents/action.py`）
-- [ ] 1.3 实现 Agent Loop（`backend/app/agents/loop.py`）
-- [ ] 1.4 包裹现有 Pipeline
-- [ ] 1.5 单元测试
-
-### Phase 2: Tool Calling + Error Recovery（研究）
-
-**目标**: 验证工具调用和重试策略是否真的能提升质量，而不是增加复杂度。
-
-- [ ] 2.1 定义 Tool 接口（`backend/app/agents/tools.py`）
-- [ ] 2.2 实现基础 Tools
-- [ ] 2.3 Tool Registry
-- [ ] 2.4 Error Recovery 逻辑
-- [ ] 2.5 集成到 Agent Loop
-
-### Phase 3: Checkpoint + Trace（研究）
-
-**目标**: 验证中断恢复和执行回放是否值得产品化。
-
-- [ ] 3.1 Checkpoint Schema（`backend/app/models/checkpoint.py`）
-- [ ] 3.2 Checkpoint 持久化
-- [ ] 3.3 Checkpoint 恢复逻辑
-- [ ] 3.4 Execution Trace
-- [ ] 3.5 Trace 可视化（可选）
-
-**研究验收标准**：
-- [ ] Agent loop 可以完整执行现有 pipeline
-- [ ] LLM 可以调用 3 个基础工具
-- [ ] Rate limit 错误自动重试
-- [ ] 中断后可以从 checkpoint 恢复
-- [ ] Execution trace 记录完整
-- [ ] 所有现有产品测试通过，且默认主线不依赖该功能
-
-**备注**：实验能力默认关闭，任何产品化决定都必须先回到主线验收门槛。
+Detailed execution plan: [docs/AGENT_V1_PLAN.md](docs/AGENT_V1_PLAN.md)
+This file keeps backlog/status. The linked plan file keeps the step-by-step implementation detail.
 
 ## Test Status
 
 - [x] `backend/tests/test_jobs_run.py` is green on the current checkout; the old translation-stage cleanup note is stale.
 - [x] `backend/tests/test_writer_agent.py::test_writer_agent_speech_verbatim_rejects_truncated_patch_output` already uses Chinese source text and passes.
-- [ ] Frontend automated tests still need to be added for history restore, settings persistence, and rewrite/chat request races.
+- [x] Frontend automated tests now cover history restore, settings persistence, and rewrite/chat request races.
 
 ## Web UI Development Guide
 

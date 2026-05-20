@@ -94,3 +94,41 @@ def test_inspect_youtube_access_surfaces_audio_probe_failure(monkeypatch) -> Non
     assert result.target_ok is False
     assert result.error_code == "YOUTUBE_BOT_CHECK"
     assert result.checks["target_audio_probe"] == "failed"
+
+
+def test_inspect_youtube_access_surfaces_po_token_required(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.services.youtube_access_service.resolve_yt_dlp_cookie_config",
+        _cookie_config,
+    )
+    monkeypatch.setattr(
+        "app.services.youtube_access_service.extract_video_info",
+        lambda url: {
+            "id": "abc123xyz",
+            "title": "Demo title",
+            "subtitles": {},
+            "automatic_captions": {},
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.youtube_access_service.fetch_best_english_captions",
+        lambda video_info: None,
+    )
+
+    def _fail_download(url: str, target_dir=None):
+        raise RuntimeError(
+            "ERROR: [youtube] 403 Forbidden: this client requires a PO Token"
+        )
+
+    monkeypatch.setattr(
+        "app.services.youtube_access_service.download_audio",
+        _fail_download,
+    )
+
+    result = inspect_youtube_access("https://www.youtube.com/watch?v=abc123xyz")
+
+    assert result.ok is False
+    assert result.target_ok is False
+    assert result.error_code == "PO_TOKEN_REQUIRED"
+    assert result.retryable is True
+    assert "PO Token" in result.recommended_action

@@ -1,5 +1,6 @@
 from app.services.content_rewrite_service import ContentRewriteResult
 from app.services.quality_check_service import QualityReport
+from app.services.rewrite_loop_validator import ValidationReport
 from app.services.skill_config_service import SkillConfig, SkillOutputSpec, StyleConstraint
 from app.services.writer_agent_service import MaterialPackage, WriterAgent, run_writer_agent
 
@@ -594,6 +595,85 @@ def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
     assert report.rewrite_style == "article_longform"
+
+
+def test_writer_agent_article_longform_internal_prompts_skip_validation(
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    latepost_config = SkillConfig(
+        style_name="晚点",
+        perspective="third_person",
+        output=SkillOutputSpec(
+            min_chars=0,
+            target_chars=0,
+            max_chars=0,
+            min_sections=3,
+            max_sections=6,
+            source_length_ratio_min=0.4,
+            source_length_ratio_max=0.65,
+        ),
+        constraints=(),
+        perspective_markers=(),
+        template_routing_enabled=True,
+        content_filters=(),
+        quality_layers=(),
+    )
+
+    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+        calls.append(kwargs)
+        assert kwargs["skip_prompt_validation"] is True
+        if len(calls) == 1:
+            return ContentRewriteResult(
+                rewritten_text="- 第一部分\n- 第二部分\n- 第三部分",
+                provider="deepseek",
+                model="deepseek-v4-pro",
+            )
+        return ContentRewriteResult(
+            rewritten_text=(
+                "这是一个第三视角的报道段落。" + ("甲" * 900) + "\n\n"
+                "第二段继续补足细节。" + ("乙" * 900)
+            ),
+            provider="deepseek",
+            model="deepseek-v4-pro",
+        )
+
+    monkeypatch.setenv("USE_AGENT_LOOP", "true")
+    monkeypatch.setattr(
+        "app.services.content_rewrite_service.rewrite_content",
+        fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.rewrite_loop_executor.validate_longform_rewrite",
+        lambda **kwargs: ValidationReport(
+            hard_failures=(),
+            soft_failures=(),
+            grounding_failures=(),
+            writing_failures=(),
+            metrics={},
+            next_recommended_action="stop",
+            recommended_stage="finalize",
+            recommendation_reason="ok",
+            detail_coverage_issues=(),
+            evidence_bundle={},
+            article_validation=None,
+        ),
+    )
+
+    report = WriterAgent().run(
+        material=MaterialPackage(
+            source_text="# Cleaned English Transcript\n\n正文内容。",
+        ),
+        rewrite_focus="改写成晚点风格的第三视角中文报道文章。",
+        rewrite_style="article_longform",
+        rewrite_config={"provider": "deepseek", "model": "deepseek-v4-pro"},
+        skill_config=latepost_config,
+    )
+
+    assert len(calls) >= 2
+    assert report.provider == "deepseek"
+    assert report.model == "deepseek-v4-pro"
 
 
 def test_writer_agent_article_longform_length_revisions_use_original_source(

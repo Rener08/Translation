@@ -4,10 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any, Literal, Mapping
 
 
-LoopActionKind = Literal["outline", "draft", "expand", "patch", "stop"]
+LoopActionKind = Literal["collect_evidence", "outline", "draft", "re_ground", "expand", "patch", "stop"]
 ALLOWED_LOOP_ACTION_KINDS: tuple[LoopActionKind, ...] = (
+    "collect_evidence",
     "outline",
     "draft",
+    "re_ground",
     "expand",
     "patch",
     "stop",

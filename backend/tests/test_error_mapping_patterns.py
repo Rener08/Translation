@@ -81,6 +81,27 @@ def test_too_many_requests_maps_to_youtube_429() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pattern: PO_TOKEN_REQUIRED
+# ---------------------------------------------------------------------------
+
+def test_po_token_required_maps_to_po_token_required() -> None:
+    c = classify_service_error(
+        _exc("ERROR: [youtube] 403 Forbidden: this client requires a PO Token")
+    )
+    assert c.error_code == "PO_TOKEN_REQUIRED"
+    assert c.status_code == 502
+    assert c.retryable is True
+
+
+def test_po_token_provider_none_debug_output_maps_to_po_token_required() -> None:
+    c = classify_service_error(
+        _exc("ERROR: [youtube] [pot] PO Token Providers: none")
+    )
+    assert c.error_code == "PO_TOKEN_REQUIRED"
+    assert c.retryable is True
+
+
+# ---------------------------------------------------------------------------
 # Pattern: COOKIE_STALE (two variants)
 # ---------------------------------------------------------------------------
 

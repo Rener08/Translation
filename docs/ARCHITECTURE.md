@@ -60,4 +60,4 @@ External API response remains compatible. Existing fields (`rewritten_text`, `pr
 ## Legacy Boundary
 
 The old PyQt desktop path has been removed from this checkout.
-The experimental agent-loop package under `backend/app/agents/` is not part of the shipping path and stays off by default.
+The shipping path stays in the service-layer rewrite loop and the single `WriterAgent` flow.

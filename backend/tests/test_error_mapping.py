@@ -32,6 +32,17 @@ def test_classify_service_error_detects_youtube_bot_check() -> None:
     assert classification.retryable is True
 
 
+def test_classify_service_error_detects_po_token_required() -> None:
+    classification = classify_service_error(
+        VideoInspectError(
+            "ERROR: [youtube] 403 Forbidden: this client requires a PO Token"
+        )
+    )
+
+    assert classification.error_code == "PO_TOKEN_REQUIRED"
+    assert classification.retryable is True
+
+
 def test_classify_service_error_detects_timeout() -> None:
     classification = classify_service_error(
         AudioDownloadTimeoutError("yt-dlp audio download timed out after 30s.")

@@ -7,6 +7,7 @@ import subprocess
 from typing import Any
 
 from app.config import ROOT_DIR, get_env_str
+from app.services.subprocess_utils import run_subprocess_killable
 from app.services.transcription_service import (
     TranscriptSegment,
     TranscriptionResult,
@@ -379,14 +380,14 @@ def _prepare_audio_for_diarization(file_path: Path) -> Path:
         str(converted_path),
     ]
     try:
-        completed = subprocess.run(
+        completed = run_subprocess_killable(
             command,
             capture_output=True,
             text=True,
             encoding="utf-8",
             errors="replace",
             check=False,
-            timeout=60,
+            subprocess_timeout=60,
         )
     except subprocess.TimeoutExpired:
         if converted_path.exists():

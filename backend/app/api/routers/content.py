@@ -153,9 +153,9 @@ async def content_rewrite(
 
     quality_issues = list(getattr(result, "quality_issues", ()) or [])
     detail_coverage_issues = list(getattr(result, "detail_coverage_issues", ()) or [])
-    loop_state_snapshot = getattr(result, "loop_state_snapshot", {}) or {}
+    loop_state_snapshot = dict(getattr(result, "loop_state_snapshot", {}) or {})
     last_action = getattr(result, "last_action", "") or ""
-    budget_usage = getattr(result, "budget_usage", {}) or {}
+    budget_usage = dict(getattr(result, "budget_usage", {}) or {})
     failure_stage = getattr(result, "failure_stage", None)
     next_recommended_action = getattr(result, "next_recommended_action", None)
     covered_facts_summary = list(getattr(result, "covered_facts_summary", ()) or [])

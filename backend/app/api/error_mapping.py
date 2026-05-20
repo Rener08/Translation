@@ -147,6 +147,8 @@ def classify_service_error(error: Exception) -> ErrorClassification:
         or "geo-restricted" in lowered
     ):
         return ErrorClassification(502, "VIDEO_REGION_BLOCKED", False, message)
+    if _looks_like_po_token_error(lowered):
+        return ErrorClassification(502, "PO_TOKEN_REQUIRED", True, message)
     if "429" in lowered or "too many requests" in lowered:
         return ErrorClassification(502, "YOUTUBE_429", True, message)
     if (
@@ -191,6 +193,20 @@ def classify_service_error(error: Exception) -> ErrorClassification:
         return ErrorClassification(502, "UPSTREAM_ERROR", True, message)
 
     return ErrorClassification(502, "UNEXPECTED_ERROR", False, message)
+
+
+def _looks_like_po_token_error(lowered: str) -> bool:
+    if "po token" in lowered or "po_token" in lowered or "po-token" in lowered:
+        return True
+    if "missing pot" in lowered:
+        return True
+    if "pot token" in lowered:
+        return True
+    if "po token providers: none" in lowered:
+        return True
+    if "youtube" in lowered and "http error 403" in lowered and "po token" in lowered:
+        return True
+    return False
 
 
 def raise_mapped_http_exception(error: Exception) -> None:

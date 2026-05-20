@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from inspect import signature
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from dataclasses import replace
 from pathlib import Path
@@ -117,10 +118,12 @@ class JobRunStageMachine:
         return replace(state, source=output.source)
 
     def _fetch_source_stage(self, video_info: dict[str, object]) -> FetchSourceStageOutput:
-        source = fetch_video_source_from_info(
+        source = _call_fetch_video_source_from_info(
             self._context.url,
             video_info,
             source_mode=self._context.source_mode,
+            cancellation_checker=self._context.cancellation_checker,
+            caption_request_timeout_sec=self._context.stage_timeouts.fetch_source,
         )
         logger.info("Selected source type %s for %s", source.source_type, video_info.get("id"))
         if source.source_type == "audio" and source.audio_file_path:
@@ -301,6 +304,26 @@ def _normalize_positive_timeout(value: object, fallback: int) -> int:
     if parsed <= 0:
         return fallback
     return parsed
+
+
+def _call_fetch_video_source_from_info(
+    url: str,
+    video_info: dict[str, object],
+    *,
+    source_mode: SourceMode,
+    cancellation_checker,
+    caption_request_timeout_sec: int | float | None,
+):
+    parameters = signature(fetch_video_source_from_info).parameters
+    if "cancellation_checker" in parameters or "caption_request_timeout_sec" in parameters:
+        return fetch_video_source_from_info(
+            url,
+            video_info,
+            source_mode=source_mode,
+            cancellation_checker=cancellation_checker,
+            caption_request_timeout_sec=caption_request_timeout_sec,
+        )
+    return fetch_video_source_from_info(url, video_info, source_mode=source_mode)
 
 
 def _run_stage_with_timeout(

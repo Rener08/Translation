@@ -16,12 +16,13 @@
 
 ## 文件列表
 - `README.md`：目录说明
-- `latepost_prompt_templates_onepage.md`：3 类主表，一页直接复制
-- `09_interview_transcript_sync.md`：访谈 / 播客 / 字幕同步稿
-- `03_product_review.md`：产品 / 实测 / 评测
-- `06_infra_cloud_model_platform.md`：基础设施 / 云 / 模型 / 平台
-- `01_big_company_war.md`：巨头战役 / 组织重排，窄兜底
-- `11_section_titles_and_reverse_prompt.md`：段落标题规则 + 反向提示词
+- `prompts/latepost_prompt_templates_onepage.md`：3 类主表，一页直接复制
+- `prompts/09_interview_transcript_sync.md`：访谈 / 播客 / 字幕同步稿
+- `prompts/03_product_review.md`：产品 / 实测 / 评测
+- `prompts/06_infra_cloud_model_platform.md`：基础设施 / 云 / 模型 / 平台
+- `prompts/01_big_company_war.md`：巨头战役 / 组织重排，窄兜底
+- `prompts/11_section_titles_and_reverse_prompt.md`：段落标题规则 + 反向提示词
+- `prompts/12_reverse_prompt_nuwa_distillation.md`：700 篇语料重过一遍时的反推与蒸馏模板
 - `../extended/README.md`：扩展参考索引
 
 ## 使用方式

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
+from inspect import signature
 
 from app.api.error_mapping import ErrorClassification, classify_service_error
 from app.config import ROOT_DIR, resolve_yt_dlp_cookie_config
@@ -139,7 +140,7 @@ def inspect_youtube_access(target_url: str | None = None) -> YouTubeAccessStatus
     )
 
     try:
-        caption_result = fetch_best_english_captions(video_info)
+        caption_result = _call_fetch_best_english_captions(video_info)
     except CaptionServiceError as error:
         caption_result = None
         current = YouTubeAccessStatusResult(
@@ -240,6 +241,8 @@ def _apply_classification(
 def _recommended_action_for_error_code(error_code: str) -> str:
     if error_code == "YTDLP_NOT_INSTALLED":
         return "请先安装 yt-dlp，再重试。"
+    if error_code == "PO_TOKEN_REQUIRED":
+        return "请为 yt-dlp 配置 PO Token 提供器，或切换到不需要 PO Token 的客户端；如果只是先完成处理，可改走本地音频上传。"
     if error_code == "COOKIE_STALE":
         return "请重新导出并保存最新的 cookies.txt。"
     if error_code in {"COOKIE_REQUIRED", "YOUTUBE_BOT_CHECK"}:
@@ -253,6 +256,13 @@ def _recommended_action_for_error_code(error_code: str) -> str:
     if error_code == "YOUTUBE_URL_INVALID":
         return "请改用标准的 YouTube 视频链接。"
     return "请检查 YouTube 访问状态、cookies 配置，或改走本地音频上传。"
+
+
+def _call_fetch_best_english_captions(video_info: dict[str, object]):
+    parameters = signature(fetch_best_english_captions).parameters
+    if "cancellation_checker" in parameters or "request_timeout_sec" in parameters:
+        return fetch_best_english_captions(video_info, cancellation_checker=None, request_timeout_sec=None)
+    return fetch_best_english_captions(video_info)
 
 
 def _cookie_check_label(cookie_config) -> str:

@@ -18,6 +18,7 @@ from app.config import (
     get_yt_dlp_proxy_args,
     get_yt_dlp_youtube_extractor_args,
 )
+from app.services.job_cancel_context import get_cancel_event
 from app.services.subprocess_utils import run_subprocess_killable
 
 
@@ -45,7 +46,12 @@ class CaptionResult:
     text: str
 
 
-def fetch_best_english_captions(video_info: dict[str, object]) -> CaptionResult | None:
+def fetch_best_english_captions(
+    video_info: dict[str, object],
+    *,
+    cancellation_checker=None,
+    request_timeout_sec: float | None = None,
+) -> CaptionResult | None:
     logger.info("Looking for English captions")
 
     subtitles = _as_caption_map(video_info.get("subtitles"))
@@ -54,12 +60,24 @@ def fetch_best_english_captions(video_info: dict[str, object]) -> CaptionResult 
     selected = _pick_best_english_caption(subtitles)
     if selected is not None:
         logger.info("Using manual English subtitles: %s", selected[0])
-        return _download_caption_text(video_info, selected, use_automatic_captions=False)
+        return _download_caption_text(
+            video_info,
+            selected,
+            use_automatic_captions=False,
+            cancellation_checker=cancellation_checker,
+            request_timeout_sec=request_timeout_sec,
+        )
 
     selected = _pick_best_english_caption(automatic_captions)
     if selected is not None:
         logger.info("Using automatic English captions: %s", selected[0])
-        return _download_caption_text(video_info, selected, use_automatic_captions=True)
+        return _download_caption_text(
+            video_info,
+            selected,
+            use_automatic_captions=True,
+            cancellation_checker=cancellation_checker,
+            request_timeout_sec=request_timeout_sec,
+        )
 
     logger.info("No English captions available")
     return None
@@ -69,20 +87,27 @@ def _download_caption_text(
     video_info: dict[str, object],
     selected: tuple[str, list[dict[str, object]]],
     use_automatic_captions: bool,
+    *,
+    cancellation_checker=None,
+    request_timeout_sec: float | None = None,
 ) -> CaptionResult:
     language, tracks = selected
     ext, url = _pick_caption_download_url(tracks)
     logger.info("Downloading caption track %s (%s)", language, ext)
 
     try:
+        _raise_if_cancelled(cancellation_checker)
         response = httpx.get(
             url,
             follow_redirects=True,
-            timeout=_get_caption_http_timeout_seconds(),
+            timeout=_get_caption_http_timeout_seconds(
+                request_timeout_sec=request_timeout_sec,
+            ),
         )
         response.raise_for_status()
     except httpx.HTTPStatusError as error:
         if error.response.status_code == 429 and _is_youtube_caption_url(url):
+            _raise_if_cancelled(cancellation_checker)
             logger.warning(
                 "Caption URL returned 429, retrying through yt-dlp for %s", language
             )
@@ -95,6 +120,7 @@ def _download_caption_text(
         raise CaptionServiceError(f"Failed to download captions: {error}") from error
     except httpx.HTTPError as error:
         if _is_youtube_caption_url(url):
+            _raise_if_cancelled(cancellation_checker)
             logger.warning(
                 "Caption URL request failed (%s), retrying through yt-dlp for %s",
                 error,
@@ -108,6 +134,7 @@ def _download_caption_text(
             )
         raise CaptionServiceError(f"Failed to download captions: {error}") from error
 
+    _raise_if_cancelled(cancellation_checker)
     decoded_text = response.content.decode("utf-8", errors="replace")
     text = _parse_caption_text(decoded_text, ext)
     if not text:
@@ -116,26 +143,48 @@ def _download_caption_text(
     return CaptionResult(language=language, text=text)
 
 
-def _get_caption_http_timeout_seconds() -> float:
+def _get_caption_http_timeout_seconds(
+    *,
+    request_timeout_sec: float | None = None,
+) -> float:
     raw_value = get_env_str("CAPTION_HTTP_TIMEOUT")
     if not raw_value:
-        return DEFAULT_CAPTION_HTTP_TIMEOUT_SECONDS
+        timeout_sec = DEFAULT_CAPTION_HTTP_TIMEOUT_SECONDS
+    else:
+        try:
+            parsed = float(raw_value)
+        except ValueError:
+            logger.warning(
+                "Invalid CAPTION_HTTP_TIMEOUT=%r, falling back to %.1f",
+                raw_value,
+                DEFAULT_CAPTION_HTTP_TIMEOUT_SECONDS,
+            )
+            timeout_sec = DEFAULT_CAPTION_HTTP_TIMEOUT_SECONDS
+        else:
+            if parsed < 1.0:
+                timeout_sec = 1.0
+            elif parsed > 60.0:
+                timeout_sec = 60.0
+            else:
+                timeout_sec = parsed
 
-    try:
-        parsed = float(raw_value)
-    except ValueError:
-        logger.warning(
-            "Invalid CAPTION_HTTP_TIMEOUT=%r, falling back to %.1f",
-            raw_value,
-            DEFAULT_CAPTION_HTTP_TIMEOUT_SECONDS,
-        )
-        return DEFAULT_CAPTION_HTTP_TIMEOUT_SECONDS
+    if request_timeout_sec is not None:
+        try:
+            timeout_sec = min(timeout_sec, float(request_timeout_sec))
+        except (TypeError, ValueError):
+            pass
 
-    if parsed < 1.0:
-        return 1.0
-    if parsed > 60.0:
-        return 60.0
-    return parsed
+    return max(1.0, timeout_sec)
+
+
+def _raise_if_cancelled(cancellation_checker) -> None:
+    from app.services.job_run_models import JobCancelledError
+
+    cancel_event = get_cancel_event()
+    if cancellation_checker and cancellation_checker():
+        raise JobCancelledError("Job was cancelled by user.")
+    if cancel_event is not None and cancel_event.is_set():
+        raise JobCancelledError("Job was cancelled by user.")
 
 
 def _download_caption_via_yt_dlp(

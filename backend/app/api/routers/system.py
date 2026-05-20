@@ -13,6 +13,7 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator
 
 from app.config import ROOT_DIR, _detect_available_yt_dlp_js_runtime, get_settings, resolve_yt_dlp_cookie_config
+from app.api.routers.health import build_readyz_checks
 from app.services.rewrite_provider_service import RewriteProviderConfig, resolve_rewrite_config
 from app.services.youtube_access_service import inspect_youtube_access
 from app.services.translation_provider_client import TranslationProviderConfig, _resolve_translation_config
@@ -260,6 +261,37 @@ def _check_yaml_available() -> PreflightCheck:
         return PreflightCheck(name="yaml_available", label="YAML", ok=False, detail=f"检查失败: {e}")
 
 
+def _check_backend_readyz() -> PreflightCheck:
+    try:
+        checks = build_readyz_checks()
+        failed = [
+            name
+            for name, detail in checks.items()
+            if isinstance(detail, str) and detail.startswith("failed:")
+        ]
+        if failed:
+            failed_checks = ", ".join(failed)
+            return PreflightCheck(
+                name="backend_readyz",
+                label="Backend Health",
+                ok=False,
+                detail=f"readyz 失败：{failed_checks}",
+            )
+        return PreflightCheck(
+            name="backend_readyz",
+            label="Backend Health",
+            ok=True,
+            detail="readyz ok",
+        )
+    except Exception as e:
+        return PreflightCheck(
+            name="backend_readyz",
+            label="Backend Health",
+            ok=False,
+            detail=f"检查失败: {e}",
+        )
+
+
 def _check_provider_ready(
     *,
     name: str,
@@ -377,6 +409,7 @@ def _provider_models_endpoint(provider: str, base_url: str) -> str:
 
 def _run_all_preflight_checks() -> list[PreflightCheck]:
     return [
+        _check_backend_readyz(),
         _check_job_queue_db(),
         _check_yaml_available(),
         _check_yt_dlp(),

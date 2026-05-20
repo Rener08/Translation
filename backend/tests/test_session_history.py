@@ -314,7 +314,26 @@ def test_record_rewrite_result_persists_loop_fields(monkeypatch, tmp_path: Path)
         writer_trace_id="trace-123",
         writer_policy_version="policy-123",
         writer_prompt_version="prompt-123",
-        loop_state_snapshot={"state": {"rounds_left": 2}},
+        loop_state_snapshot={
+            "state": {"rounds_left": 2, "stage": "validate"},
+            "goal": {"rewrite_style": "article_longform"},
+            "route": {"template_key": "generic"},
+            "stage": {"kind": "validate"},
+            "evidence": {"available": True, "missing_fact_count": 1},
+            "validation": {"passed": False, "next_recommended_action": "patch"},
+            "stage_flow": [
+                {
+                    "stage": "draft",
+                    "status": "done",
+                    "reason": "初稿完成",
+                    "evidence": {"available": True},
+                    "validation": {"passed": True},
+                    "trace": {"action": "draft"},
+                }
+            ],
+            "revision_round": 2,
+            "failure_stage": "validation",
+        },
         last_action="expand",
         budget_usage={"spent_tokens": 321},
         failure_stage="validation",
@@ -324,7 +343,17 @@ def test_record_rewrite_result_persists_loop_fields(monkeypatch, tmp_path: Path)
 
     detail = load_session_history(content_context_id)
     assert detail is not None
-    assert detail["loop_state_snapshot"] == {"state": {"rounds_left": 2}}
+    snapshot = detail["loop_state_snapshot"]
+    assert snapshot["state"] == {"rounds_left": 2, "stage": "validate"}
+    assert snapshot["goal"] == {"rewrite_style": "article_longform"}
+    assert snapshot["route"] == {"template_key": "generic"}
+    assert snapshot["stage"] == {"kind": "validate"}
+    assert snapshot["evidence"] == {"available": True, "missing_fact_count": 1}
+    assert snapshot["validation"] == {"passed": False, "next_recommended_action": "patch"}
+    assert snapshot["stage_flow"][0]["stage"] == "draft"
+    assert snapshot["stage_flow"][0]["trace"] == {"action": "draft"}
+    assert snapshot["revision_round"] == 2
+    assert snapshot["failure_stage"] == "validation"
     assert detail["last_action"] == "expand"
     assert detail["budget_usage"] == {"spent_tokens": 321}
     assert detail["failure_stage"] == "validation"

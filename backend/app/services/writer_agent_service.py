@@ -58,6 +58,7 @@ class WriterAgent:
 
         normalized_style = rewrite_style or DEFAULT_REWRITE_STYLE
         config = skill_config or load_default_skill_config()
+        material_with_reference = self._with_reference_text(material, reference_text)
 
         # Validate rewrite_focus
         normalized_focus = None
@@ -72,7 +73,7 @@ class WriterAgent:
                 raise ContentRewriteInputError("；".join(validation.errors))
             if validation.has_transcript_placeholder:
                 return self._execute_pipeline(
-                    FullPromptPipeline(), material, normalized_focus, rewrite_config,
+                    FullPromptPipeline(), material_with_reference, normalized_focus, rewrite_config,
                     cancellation_checker=cancellation_checker,
                 )
 
@@ -86,7 +87,7 @@ class WriterAgent:
 
         if use_agent_loop and normalized_style == "article_longform":
             return run_article_longform_loop(
-                material=self._with_reference_text(material, reference_text),
+                material=material_with_reference,
                 rewrite_focus=normalized_focus,
                 rewrite_style=normalized_style,
                 rewrite_config=rewrite_config,
@@ -98,7 +99,7 @@ class WriterAgent:
         # Original pipeline execution
         return self._execute_pipeline(
             self._select_strategy(normalized_style, skill_config=config, llm_call_fn=llm_call_fn),
-            self._with_reference_text(material, reference_text),
+            material_with_reference,
             normalized_focus, rewrite_config,
             cancellation_checker=cancellation_checker,
         )

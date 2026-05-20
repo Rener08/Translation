@@ -1,4 +1,5 @@
 import logging
+from inspect import signature
 from dataclasses import dataclass
 from typing import Literal
 
@@ -28,16 +29,28 @@ class VideoSourceResult:
 def fetch_video_source(
     url: str,
     source_mode: SourceMode = SOURCE_MODE_SUBTITLE_FIRST,
+    *,
+    cancellation_checker=None,
+    caption_request_timeout_sec: float | None = None,
 ) -> VideoSourceResult:
     logger.info("Fetching source for %s", url)
     video_info = extract_video_info(url)
-    return fetch_video_source_from_info(url, video_info, source_mode=source_mode)
+    return fetch_video_source_from_info(
+        url,
+        video_info,
+        source_mode=source_mode,
+        cancellation_checker=cancellation_checker,
+        caption_request_timeout_sec=caption_request_timeout_sec,
+    )
 
 
 def fetch_video_source_from_info(
     url: str,
     video_info: dict[str, object],
     source_mode: SourceMode = SOURCE_MODE_SUBTITLE_FIRST,
+    *,
+    cancellation_checker=None,
+    caption_request_timeout_sec: float | None = None,
 ) -> VideoSourceResult:
     if source_mode == SOURCE_MODE_FORCE_AUDIO:
         logger.info("Source mode force_audio selected for %s; downloading audio", url)
@@ -45,7 +58,11 @@ def fetch_video_source_from_info(
         return _audio_result_to_source(audio_result)
 
     try:
-        caption_result = fetch_best_english_captions(video_info)
+        caption_result = _call_fetch_best_english_captions(
+            video_info,
+            cancellation_checker=cancellation_checker,
+            request_timeout_sec=caption_request_timeout_sec,
+        )
     except CaptionServiceError as error:
         logger.warning(
             "Caption fetch failed for %s, falling back to audio: %s", url, error
@@ -70,3 +87,19 @@ def _audio_result_to_source(result: AudioDownloadResult) -> VideoSourceResult:
         source_type="audio",
         audio_file_path=result.audio_file_path,
     )
+
+
+def _call_fetch_best_english_captions(
+    video_info: dict[str, object],
+    *,
+    cancellation_checker,
+    request_timeout_sec: float | None,
+):
+    parameters = signature(fetch_best_english_captions).parameters
+    if "cancellation_checker" in parameters or "request_timeout_sec" in parameters:
+        return fetch_best_english_captions(
+            video_info,
+            cancellation_checker=cancellation_checker,
+            request_timeout_sec=request_timeout_sec,
+        )
+    return fetch_best_english_captions(video_info)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from app.services.article_generation_service import (
@@ -18,6 +18,7 @@ from app.services.detail_ledger import (
     format_detail_coverage_issues,
     merge_detail_ledgers,
 )
+from app.services.detail_ledger_refiner import refine_detail_ledger_with_llm
 from app.services.rewrite_loop_action import LoopActionKind
 from app.services.rewrite_loop_planner import decide_next_action
 from app.services.rewrite_loop_state import LoopBudget, LoopTraceStep, RewriteGoal, RewriteState
@@ -88,6 +89,7 @@ def run_article_longform_loop(
             rewrite_config=rewrite_config,
             skill_config=skill_config,
             cancellation_checker=cancellation_checker,
+            skip_prompt_validation=True,
         )
         spec = resolve_article_spec(normalized_source)
         validation = validate_generated_article(direct_result.rewritten_text, spec)
@@ -141,19 +143,48 @@ def run_article_longform_loop(
     )
 
     detail_ledger = build_detail_ledger(article_source)
+    if llm_call_fn and detail_ledger.items:
+        try:
+            refined = refine_detail_ledger_with_llm(
+                source_text=article_source,
+                coarse_ledger=detail_ledger,
+                llm_call_fn=llm_call_fn,
+            )
+            detail_ledger = refined.to_detail_ledger()
+        except Exception:
+            pass
     topic_ledger = build_longform_topic_ledger(article_source)
     longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
-    covered_facts = tuple(_ledger_item_id(item.kind, item.text) for item in longform_ledger.coverage_items())
     spec = resolve_article_spec(normalized_source)
     length_guidance = _build_length_guidance_line(normalized_source, skill_config)
+    evidence_bundle = _build_evidence_snapshot(
+        source_text=article_source,
+        longform_ledger=longform_ledger,
+    )
     state = RewriteState(
         job_id=trace_id,
         goal=goal,
+        stage="plan",
         rounds_left=LoopBudget().max_rounds,
-        covered_facts=covered_facts,
+        covered_facts=(),
         style_constraints=_collect_style_constraints(skill_config),
+        evidence_bundle=evidence_bundle,
         budget=LoopBudget(),
     )
+
+    stage_flow: list[dict[str, object]] = []
+    stage_flow.append(_stage_flow_entry(
+        stage="plan",
+        status="completed",
+        reason="初始化写作目标与路由。",
+        evidence_bundle=evidence_bundle,
+    ))
+    stage_flow.append(_stage_flow_entry(
+        stage="collect_evidence",
+        status="completed",
+        reason="整理必须保留的证据快照。",
+        evidence_bundle=evidence_bundle,
+    ))
 
     if _should_cancel(cancellation_checker):
         raise ContentRewriteInputError("Rewrite cancelled.")
@@ -166,6 +197,7 @@ def run_article_longform_loop(
         template_label=route_label,
         template_reason=route_reason,
         template_body=template_body,
+        evidence_bundle=evidence_bundle,
     )
     outline_result = rewrite_content(
         source_text=article_source,
@@ -174,9 +206,29 @@ def run_article_longform_loop(
         rewrite_config=rewrite_config,
         skill_config=skill_config,
         cancellation_checker=cancellation_checker,
+        skip_prompt_validation=True,
     )
     outline = _extract_outline(outline_result.rewritten_text)
-    state = _append_step(state, "outline", "生成写作大纲。", outline_prompt, article_source, outline_result.rewritten_text)
+    state = state.with_stage("outline")
+    state = _append_step(
+        state,
+        "outline",
+        "生成写作大纲。",
+        outline_prompt,
+        article_source,
+        outline_result.rewritten_text,
+        metadata={
+            "stage": "outline",
+            "evidence": _compact_evidence_snapshot(evidence_bundle),
+        },
+    )
+    stage_flow.append(_stage_flow_entry(
+        stage="outline",
+        status="completed",
+        reason="生成写作大纲。",
+        evidence_bundle=evidence_bundle,
+        trace_step=state.trace[-1] if state.trace else None,
+    ))
 
     if _should_cancel(cancellation_checker):
         raise ContentRewriteInputError("Rewrite cancelled.")
@@ -189,6 +241,7 @@ def run_article_longform_loop(
         detail_ledger_text=longform_ledger.to_prompt_text(),
         template_label=route_label,
         template_reason=route_reason,
+        evidence_bundle=evidence_bundle,
     )
     draft_result = rewrite_content(
         source_text=article_source,
@@ -197,6 +250,7 @@ def run_article_longform_loop(
         rewrite_config=rewrite_config,
         skill_config=skill_config,
         cancellation_checker=cancellation_checker,
+        skip_prompt_validation=True,
     )
     final_result = draft_result
     validation = validate_longform_rewrite(
@@ -205,7 +259,19 @@ def run_article_longform_loop(
         skill_config=skill_config,
         detail_ledger=longform_ledger,
     )
-    state = state.with_draft(final_result.rewritten_text).with_issues(validation.hard_failures + validation.soft_failures)
+    evidence_bundle = _build_evidence_snapshot(
+        source_text=article_source,
+        longform_ledger=longform_ledger,
+        current_text=final_result.rewritten_text,
+        validation=validation,
+    )
+    state = (
+        state.with_stage("validate")
+        .with_draft(final_result.rewritten_text)
+        .with_validation_breakdown(validation)
+        .with_issues(validation.hard_failures + validation.soft_failures)
+    )
+    state = replace(state, covered_facts=tuple(evidence_bundle["covered_fact_ids"]))
     state = _append_step(
         state,
         "draft",
@@ -214,23 +280,56 @@ def run_article_longform_loop(
         article_source,
         final_result.rewritten_text,
         validation=validation,
+        metadata={
+            "stage": "draft",
+            "evidence": _compact_evidence_snapshot(evidence_bundle),
+            "validation": validation.to_snapshot(),
+        },
     )
+    stage_flow.append(_stage_flow_entry(
+        stage="validate",
+        status="completed" if validation.passed else "needs_revision",
+        reason=_validation_summary(validation) or "完成初稿验证。",
+        evidence_bundle=evidence_bundle,
+        validation=validation,
+        trace_step=state.trace[-1] if state.trace else None,
+    ))
 
     revision_round = 0
+    failure_stage: str | None = None
+    previous_signature = _validation_signature(validation, evidence_bundle)
     while state.rounds_left > 0 and state.budget.spent_tokens < state.budget.max_total_tokens:
-        action = decide_next_action(state, validation)
-        if action.kind == "stop":
+        followup_action = decide_next_action(state, validation)
+        followup_stage = str(
+            followup_action.metadata.get("next_recommended_stage") or followup_action.kind
+        )
+        trace_action = followup_action.kind
+        followup_reason = followup_action.reason
+        if trace_action == "stop":
             break
 
-        if action.kind == "patch":
+        if _should_cancel(cancellation_checker):
+            raise ContentRewriteInputError("Rewrite cancelled.")
+
+        if followup_stage == "re_ground":
+            next_prompt = build_re_ground_prompt(
+                previous_article=final_result.rewritten_text,
+                source_text=normalized_source,
+                detail_ledger=longform_ledger,
+                length_guidance=length_guidance,
+                validation=validation,
+                evidence_bundle=evidence_bundle,
+            )
+        elif followup_stage == "patch":
             next_prompt = build_patch_prompt(
                 previous_article=final_result.rewritten_text,
                 validation=validation,
                 detail_ledger=longform_ledger,
                 source_text=normalized_source,
                 length_guidance=length_guidance,
+                evidence_bundle=evidence_bundle,
             )
-        elif action.kind == "expand":
+        elif followup_stage == "expand":
             next_prompt = build_expand_prompt(
                 previous_article=final_result.rewritten_text,
                 source_text=normalized_source,
@@ -238,14 +337,12 @@ def run_article_longform_loop(
                 length_guidance=length_guidance,
                 spec=spec,
                 validation=validation,
+                evidence_bundle=evidence_bundle,
             )
-        elif action.kind == "outline":
+        elif followup_stage == "outline":
             next_prompt = outline_prompt
         else:
             next_prompt = draft_prompt
-
-        if _should_cancel(cancellation_checker):
-            raise ContentRewriteInputError("Rewrite cancelled.")
 
         revised_result = rewrite_content(
             source_text=article_source,
@@ -254,6 +351,7 @@ def run_article_longform_loop(
             rewrite_config=rewrite_config,
             skill_config=skill_config,
             cancellation_checker=cancellation_checker,
+            skip_prompt_validation=True,
         )
         final_result = revised_result
         validation = validate_longform_rewrite(
@@ -262,33 +360,75 @@ def run_article_longform_loop(
             skill_config=skill_config,
             detail_ledger=longform_ledger,
         )
-        state = state.with_draft(final_result.rewritten_text).with_issues(validation.hard_failures + validation.soft_failures)
-        state = state.increment_retry(action.kind).consume_budget(_estimate_token_cost(final_result.rewritten_text)).consume_round()
-        state = state.append_trace(
-            LoopTraceStep(
-                action=action.kind,
-                reason=action.reason,
-                prompt_preview=_preview(next_prompt),
-                input_chars=measure_source_text_length(article_source),
-                output_chars=measure_source_text_length(final_result.rewritten_text),
-                tokens_used=_estimate_token_cost(final_result.rewritten_text),
-                validation_summary=_validation_summary(validation),
-                metadata=dict(action.metadata),
-            )
+        evidence_bundle = _build_evidence_snapshot(
+            source_text=article_source,
+            longform_ledger=longform_ledger,
+            current_text=final_result.rewritten_text,
+            validation=validation,
         )
+        state = state.with_draft(final_result.rewritten_text).with_issues(
+            validation.hard_failures + validation.soft_failures
+        )
+        state = replace(state, covered_facts=tuple(evidence_bundle["covered_fact_ids"]))
+        trace_step = LoopTraceStep(
+            action=trace_action,
+            reason=followup_reason,
+            prompt_preview=_preview(next_prompt),
+            input_chars=measure_source_text_length(article_source),
+            output_chars=measure_source_text_length(final_result.rewritten_text),
+            tokens_used=_estimate_token_cost(final_result.rewritten_text),
+            validation_summary=_validation_summary(validation),
+            metadata={
+                "stage": followup_stage,
+                "evidence": _compact_evidence_snapshot(evidence_bundle),
+                "validation": validation.to_snapshot(),
+            },
+        )
+        state = state.append_trace(trace_step)
+        state = state.increment_retry(trace_action).consume_budget(
+            _estimate_token_cost(final_result.rewritten_text)
+        ).consume_round()
+        stage_flow.append(_stage_flow_entry(
+            stage=followup_stage,
+            status="completed" if validation.passed else "needs_revision",
+            reason=followup_reason,
+            evidence_bundle=evidence_bundle,
+            validation=validation,
+            trace_step=trace_step,
+        ))
         revision_round += 1
+        current_signature = _validation_signature(validation, evidence_bundle)
         if validation.passed:
+            failure_stage = None
             break
+        if current_signature == previous_signature:
+            failure_stage = "plateau"
+            break
+        previous_signature = current_signature
 
     detail_coverage_issues = format_detail_coverage_issues(
         analyze_detail_coverage_enhanced(longform_ledger, final_result.rewritten_text)
     )
+    if failure_stage is None and not validation.passed:
+        if state.budget.spent_tokens >= state.budget.max_total_tokens:
+            failure_stage = "budget"
+        elif state.rounds_left <= 0:
+            failure_stage = "round_limit"
+        else:
+            failure_stage = "validation"
     loop_snapshot = {
         "state": state.to_snapshot(),
         "goal": goal.to_snapshot(),
         "route": {"key": route_key, "label": route_label, "reason": route_reason},
+        "stage_flow": stage_flow,
+        "stage": {
+            "current": "finalize" if validation.passed else failure_stage or "validation",
+            "flow": stage_flow,
+        },
+        "evidence": _compact_evidence_snapshot(evidence_bundle),
         "validation": validation.to_snapshot(),
         "revision_round": revision_round,
+        "failure_stage": failure_stage,
     }
     return WriterRunReport(
         rewritten_text=final_result.rewritten_text,
@@ -311,9 +451,9 @@ def run_article_longform_loop(
         loop_state_snapshot=loop_snapshot,
         last_action=state.trace[-1].action if state.trace else "stop",
         budget_usage=state.budget.to_snapshot(),
-        failure_stage=None if validation.passed else "validation",
+        failure_stage=failure_stage,
         next_recommended_action=validation.next_recommended_action,
-        covered_facts_summary=tuple(item.text for item in longform_ledger.coverage_items()),
+        covered_facts_summary=tuple(evidence_bundle["covered_fact_texts"]),
     )
 
 
@@ -344,6 +484,7 @@ def build_outline_prompt(
     template_label: str,
     template_reason: str,
     template_body: str,
+    evidence_bundle: dict[str, object] | None = None,
 ) -> str:
     lines = [
         "请基于原始素材先给出写作规划。",
@@ -357,6 +498,8 @@ def build_outline_prompt(
         lines.extend(["", "场景模板摘要：", template_body])
     if length_guidance:
         lines.append(length_guidance)
+    if evidence_bundle:
+        lines.extend(["", _format_evidence_bundle(evidence_bundle)])
     lines.extend(
         [
             f"段落数：{spec.min_sections}-{spec.max_sections}（推荐 {spec.recommended_sections}）",
@@ -378,6 +521,7 @@ def build_draft_prompt(
     detail_ledger_text: str,
     template_label: str,
     template_reason: str,
+    evidence_bundle: dict[str, object] | None = None,
 ) -> str:
     outline_text = "\n".join(f"- {line}" for line in outline) if outline else "- 按素材主线组织段落"
     lines = [
@@ -390,6 +534,8 @@ def build_draft_prompt(
     ]
     if length_guidance:
         lines.append(length_guidance)
+    if evidence_bundle:
+        lines.extend(["", _format_evidence_bundle(evidence_bundle)])
     lines.extend(
         [
             f"总字数：{spec.min_total_chars}-{spec.max_total_chars}（目标 {spec.target_total_chars}）",
@@ -415,6 +561,7 @@ def build_expand_prompt(
     length_guidance: str | None,
     spec,
     validation: ValidationReport,
+    evidence_bundle: dict[str, object] | None = None,
 ) -> str:
     issue_lines = "\n".join(f"- {issue}" for issue in (validation.soft_failures or validation.hard_failures))
     source_length = measure_source_text_length(source_text)
@@ -430,6 +577,11 @@ def build_expand_prompt(
         "- 每一段都要有明确的事实锚点或机制锚点，避免空泛判断。",
         "- 如果仍然像逐字稿，先重组结构，再补充细节。",
         f"当前软硬问题：\n{issue_lines}",
+        *(
+            ["", _format_evidence_bundle(evidence_bundle)]
+            if evidence_bundle
+            else []
+        ),
         "",
         "待扩写文本：",
         previous_article.strip(),
@@ -446,6 +598,7 @@ def build_patch_prompt(
     detail_ledger: DetailLedger,
     source_text: str,
     length_guidance: str | None,
+    evidence_bundle: dict[str, object] | None = None,
 ) -> str:
     lines = [
         "请修订下面这版文章，只改有问题的部分，保留其余内容。",
@@ -469,10 +622,55 @@ def build_patch_prompt(
             lines.append(f"- {issue}")
     if length_guidance:
         lines.extend(["", f"篇幅标准：{length_guidance}"])
+    if evidence_bundle:
+        lines.extend(["", _format_evidence_bundle(evidence_bundle)])
     lines.extend(
         [
             "",
             "处理原则：仅返回修订后的正文，不要解释。",
+            "",
+            "原始素材：",
+            source_text.strip(),
+            "",
+            "当前完整草稿：",
+            previous_article.strip(),
+            "",
+            f"必须保留的关键细节：\n{detail_ledger.to_prompt_text()}",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def build_re_ground_prompt(
+    *,
+    previous_article: str,
+    source_text: str,
+    detail_ledger: DetailLedger,
+    length_guidance: str | None,
+    validation: ValidationReport,
+    evidence_bundle: dict[str, object] | None = None,
+) -> str:
+    lines = [
+        "请先回查证据，再重写当前稿件。",
+        "",
+        "当前问题：",
+    ]
+    if validation.hard_failures:
+        lines.extend(f"- {issue}" for issue in validation.hard_failures)
+    if validation.detail_coverage_issues:
+        lines.append("缺失细节：")
+        lines.extend(f"- {issue}" for issue in validation.detail_coverage_issues)
+    if validation.soft_failures:
+        lines.append("软性提示：")
+        lines.extend(f"- {issue}" for issue in validation.soft_failures)
+    if evidence_bundle:
+        lines.extend(["", _format_evidence_bundle(evidence_bundle)])
+    if length_guidance:
+        lines.extend(["", f"篇幅标准：{length_guidance}"])
+    lines.extend(
+        [
+            "",
+            "处理原则：先修正事实锚点和信息顺序，再输出修订后的正文，不要只做表面润色。",
             "",
             "原始素材：",
             source_text.strip(),
@@ -544,6 +742,169 @@ def _build_followup_prompt(
     )
 
 
+def _build_evidence_snapshot(
+    *,
+    source_text: str,
+    longform_ledger: DetailLedger,
+    current_text: str | None = None,
+    validation: ValidationReport | None = None,
+) -> dict[str, object]:
+    coverage_items = list(longform_ledger.coverage_items())
+    required_fact_ids = [_ledger_item_id(item.kind, item.text) for item in coverage_items]
+    required_fact_texts = [item.text for item in coverage_items]
+    covered_fact_ids: list[str] = []
+    covered_fact_texts: list[str] = []
+    missing_fact_ids: list[str] = []
+    missing_fact_texts: list[str] = []
+    coverage_ratio = 0.0
+
+    if current_text is not None:
+        coverage = analyze_detail_coverage_enhanced(longform_ledger, current_text)
+        missing_lookup = {
+            _ledger_item_id(item.kind, item.text)
+            for item in coverage.missing_items
+        }
+        covered_items = [
+            item for item in coverage_items
+            if _ledger_item_id(item.kind, item.text) not in missing_lookup
+        ]
+        covered_fact_ids = [_ledger_item_id(item.kind, item.text) for item in covered_items]
+        covered_fact_texts = [item.text for item in covered_items]
+        missing_fact_ids = [_ledger_item_id(item.kind, item.text) for item in coverage.missing_items]
+        missing_fact_texts = [item.text for item in coverage.missing_items]
+        total_items = len(required_fact_ids)
+        if total_items:
+            coverage_ratio = round(len(covered_fact_ids) / total_items, 4)
+
+    grounding_warnings: list[str] = []
+    if missing_fact_texts:
+        grounding_warnings.append(f"缺失 {len(missing_fact_texts)} 个关键细节。")
+    if validation and validation.hard_failures:
+        grounding_warnings.extend(validation.hard_failures[:3])
+    if validation and validation.detail_coverage_issues:
+        grounding_warnings.extend(validation.detail_coverage_issues[:3])
+
+    return {
+        "required_fact_ids": required_fact_ids,
+        "required_fact_texts": required_fact_texts,
+        "covered_fact_ids": covered_fact_ids,
+        "covered_fact_texts": covered_fact_texts,
+        "missing_fact_ids": missing_fact_ids,
+        "missing_fact_texts": missing_fact_texts,
+        "source_excerpt_hits": list(_collect_source_excerpt_hits(source_text, required_fact_texts)),
+        "grounding_warnings": list(dict.fromkeys(filter(None, grounding_warnings))),
+        "coverage_ratio": coverage_ratio,
+        "validation": validation.to_snapshot() if validation else {},
+    }
+
+
+def _collect_source_excerpt_hits(source_text: str, fact_texts: list[str], limit: int = 8) -> tuple[str, ...]:
+    normalized_source = (source_text or "").strip()
+    if not normalized_source:
+        return ()
+
+    hits: list[str] = []
+    for fact_text in fact_texts:
+        normalized_fact = " ".join((fact_text or "").split())
+        if not normalized_fact:
+            continue
+        index = normalized_source.find(normalized_fact)
+        if index < 0 and normalized_fact:
+            for token in normalized_fact.split():
+                if len(token) >= 4:
+                    index = normalized_source.find(token)
+                    if index >= 0:
+                        break
+        if index < 0:
+            continue
+        start = max(0, index - 60)
+        end = min(len(normalized_source), index + len(normalized_fact) + 100)
+        excerpt = " ".join(normalized_source[start:end].split())
+        if excerpt and excerpt not in hits:
+            hits.append(excerpt)
+        if len(hits) >= limit:
+            break
+    return tuple(hits)
+
+
+def _compact_evidence_snapshot(evidence_bundle: dict[str, object]) -> dict[str, object]:
+    return {
+        "required_fact_ids": list(evidence_bundle.get("required_fact_ids", ()) or ()),
+        "covered_fact_ids": list(evidence_bundle.get("covered_fact_ids", ()) or ()),
+        "missing_fact_ids": list(evidence_bundle.get("missing_fact_ids", ()) or ()),
+        "source_excerpt_hits": list(evidence_bundle.get("source_excerpt_hits", ()) or ()),
+        "grounding_warnings": list(evidence_bundle.get("grounding_warnings", ()) or ()),
+        "coverage_ratio": evidence_bundle.get("coverage_ratio", 0.0),
+        "validation": evidence_bundle.get("validation", {}),
+    }
+
+
+def _format_evidence_bundle(evidence_bundle: dict[str, object]) -> str:
+    required_fact_texts = [str(item).strip() for item in evidence_bundle.get("required_fact_texts", ()) or () if str(item).strip()]
+    covered_fact_texts = [str(item).strip() for item in evidence_bundle.get("covered_fact_texts", ()) or () if str(item).strip()]
+    missing_fact_texts = [str(item).strip() for item in evidence_bundle.get("missing_fact_texts", ()) or () if str(item).strip()]
+    source_excerpt_hits = [str(item).strip() for item in evidence_bundle.get("source_excerpt_hits", ()) or () if str(item).strip()]
+    grounding_warnings = [str(item).strip() for item in evidence_bundle.get("grounding_warnings", ()) or () if str(item).strip()]
+
+    lines = ["证据快照："]
+    if required_fact_texts:
+        lines.append("必须保留的关键细节：")
+        lines.extend(f"- {item}" for item in required_fact_texts[:8])
+    if covered_fact_texts:
+        lines.append("当前已覆盖：")
+        lines.extend(f"- {item}" for item in covered_fact_texts[:8])
+    if missing_fact_texts:
+        lines.append("当前缺失：")
+        lines.extend(f"- {item}" for item in missing_fact_texts[:8])
+    if source_excerpt_hits:
+        lines.append("原文命中片段：")
+        lines.extend(f"- {item}" for item in source_excerpt_hits[:4])
+    if grounding_warnings:
+        lines.append("证据警告：")
+        lines.extend(f"- {item}" for item in grounding_warnings[:4])
+    coverage_ratio = evidence_bundle.get("coverage_ratio")
+    if isinstance(coverage_ratio, (int, float)) and coverage_ratio:
+        lines.append(f"覆盖率：{coverage_ratio:.2%}")
+    return "\n".join(lines)
+
+
+def _validation_signature(report: ValidationReport, evidence_bundle: dict[str, object]) -> tuple[object, ...]:
+    metrics = report.metrics or {}
+    return (
+        tuple(report.hard_failures),
+        tuple(report.soft_failures),
+        tuple(report.detail_coverage_issues),
+        int(metrics.get("output_chars") or 0),
+        int(metrics.get("hard_issue_count") or 0),
+        int(metrics.get("soft_issue_count") or 0),
+        tuple(evidence_bundle.get("covered_fact_ids", ()) or ()),
+        tuple(evidence_bundle.get("missing_fact_ids", ()) or ()),
+    )
+
+
+def _stage_flow_entry(
+    *,
+    stage: str,
+    status: str,
+    reason: str,
+    evidence_bundle: dict[str, object] | None = None,
+    validation: ValidationReport | None = None,
+    trace_step: LoopTraceStep | None = None,
+) -> dict[str, object]:
+    entry: dict[str, object] = {
+        "stage": stage,
+        "status": status,
+        "reason": reason,
+    }
+    if evidence_bundle is not None:
+        entry["evidence"] = _compact_evidence_snapshot(evidence_bundle)
+    if validation is not None:
+        entry["validation"] = validation.to_snapshot()
+    if trace_step is not None:
+        entry["trace"] = trace_step.to_snapshot()
+    return entry
+
+
 def _append_step(
     state: RewriteState,
     action: str,
@@ -552,6 +913,7 @@ def _append_step(
     source_text: str,
     output_text: str,
     validation: ValidationReport | None = None,
+    metadata: dict[str, object] | None = None,
 ) -> RewriteState:
     step = LoopTraceStep(
         action=action,  # type: ignore[arg-type]
@@ -561,6 +923,7 @@ def _append_step(
         output_chars=measure_source_text_length(output_text),
         tokens_used=_estimate_token_cost(output_text),
         validation_summary=_validation_summary(validation) if validation else "",
+        metadata=dict(metadata or {}),
     )
     state = state.append_trace(step)
     state = state.consume_budget(_estimate_token_cost(output_text)).consume_round()

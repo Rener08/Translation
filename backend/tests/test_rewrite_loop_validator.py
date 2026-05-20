@@ -102,10 +102,15 @@ def test_validate_longform_rewrite_classifies_hard_soft_and_detail(monkeypatch) 
         detail_ledger=ledger,
     )
 
-    assert report.hard_failures == ('发现第一人称标记「我」，当前配置为第三人称',)
+    assert report.grounding_failures == ()
+    assert report.writing_failures == ("发现第一人称标记「我」，当前配置为第三人称",)
+    assert report.hard_failures == ("发现第一人称标记「我」，当前配置为第三人称",)
     assert report.soft_failures == ('输出字数 120 建议控制在原文长度的 40%-60%',)
-    assert report.detail_coverage_issues == ('事实 missing detail',)
-    assert report.next_recommended_action == "patch"
+    assert report.detail_coverage_issues == (
+        "事实 missing detail",
+        "缺失关键细节：事实 missing detail",
+    )
+    assert report.next_recommended_action == "expand"
     assert report.passed is False
 
 
@@ -146,6 +151,8 @@ def test_validate_longform_rewrite_expands_for_only_detail_gaps(monkeypatch) -> 
     )
 
     assert report.hard_failures == ()
+    assert report.grounding_failures == ()
+    assert report.writing_failures == ()
     assert report.soft_failures == ()
     assert report.detail_coverage_issues == ('事实 another missing detail',)
     assert report.next_recommended_action == "expand"

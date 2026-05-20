@@ -1,9 +1,11 @@
+import subprocess
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from app.config import ROOT_DIR
 from app.main import app
+import app.services.speaker_diarization_service as speaker_diarization_service
 from app.services.speaker_diarization_service import (
     SpeakerDiarizationConfigurationError,
     SpeakerDiarizationResult,
@@ -130,6 +132,33 @@ def test_diarize_audio_file_rejects_absolute_paths_outside_tmp() -> None:
         assert "Absolute audio paths are not allowed" in str(error)
     else:
         raise AssertionError("Expected SpeakerDiarizationRuntimeError")
+
+
+def test_prepare_audio_for_diarization_uses_killable_subprocess(
+    monkeypatch, tmp_path: Path
+) -> None:
+    audio_file = TMP_ROOT / f"{tmp_path.name}-sample.webm"
+    audio_file.write_bytes(b"audio")
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured_kwargs.update(kwargs)
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=0,
+            stdout="",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "app.services.speaker_diarization_service.run_subprocess_killable",
+        fake_run,
+    )
+
+    result = speaker_diarization_service._prepare_audio_for_diarization(audio_file)
+
+    assert result == audio_file.with_name(f"{audio_file.stem}.diarize.wav")
+    assert captured_kwargs["subprocess_timeout"] == 60
 
 
 def test_assign_speakers_to_transcript_picks_best_overlap() -> None:

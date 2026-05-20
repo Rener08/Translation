@@ -30,10 +30,6 @@ npm install
 - Writer skill eval report:  
   `python3 scripts/evaluate_writer_skill.py --manifest backend/tests/fixtures/writer_skill_eval/samples.json`
 - Frontend: `cd frontend && npm run build`
-- Experimental agent-loop tests under `backend/tests/test_agent_*` are a separate
-  research lane. Run them when you touch `backend/app/agents/`, but do not treat
-  them as a blocker for the main product gate unless that package is explicitly
-  promoted into the shipping path.
 - Mainline acceptance is defined in [`TODO.md`](TODO.md#mainline-acceptance).
 
 If you change the desktop launcher or startup scripts, please also verify the

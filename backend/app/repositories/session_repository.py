@@ -161,7 +161,7 @@ class SessionRepository:
             payload["writer_trace_id"] = self._normalize_optional_text(writer_trace_id)
             payload["writer_policy_version"] = self._normalize_optional_text(writer_policy_version)
             payload["writer_prompt_version"] = self._normalize_optional_text(writer_prompt_version)
-            payload["loop_state_snapshot"] = self._normalize_json_value(loop_state_snapshot)
+            payload["loop_state_snapshot"] = self._normalize_loop_state_snapshot(loop_state_snapshot)
             payload["last_action"] = self._normalize_optional_text(last_action) or ""
             payload["budget_usage"] = self._normalize_json_value(budget_usage)
             payload["failure_stage"] = self._normalize_optional_text(failure_stage)
@@ -432,7 +432,7 @@ class SessionRepository:
         normalized["writer_prompt_version"] = self._normalize_optional_text(
             normalized.get("writer_prompt_version")
         )
-        normalized["loop_state_snapshot"] = self._normalize_json_value(
+        normalized["loop_state_snapshot"] = self._normalize_loop_state_snapshot(
             normalized.get("loop_state_snapshot")
         )
         normalized["last_action"] = self._normalize_optional_text(normalized.get("last_action")) or ""
@@ -493,6 +493,41 @@ class SessionRepository:
         if isinstance(value, dict):
             return dict(value)
         return {}
+
+    def _normalize_loop_state_snapshot(self, value: object | None) -> dict[str, Any]:
+        if not isinstance(value, dict):
+            return {}
+
+        normalized = dict(value)
+        normalized["state"] = self._normalize_json_value(normalized.get("state"))
+        normalized["goal"] = self._normalize_json_value(normalized.get("goal"))
+        normalized["route"] = self._normalize_json_value(normalized.get("route"))
+        normalized["stage"] = self._normalize_json_value(normalized.get("stage"))
+        normalized["evidence"] = self._normalize_json_value(normalized.get("evidence"))
+        normalized["validation"] = self._normalize_json_value(normalized.get("validation"))
+        normalized["stage_flow"] = self._normalize_stage_flow(normalized.get("stage_flow"))
+        normalized["revision_round"] = self._normalize_optional_int(normalized.get("revision_round")) or 0
+        normalized["failure_stage"] = self._normalize_optional_text(normalized.get("failure_stage"))
+        return normalized
+
+    def _normalize_stage_flow(self, value: object | None) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+
+        flow: list[dict[str, Any]] = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            entry = dict(item)
+            entry["evidence"] = self._normalize_json_value(entry.get("evidence"))
+            entry["validation"] = self._normalize_json_value(entry.get("validation"))
+            trace = entry.get("trace")
+            entry["trace"] = self._normalize_json_value(trace) if isinstance(trace, dict) else {}
+            entry["stage"] = self._normalize_optional_text(entry.get("stage"))
+            entry["status"] = self._normalize_optional_text(entry.get("status"))
+            entry["reason"] = self._normalize_optional_text(entry.get("reason"))
+            flow.append(entry)
+        return flow
 
     def _preview_text(self, value: object | None, limit: int = 120) -> str:
         text = self._normalize_text(value)

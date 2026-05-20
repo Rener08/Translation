@@ -9,7 +9,6 @@ The current product direction is:
 - single `WriterAgent` flow for article generation with default `speech_verbatim` coverage patching and legacy `article_longform` fallback
 - follow-up revision chat for summary, explanation, and secondary edits
 - Web UI as the only active product interface
-- experimental agent-loop code under `backend/app/agents/` is kept off the product mainline
 - shipping gates and mainline acceptance live in [`TODO.md`](TODO.md#mainline-acceptance)
 
 Documentation map:

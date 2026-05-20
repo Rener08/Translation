@@ -77,6 +77,10 @@ export function normalizeApiErrorMessage(message: string, errorCode = ""): strin
     return "这个视频需要有效的 YouTube 登录态。请更新 cookies.txt；如果仍失败，建议改走本地音频上传。";
   }
 
+  if (normalizedCode === "PO_TOKEN_REQUIRED") {
+    return "这个视频需要 YouTube PO Token。请配置 PO Token 提供器，或切换到不需要 PO Token 的客户端；如果只是先完成处理，可改走本地音频上传。";
+  }
+
   if (normalizedCode === "COOKIE_STALE") {
     return "当前 cookies 已失效。请重新导出并保存最新的 cookies.txt。";
   }
@@ -142,6 +146,12 @@ export function normalizeApiErrorMessage(message: string, errorCode = ""): strin
   ) {
     return (
       "YouTube 返回 429（访问过于频繁/风控拦截）。请稍后重试；仅在持续失败时，再配置 cookies.txt 兜底。"
+    );
+  }
+
+  if (lowered.includes("po token") || lowered.includes("po_token") || lowered.includes("po-token")) {
+    return (
+      "该视频需要 YouTube PO Token。请配置 PO Token 提供器，或切换到不需要 PO Token 的客户端；如果只是先完成处理，可改走本地音频上传。"
     );
   }
 

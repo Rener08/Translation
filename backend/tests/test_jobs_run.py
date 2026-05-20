@@ -1071,14 +1071,13 @@ def test_desktop_facing_run_then_rewrite_flow_uses_selected_prompt(
         messages[1]["content"]
         == "标题：测试技能\n正文：\n\n[转录内容开始]\n我们实测了三个真实任务。\n[转录内容结束]\n\n\n结尾：保持克制。"
     )
-    assert rewrite_response.json() == {
-        "ok": True,
-        "provider": "deepseek",
-        "model": "deepseek-chat",
-        "rewritten_text": "# 测试标题\n\n这是改写后的中文正文。",
-        "quality_issues": [],
-        "detail_coverage_issues": [],
-    }
+    body = rewrite_response.json()
+    assert body["ok"] is True
+    assert body["provider"] == "deepseek"
+    assert body["model"] == "deepseek-chat"
+    assert body["rewritten_text"] == "# 测试标题\n\n这是改写后的中文正文。"
+    assert body["quality_issues"] == []
+    assert body["detail_coverage_issues"] == []
 
 
 def test_jobs_run_endpoint_rejects_invalid_url() -> None:

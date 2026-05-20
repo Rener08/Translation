@@ -11,20 +11,8 @@ from app.config import resolve_yt_dlp_cookie_config
 router = APIRouter()
 
 
-@router.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@router.get("/livez")
-async def livez() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@router.get("/readyz")
-async def readyz() -> dict[str, object]:
+def build_readyz_checks() -> dict[str, str]:
     checks: dict[str, str] = {}
-    ok = True
 
     try:
         cache_root = ROOT_DIR / "tmp"
@@ -34,7 +22,6 @@ async def readyz() -> dict[str, object]:
         probe_file.unlink(missing_ok=True)
         checks["tmp_writable"] = "ok"
     except OSError as error:
-        ok = False
         checks["tmp_writable"] = f"failed: {error}"
 
     db_path = get_settings().job_queue_db_path
@@ -44,7 +31,6 @@ async def readyz() -> dict[str, object]:
             os.utime(db_path, None)
         checks["job_queue_db"] = "ok"
     except OSError as error:
-        ok = False
         checks["job_queue_db"] = f"failed: {error}"
 
     yaml_spec = importlib.util.find_spec("yaml")
@@ -62,6 +48,25 @@ async def readyz() -> dict[str, object]:
         checks["yt_dlp_cookies"] = f"missing: {cookie_path}"
     else:
         checks["yt_dlp_cookies"] = cookie_config.mode
+
+    return checks
+
+
+@router.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/livez")
+async def livez() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@router.get("/readyz")
+async def readyz() -> dict[str, object]:
+    checks = build_readyz_checks()
+    ok = True
+    ok = all(not value.startswith("failed:") for value in checks.values())
 
     if not ok:
         raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})

@@ -21,6 +21,7 @@
 - `06_infra_cloud_model_platform.md`
 - `01_big_company_war.md`：窄兜底
 - `11_section_titles_and_reverse_prompt.md`：段落标题规则 + 反向提示词
+- `12_reverse_prompt_nuwa_distillation.md`：700 篇语料重过一遍时的反推与蒸馏模板
 - `../extended/README.md`：扩展参考索引
 
 如果你想先快速用，先打开一页版；需要更细场景时再看扩展参考。

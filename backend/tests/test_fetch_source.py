@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings
@@ -18,6 +19,7 @@ from app.services.caption_service import (
     CaptionResult,
     fetch_best_english_captions,
 )
+from app.services.job_run_models import JobCancelledError
 from app.services.video_source_service import VideoSourceResult, fetch_video_source
 
 
@@ -79,6 +81,22 @@ def test_fetch_best_english_captions_returns_none_when_not_available() -> None:
     )
 
     assert result is None
+
+
+def test_fetch_best_english_captions_honors_cancellation_checker(monkeypatch) -> None:
+    def fail_get(*args, **kwargs):
+        raise AssertionError("httpx.get should not be called after cancellation")
+
+    monkeypatch.setattr("app.services.caption_service.httpx.get", fail_get)
+
+    with pytest.raises(JobCancelledError):
+        fetch_best_english_captions(
+            {
+                "subtitles": {"en": [{"ext": "json3", "url": "https://example.com/sub"}]},
+                "automatic_captions": {},
+            },
+            cancellation_checker=lambda: True,
+        )
 
 
 def test_fetch_best_english_captions_parses_xml_subtitles(monkeypatch) -> None:
