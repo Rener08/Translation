@@ -15,6 +15,7 @@ from app.services.content_rewrite_service import (
     rewrite_content,
 )
 from app.services.prompt_validation import validate_rewrite_prompt
+from app.services.rewrite_stage_router import THIN_LONGFORM_PROMPT_PROFILE
 
 
 client = TestClient(app)
@@ -99,6 +100,47 @@ def test_rewrite_content_uses_ollama_and_reference_materials(monkeypatch) -> Non
         provider="ollama",
         model="qwen3.5:4b",
     )
+
+
+def test_rewrite_content_uses_smaller_budget_for_thin_outline(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+
+    monkeypatch.setattr(
+        "app.services.content_rewrite_service.load_rewrite_references",
+        lambda: RewriteReferences(
+            article_template="文章模板片段",
+            content_methodology="内容方法论片段",
+            style_examples="风格示例片段",
+            skill_guide="写作规则片段",
+            quality_pipeline="质量流程片段",
+            category_templates={
+                "01_big_company_war": "场景模板片段",
+            },
+            section_title_rules="标题规则片段",
+        ),
+    )
+
+    def fake_post(*args, **kwargs):
+        captured["json"] = kwargs["json"]
+        return httpx.Response(
+            200,
+            request=httpx.Request("POST", "http://127.0.0.1:11434/api/chat"),
+            json={"message": {"content": "1. 先定主线\n2. 再写正文"}},
+        )
+
+    monkeypatch.setattr("app.services.rewrite_provider_service.httpx.post", fake_post)
+
+    result = rewrite_content(
+        source_text="原始内容第一句。原始内容第二句。",
+        rewrite_focus="先给写作规划。",
+        rewrite_style="article_longform",
+        rewrite_stage="outline",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+        prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
+    )
+
+    assert captured["json"]["options"]["num_predict"] == 2048
+    assert result.model == "qwen3.5:4b"
 
 
 def test_rewrite_content_defaults_to_speech_verbatim_without_references(

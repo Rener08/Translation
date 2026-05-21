@@ -23,6 +23,8 @@
 - `prompts/01_big_company_war.md`：巨头战役 / 组织重排，窄兜底
 - `prompts/11_section_titles_and_reverse_prompt.md`：段落标题规则 + 反向提示词
 - `prompts/12_reverse_prompt_nuwa_distillation.md`：700 篇语料重过一遍时的反推与蒸馏模板
+- `prompts/13_reverse_prompt_nuwa_short.md`：700 篇语料总反推的短版总 prompt
+- `prompts/14_reverse_prompt_nuwa_example_auto_mobility.md`：通用母类蒸馏样例（抽象版）
 - `../extended/README.md`：扩展参考索引
 
 ## 使用方式

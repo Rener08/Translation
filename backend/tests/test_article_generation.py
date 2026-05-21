@@ -47,6 +47,23 @@ def test_resolve_article_spec_for_medium_source() -> None:
     )
 
 
+def test_resolve_article_spec_for_medium_source_in_speed_mode() -> None:
+    result = resolve_article_spec("a" * 5000, thin=True, speed_mode=True)
+
+    assert result == ArticleSpec(
+        source_length=5000,
+        target_total_chars=2350,
+        min_total_chars=2000,
+        max_total_chars=2750,
+        min_sections=3,
+        max_sections=4,
+        recommended_sections=3,
+        target_chars_per_section=783,
+        min_chars_per_section=500,
+        max_chars_per_section=917,
+    )
+
+
 def test_resolve_article_spec_for_large_source() -> None:
     result = resolve_article_spec("a" * 12000)
 

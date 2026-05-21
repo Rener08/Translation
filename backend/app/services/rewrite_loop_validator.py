@@ -72,7 +72,10 @@ def validate_longform_rewrite(
         normalized_text,
     )
 
-    article_validation = validate_generated_article(normalized_text, _resolve_article_spec(normalized_source))
+    article_validation = validate_generated_article(
+        normalized_text,
+        _resolve_article_spec(normalized_source),
+    )
     if not article_validation.ok:
         writing_failures.extend(article_validation.issues)
 
@@ -81,6 +84,7 @@ def validate_longform_rewrite(
         normalized_source,
         skill_config,
         detail_ledger,
+        precomputed_detail_coverage_issues=detail_coverage_issues,
     )
     for issue in quality_report.issues:
         if issue.check_type == "detail_coverage":
@@ -392,4 +396,4 @@ def _dedupe_preserving_order(items: list[str]) -> tuple[str, ...]:
 def _resolve_article_spec(source_text: str):
     from app.services.article_generation_service import resolve_article_spec
 
-    return resolve_article_spec(source_text)
+    return resolve_article_spec(source_text, thin=True)

@@ -29,9 +29,9 @@ def test_writer_agent_runs_outline_draft_and_single_revision(monkeypatch) -> Non
                 quality_issues=("too short",),
             )
         revised_text = (
-            "第一段" + ("甲" * 500) + "\n\n"
-            "第二段" + ("乙" * 500) + "\n\n"
-            "第三段" + ("丙" * 500)
+            "第一段" + ("甲" * 800) + "\n\n"
+            "第二段" + ("乙" * 800) + "\n\n"
+            "第三段" + ("丙" * 800)
         )
         return ContentRewriteResult(
             rewritten_text=revised_text,
@@ -45,13 +45,13 @@ def test_writer_agent_runs_outline_draft_and_single_revision(monkeypatch) -> Non
     )
 
     report = WriterAgent().run(
-        material=MaterialPackage(source_text="a" * 2400),
+        material=MaterialPackage(source_text="a" * 5000),
         rewrite_focus="改写成结构清晰的中文文章。",
         rewrite_style="article_longform",
         rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
     )
 
-    assert len(calls) == 8
+    assert len(calls) == 3
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
     assert report.provider == "ollama"
@@ -103,6 +103,8 @@ def test_writer_agent_speech_verbatim_skips_article_pipeline(monkeypatch) -> Non
 
 
 def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatch) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
     calls: list[dict[str, object]] = []
 
     latepost_config = SkillConfig(
@@ -115,7 +117,7 @@ def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatc
             min_sections=3,
             max_sections=6,
             source_length_ratio_min=0.4,
-            source_length_ratio_max=0.65,
+            source_length_ratio_max=0.6,
         ),
         constraints=(
             StyleConstraint(
@@ -136,23 +138,26 @@ def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatc
         assert kwargs["skill_config"].style_name == "晚点"
         if len(calls) == 1:
             assert "篇幅要求" in str(kwargs["rewrite_focus"])
-            assert "40%-65%" in str(kwargs["rewrite_focus"])
+            assert "40%-60%" in str(kwargs["rewrite_focus"])
             assert "【原始英文素材】" in str(kwargs["source_text"])
             assert "English reference" in str(kwargs["source_text"])
             return ContentRewriteResult(
-                rewritten_text="- 第一部分\n- 第二部分\n- 第三部分",
+                rewritten_text=(
+                    "这是一篇第三视角的晚点文章。" + ("甲" * 500) + "\n\n"
+                    "第二部分继续展开。" + ("乙" * 500) + "\n\n"
+                    "第三部分补足机制和边界。" + ("丙" * 500)
+                ),
                 provider="ollama",
                 model="qwen3.5:4b",
             )
-        return ContentRewriteResult(
-            rewritten_text="这是一篇第三视角的晚点文章。" + ("甲" * 1200) + "\n\n第二部分" + ("乙" * 1200),
-            provider="ollama",
-            model="qwen3.5:4b",
-        )
 
     monkeypatch.setattr(
         "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
     )
     monkeypatch.setattr(
         "app.services.pipelines.check_article_quality",
@@ -161,7 +166,7 @@ def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatc
 
     report = WriterAgent().run(
         material=MaterialPackage(
-            source_text="中文素材正文。",
+            source_text="中文素材正文。" * 420,
             reference_text="English reference",
         ),
         rewrite_focus="改写成晚点风格的第三视角中文报道文章。",
@@ -170,7 +175,7 @@ def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatc
         skill_config=latepost_config,
     )
 
-    assert len(calls) == 2
+    assert len(calls) == 1
     assert report.rewrite_style == "article_longform"
     assert report.draft.revised_once is False
     assert report.draft.validation.ok is True
@@ -178,7 +183,9 @@ def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatc
     assert report.model == "qwen3.5:4b"
 
 
-def test_writer_agent_latepost_soft_length_issue_triggers_expansion(monkeypatch) -> None:
+def test_writer_agent_latepost_speed_mode_skips_outline(monkeypatch) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
     calls: list[dict[str, object]] = []
 
     latepost_config = SkillConfig(
@@ -191,7 +198,74 @@ def test_writer_agent_latepost_soft_length_issue_triggers_expansion(monkeypatch)
             min_sections=3,
             max_sections=6,
             source_length_ratio_min=0.4,
-            source_length_ratio_max=0.65,
+            source_length_ratio_max=0.6,
+        ),
+        constraints=(),
+        perspective_markers=(),
+        template_routing_enabled=True,
+        content_filters=(),
+        quality_layers=(),
+    )
+
+    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+        calls.append(kwargs)
+        assert kwargs["rewrite_stage"] == "draft"
+        assert "初稿" in str(kwargs["rewrite_focus"])
+        return ContentRewriteResult(
+            rewritten_text=(
+                "这是一篇更短但仍完整的晚点文章。" + ("甲" * 700) + "\n\n"
+                "第二部分继续展开机制和代价。" + ("乙" * 700) + "\n\n"
+                "第三部分完成收束。" + ("丙" * 700)
+            ),
+            provider="ollama",
+            model="qwen3.5:4b",
+        )
+
+    monkeypatch.setenv("THIN_LONGFORM_SPEED_MODE", "true")
+    monkeypatch.setattr(
+        "app.services.pipelines.rewrite_content",
+        fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
+    )
+
+    report = WriterAgent().run(
+        material=MaterialPackage(source_text="a" * 5000),
+        rewrite_focus="改写成晚点风格的第三视角中文报道文章。",
+        rewrite_style="speech_verbatim",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+        skill_config=latepost_config,
+    )
+
+    assert len(calls) == 1
+    assert report.draft.revised_once is False
+    assert report.draft.validation.ok is True
+    assert report.provider == "ollama"
+    assert report.model == "qwen3.5:4b"
+
+
+def test_writer_agent_latepost_soft_length_issue_triggers_expansion(monkeypatch) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
+    calls: list[dict[str, object]] = []
+
+    latepost_config = SkillConfig(
+        style_name="晚点",
+        perspective="third_person",
+        output=SkillOutputSpec(
+            min_chars=0,
+            target_chars=0,
+            max_chars=0,
+            min_sections=3,
+            max_sections=6,
+            source_length_ratio_min=0.4,
+            source_length_ratio_max=0.6,
         ),
         constraints=(),
         perspective_markers=(),
@@ -204,45 +278,37 @@ def test_writer_agent_latepost_soft_length_issue_triggers_expansion(monkeypatch)
         calls.append(kwargs)
         focus = str(kwargs["rewrite_focus"])
         if len(calls) == 1:
-            assert "写作视角：报道视角" in focus
-            return ContentRewriteResult(
-                rewritten_text="- 第一部分\n- 第二部分\n- 第三部分",
-                provider="ollama",
-                model="qwen3.5:4b",
-            )
-        if len(calls) == 2:
             assert "视角要求：第三视角报道写法" in focus
             return ContentRewriteResult(
-                rewritten_text="短稿。" * 120,
+                rewritten_text=(
+                    "这是一篇晚点风格文章。" + ("甲" * 450) + "\n\n"
+                    "第二部分继续补足机制、代价和边界。" + ("乙" * 450) + "\n\n"
+                    "第三部分收束判断。" + ("丙" * 450)
+                ),
                 provider="ollama",
                 model="qwen3.5:4b",
             )
-
-        assert len(calls) == 3
-        assert "扩写式重写" in focus
-        assert "报道视角" in focus
-        return ContentRewriteResult(
-            rewritten_text=("扩写后的第一段。" + "甲" * 500) + "\n\n" + ("扩写后的第二段。" + "乙" * 500),
-            provider="ollama",
-            model="qwen3.5:4b",
-        )
 
     monkeypatch.setattr(
         "app.services.pipelines.rewrite_content",
         fake_rewrite_content,
     )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
+    )
 
     report = WriterAgent().run(
-        material=MaterialPackage(source_text="a" * 2000),
+        material=MaterialPackage(source_text="a" * 3000),
         rewrite_focus="改写成晚点风格的第三视角中文报道文章。",
         rewrite_style="speech_verbatim",
         rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
         skill_config=latepost_config,
     )
 
-    assert len(calls) == 3
+    assert len(calls) == 1
     assert report.rewrite_style == "article_longform"
-    assert report.draft.revised_once is True
+    assert report.draft.revised_once is False
     assert report.provider == "ollama"
     assert report.model == "qwen3.5:4b"
 
@@ -591,7 +657,7 @@ def test_writer_agent_article_longform_rewrites_first_person_to_third_person(
         skill_config=third_person_config,
     )
 
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
     assert report.rewrite_style == "article_longform"
@@ -612,7 +678,7 @@ def test_writer_agent_article_longform_internal_prompts_skip_validation(
             min_sections=3,
             max_sections=6,
             source_length_ratio_min=0.4,
-            source_length_ratio_max=0.65,
+            source_length_ratio_max=0.6,
         ),
         constraints=(),
         perspective_markers=(),
@@ -692,7 +758,7 @@ def test_writer_agent_article_longform_length_revisions_use_original_source(
             min_sections=3,
             max_sections=6,
             source_length_ratio_min=0.4,
-            source_length_ratio_max=0.65,
+            source_length_ratio_max=0.6,
         ),
         constraints=(),
         perspective_markers=(),
@@ -717,10 +783,8 @@ def test_writer_agent_article_longform_length_revisions_use_original_source(
         if len(calls) == 2:
             return ContentRewriteResult(
                 rewritten_text=(
-                    "第一段补充一点。\n\n"
-                    + ("甲" * 180)
-                    + "\n\n第二段补充一点。\n\n"
-                    + ("乙" * 180)
+                    "第一段补充一点。" + ("甲" * 220) + "\n\n"
+                    "第二段补充一点。" + ("乙" * 220)
                 ),
                 provider="ollama",
                 model="qwen3.5:4b",
@@ -752,7 +816,7 @@ def test_writer_agent_article_longform_length_revisions_use_original_source(
         skill_config=longform_config,
     )
 
-    assert len(calls) == 8
+    assert len(calls) == 2
     assert report.draft.revised_once is True
     assert report.draft.validation.ok is True
     assert report.rewrite_style == "article_longform"

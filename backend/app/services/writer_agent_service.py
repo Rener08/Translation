@@ -82,10 +82,10 @@ class WriterAgent:
             config,
         )
 
-        # Phase 1.4: Feature flag for agent loop
-        use_agent_loop = os.getenv("USE_AGENT_LOOP", "false").lower() == "true"
+        # Explicit debug/fallback path for the heavier article_longform loop.
+        use_debug_agent_loop = os.getenv("USE_AGENT_LOOP", "false").lower() == "true"
 
-        if use_agent_loop and normalized_style == "article_longform":
+        if use_debug_agent_loop and normalized_style == "article_longform":
             return run_article_longform_loop(
                 material=material_with_reference,
                 rewrite_focus=normalized_focus,

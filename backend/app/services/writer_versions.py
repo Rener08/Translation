@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-WRITER_POLICY_VERSION = "2026-05-14"
+WRITER_POLICY_VERSION = "2026-05-21"
 SPEECH_VERBATIM_PROMPT_VERSION = "2026-05-14-speech-verbatim-v1"
-ARTICLE_LONGFORM_PROMPT_VERSION = "2026-05-14-article-longform-v1"
+ARTICLE_LONGFORM_PROMPT_VERSION = "2026-05-21-article-longform-thin-v2"
 FULL_PROMPT_PROMPT_VERSION = "2026-05-14-full-prompt-v1"
 
 

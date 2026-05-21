@@ -24,7 +24,7 @@ def test_load_latepost_config():
     assert cfg.output.target_chars == 0
     assert cfg.output.max_chars == 0
     assert cfg.output.source_length_ratio_min == 0.4
-    assert cfg.output.source_length_ratio_max == 0.65
+    assert cfg.output.source_length_ratio_max == 0.6
 
 
 def test_constraints_merged():

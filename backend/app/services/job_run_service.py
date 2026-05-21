@@ -3,11 +3,12 @@ import threading
 import time
 from inspect import signature
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable, TypeVar
 
-from app.config import ROOT_DIR, get_settings
+from app.config import ROOT_DIR, get_env_str, get_settings
 from app.services.content_context_service import create_content_context
 from app.services.persistent_cache_service import (
     build_cache_key,
@@ -62,6 +63,31 @@ logger = logging.getLogger(__name__)
 
 StageOutputT = TypeVar("StageOutputT")
 StageValueT = TypeVar("StageValueT")
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    raw_value = get_env_str(name)
+    if not raw_value:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+_TRANSCRIBE_STAGE_SEMAPHORE = threading.BoundedSemaphore(
+    _get_positive_int_env("TRANSCRIBE_STAGE_MAX_CONCURRENCY", 1)
+)
+
+
+@contextmanager
+def _acquire_transcribe_stage_slot():
+    _TRANSCRIBE_STAGE_SEMAPHORE.acquire()
+    try:
+        yield
+    finally:
+        _TRANSCRIBE_STAGE_SEMAPHORE.release()
 
 
 class JobRunStageMachine:
@@ -152,44 +178,64 @@ class JobRunStageMachine:
         _raise_if_cancelled(self._context.cancellation_checker)
         transcript = _load_cached_material_transcript(self._context.url, source)
         if transcript is None:
-            transcript = _run_transcribe_stage(
-                source=source,
-                timeout_sec=self._context.stage_timeouts.transcribe,
-                cancellation_checker=self._context.cancellation_checker,
-            )
-            _raise_if_cancelled(self._context.cancellation_checker)
-            _store_cached_material_transcript(self._context.url, source, transcript)
+            with _acquire_transcribe_stage_slot():
+                transcript = _run_transcribe_stage(
+                    source=source,
+                    timeout_sec=self._context.stage_timeouts.transcribe,
+                    cancellation_checker=self._context.cancellation_checker,
+                )
+                _raise_if_cancelled(self._context.cancellation_checker)
+                if _job_run_should_attach_speakers():
+                    transcript = _maybe_attach_speakers(
+                        video=video,
+                        source=source,
+                        transcript=transcript,
+                    )
+                else:
+                    logger.info(
+                        "Skipping speaker attachment during main job run for %s",
+                        video.video_id,
+                    )
+
+                _raise_if_cancelled(self._context.cancellation_checker)
+                if _should_compact_transcript_for_translation(source.source_type, transcript):
+                    compacted_transcript = _compact_transcript_segments(transcript)
+                    if len(compacted_transcript.segments) < len(transcript.segments):
+                        logger.info(
+                            "Compacted transcript segments for translation from %s to %s for %s",
+                            len(transcript.segments),
+                            len(compacted_transcript.segments),
+                            video.video_id,
+                        )
+                        transcript = compacted_transcript
+                _store_cached_material_transcript(self._context.url, source, transcript)
         else:
             logger.info(
                 "Using cached transcript material for %s (source=%s)",
                 self._context.url,
                 source.source_type,
             )
-
-        _raise_if_cancelled(self._context.cancellation_checker)
-        if _job_run_should_attach_speakers():
-            transcript = _maybe_attach_speakers(
-                video=video,
-                source=source,
-                transcript=transcript,
-            )
-        else:
-            logger.info(
-                "Skipping speaker attachment during main job run for %s",
-                video.video_id,
-            )
-
-        _raise_if_cancelled(self._context.cancellation_checker)
-        if _should_compact_transcript_for_translation(source.source_type, transcript):
-            compacted_transcript = _compact_transcript_segments(transcript)
-            if len(compacted_transcript.segments) < len(transcript.segments):
+            if _job_run_should_attach_speakers():
+                transcript = _maybe_attach_speakers(
+                    video=video,
+                    source=source,
+                    transcript=transcript,
+                )
+            else:
                 logger.info(
-                    "Compacted transcript segments for translation from %s to %s for %s",
-                    len(transcript.segments),
-                    len(compacted_transcript.segments),
+                    "Skipping speaker attachment during main job run for %s",
                     video.video_id,
                 )
-                transcript = compacted_transcript
+            if _should_compact_transcript_for_translation(source.source_type, transcript):
+                compacted_transcript = _compact_transcript_segments(transcript)
+                if len(compacted_transcript.segments) < len(transcript.segments):
+                    logger.info(
+                        "Compacted transcript segments for translation from %s to %s for %s",
+                        len(transcript.segments),
+                        len(compacted_transcript.segments),
+                        video.video_id,
+                    )
+                    transcript = compacted_transcript
 
         _ensure_transcript_within_limits(transcript)
         logger.info(

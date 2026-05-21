@@ -28,8 +28,16 @@ class ArticleValidationResult:
     issues: tuple[str, ...]
 
 
-def resolve_article_spec(source_text: str) -> ArticleSpec:
+def resolve_article_spec(
+    source_text: str,
+    *,
+    thin: bool = False,
+    speed_mode: bool = False,
+) -> ArticleSpec:
     source_length = measure_source_text_length(source_text)
+
+    if thin:
+        return _build_thin_article_spec(source_length, speed_mode=speed_mode)
 
     if source_length <= 3000:
         return _build_article_spec(
@@ -207,4 +215,35 @@ def _build_article_spec(
         target_chars_per_section=target_chars_per_section,
         min_chars_per_section=min_chars_per_section,
         max_chars_per_section=max_chars_per_section,
+    )
+
+
+def _build_thin_article_spec(source_length: int, *, speed_mode: bool = False) -> ArticleSpec:
+    min_total_chars = max(1, round(source_length * 0.4))
+    target_ratio = 0.47 if speed_mode else 0.5
+    max_ratio = 0.55 if speed_mode else 0.6
+    target_total_chars = max(1, round(source_length * target_ratio))
+    max_total_chars = max(min_total_chars, round(source_length * max_ratio))
+
+    if source_length < 1800:
+        min_sections = 2
+        max_sections = 3
+        recommended_sections = 2
+    elif source_length <= 6500:
+        min_sections = 3
+        max_sections = 4
+        recommended_sections = 3
+    else:
+        min_sections = 4
+        max_sections = 5
+        recommended_sections = 4 if source_length <= 12000 else 5
+
+    return _build_article_spec(
+        source_length=source_length,
+        target_total_chars=target_total_chars,
+        min_total_chars=min_total_chars,
+        max_total_chars=max_total_chars,
+        min_sections=min_sections,
+        max_sections=max_sections,
+        recommended_sections=recommended_sections,
     )

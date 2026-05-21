@@ -1,4 +1,7 @@
 from dataclasses import dataclass, field
+from dataclasses import replace
+import threading
+from contextlib import contextmanager
 from typing import Literal
 
 from app.services.llm_provider_service import clean_model_output_text
@@ -13,6 +16,7 @@ from app.services.rewrite_provider_service import (
     rewrite_with_ollama,
     rewrite_with_openai_compatible,
 )
+from app.services.rewrite_stage_router import resolve_stage_model
 from app.services.rewrite_template_service import (
     RewriteReferences,
     SelectedRewriteTemplate,
@@ -36,6 +40,33 @@ from app.services.rewrite_template_service import (  # noqa: F401
 
 RewriteStyle = Literal["speech_verbatim", "article_longform"]
 DEFAULT_REWRITE_STYLE: RewriteStyle = "speech_verbatim"
+
+
+def _get_positive_int_env(name: str, default: int) -> int:
+    from app.config import get_env_str
+
+    raw_value = get_env_str(name)
+    if not raw_value:
+        return default
+    try:
+        parsed = int(raw_value)
+    except ValueError:
+        return default
+    return parsed if parsed > 0 else default
+
+
+_REWRITE_STAGE_SEMAPHORE = threading.BoundedSemaphore(
+    _get_positive_int_env("REWRITE_STAGE_MAX_CONCURRENCY", 2)
+)
+
+
+@contextmanager
+def _acquire_rewrite_stage_slot():
+    _REWRITE_STAGE_SEMAPHORE.acquire()
+    try:
+        yield
+    finally:
+        _REWRITE_STAGE_SEMAPHORE.release()
 
 
 class ContentRewriteError(Exception):
@@ -86,6 +117,8 @@ def rewrite_content(
     skill_config=None,
     cancellation_checker=None,
     skip_prompt_validation: bool = False,
+    rewrite_stage: str | None = None,
+    prompt_profile: str = "default",
 ) -> ContentRewriteResult:
     normalized_source = str(source_text or "").strip()
     if not normalized_source:
@@ -113,6 +146,14 @@ def rewrite_content(
 
     normalized_style = _normalize_rewrite_style(rewrite_style)
     config = resolve_rewrite_config(rewrite_config)
+    stage_model = resolve_stage_model(
+        rewrite_config,
+        stage=rewrite_stage,
+        prompt_profile=prompt_profile,
+        provider=config.provider,
+    )
+    if stage_model and stage_model != config.model:
+        config = replace(config, model=stage_model)
     references = None
     if (
         (prompt_validation is None or not prompt_validation.has_transcript_placeholder)
@@ -126,22 +167,26 @@ def rewrite_content(
         references=references,
         detail_ledger=detail_ledger,
         skill_config=skill_config,
+        prompt_profile=prompt_profile,
     )
 
-    if config.provider == "ollama":
-        rewritten_text = rewrite_with_ollama(
-            config,
-            messages,
-            rewrite_style=normalized_style,
-            cancellation_checker=cancellation_checker,
-        )
-    else:
-        rewritten_text = rewrite_with_openai_compatible(
-            config,
-            messages,
-            rewrite_style=normalized_style,
-            cancellation_checker=cancellation_checker,
-        )
+    with _acquire_rewrite_stage_slot():
+        if config.provider == "ollama":
+            rewritten_text = rewrite_with_ollama(
+                config,
+                messages,
+                rewrite_style=normalized_style,
+                rewrite_stage=rewrite_stage,
+                cancellation_checker=cancellation_checker,
+            )
+        else:
+            rewritten_text = rewrite_with_openai_compatible(
+                config,
+                messages,
+                rewrite_style=normalized_style,
+                rewrite_stage=rewrite_stage,
+                cancellation_checker=cancellation_checker,
+            )
 
     cleaned = clean_model_output_text(rewritten_text).strip()
     if not cleaned:

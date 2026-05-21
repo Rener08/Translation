@@ -1,5 +1,6 @@
 from app.services.article_generation_service import measure_source_text_length
 from app.services.rewrite_template_service import RewriteReferences, select_rewrite_template
+from app.services.rewrite_stage_router import THIN_LONGFORM_PROMPT_PROFILE
 
 SPEECH_VERBATIM_ASSISTANT_INSTRUCTIONS = """
 你是一名中文口吻整理助手。
@@ -49,6 +50,7 @@ def build_rewrite_messages(
     references: RewriteReferences | None,
     detail_ledger: str | None,
     skill_config=None,
+    prompt_profile: str = "default",
 ) -> list[dict[str, str]]:
     if uses_full_skill_prompt(rewrite_focus):
         wrapped_source = f"\n\n[转录内容开始]\n{source_text}\n[转录内容结束]\n\n"
@@ -77,24 +79,34 @@ def build_rewrite_messages(
         rewrite_focus=rewrite_focus,
         references=references,
     )
-    reference_context = (
-        f"【参考来源】\n{references.reference_profile}\n\n"
-        "【晚点题材路由】\n"
-        f"模板：{selected_template.label}\n"
-        f"判定：{selected_template.route_reason}\n\n"
-        "【场景模板】\n"
-        f"{selected_template.body}\n\n"
-        "【标题与反向提示】\n"
-        f"{references.section_title_rules}\n\n"
-        "【方法论参考】\n"
-        f"{references.content_methodology}\n\n"
-        "【风格示例】\n"
-        f"{references.style_examples}\n\n"
-        "【写作规则参考】\n"
-        f"{references.skill_guide}\n\n"
-        "【质量流程参考】\n"
-        f"{references.quality_pipeline}"
-    )
+    if prompt_profile == THIN_LONGFORM_PROMPT_PROFILE:
+        reference_context = (
+            f"【参考来源】\n{references.reference_profile}\n\n"
+            "【晚点题材路由】\n"
+            f"模板：{selected_template.label}\n"
+            f"判定：{selected_template.route_reason}\n\n"
+            "【场景模板】\n"
+            f"{selected_template.body}"
+        )
+    else:
+        reference_context = (
+            f"【参考来源】\n{references.reference_profile}\n\n"
+            "【晚点题材路由】\n"
+            f"模板：{selected_template.label}\n"
+            f"判定：{selected_template.route_reason}\n\n"
+            "【场景模板】\n"
+            f"{selected_template.body}\n\n"
+            "【标题与反向提示】\n"
+            f"{references.section_title_rules}\n\n"
+            "【方法论参考】\n"
+            f"{references.content_methodology}\n\n"
+            "【风格示例】\n"
+            f"{references.style_examples}\n\n"
+            "【写作规则参考】\n"
+            f"{references.skill_guide}\n\n"
+            "【质量流程参考】\n"
+            f"{references.quality_pipeline}"
+        )
 
     constraint_lines = []
     length_guidance_line = ""
@@ -139,21 +151,38 @@ def build_rewrite_messages(
     if length_guidance_line:
         constraint_block = f"{constraint_block}\n{length_guidance_line}" if constraint_block else length_guidance_line
 
-    user_prompt = (
-        "请改写以下内容。\n\n"
-        f"改写目标：{rewrite_focus}\n\n"
-        "限制要求：\n"
-        "- 不编造事实，不添加原文没有的关键结论。\n"
-        "- 保持原始信息。\n"
-        f"{constraint_block}\n"
-        "- 优先遵守场景模板、标题规则和质量流程。\n"
-        "- 如果当前输出仍然像逐字稿或翻译稿，请重新组织段落，改成完整文章，而不是微调句子。\n"
-        "- 如果原文包含明确的安全、财务、隐私、合作、监管或算力案例，请在文章中明确展开，不要只一句带过。\n"
-        "- 如果参考资料里出现了【主题脉络】，不要只写其中一两个点；尽量把它们全部覆盖到正文中。\n"
-        "- 输出只包含改写后的正文。\n\n"
-        "原始内容：\n"
-        f"{source_text}"
-    )
+    if prompt_profile == THIN_LONGFORM_PROMPT_PROFILE:
+        user_prompt = (
+            "请改写以下内容。\n\n"
+            f"改写目标：{rewrite_focus}\n\n"
+            "限制要求：\n"
+            "- 不编造事实，不添加原文没有的关键结论。\n"
+            "- 保持原始信息。\n"
+            f"{constraint_block}\n"
+            "- 优先遵守场景模板和长度要求。\n"
+            "- 如果当前输出仍然像逐字稿或翻译稿，请重新组织段落，改成完整文章，而不是微调句子。\n"
+            "- 如果原文包含明确的安全、财务、隐私、合作、监管或算力案例，请在文章中明确展开，不要只一句带过。\n"
+            "- 如果参考资料里出现了【主题脉络】，不要只写其中一两个点；尽量把它们全部覆盖到正文中。\n"
+            "- 输出只包含改写后的正文。\n\n"
+            "原始内容：\n"
+            f"{source_text}"
+        )
+    else:
+        user_prompt = (
+            "请改写以下内容。\n\n"
+            f"改写目标：{rewrite_focus}\n\n"
+            "限制要求：\n"
+            "- 不编造事实，不添加原文没有的关键结论。\n"
+            "- 保持原始信息。\n"
+            f"{constraint_block}\n"
+            "- 优先遵守场景模板、标题规则和质量流程。\n"
+            "- 如果当前输出仍然像逐字稿或翻译稿，请重新组织段落，改成完整文章，而不是微调句子。\n"
+            "- 如果原文包含明确的安全、财务、隐私、合作、监管或算力案例，请在文章中明确展开，不要只一句带过。\n"
+            "- 如果参考资料里出现了【主题脉络】，不要只写其中一两个点；尽量把它们全部覆盖到正文中。\n"
+            "- 输出只包含改写后的正文。\n\n"
+            "原始内容：\n"
+            f"{source_text}"
+        )
 
     if skill_config and skill_config.content_filters:
         user_prompt += "\n\n内容过滤要求：\n"

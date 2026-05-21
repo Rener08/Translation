@@ -144,6 +144,7 @@ def test_run_article_longform_loop_uses_loop_when_enabled(monkeypatch) -> None:
     assert "初稿" in calls[1]
     assert report.rewritten_text == "第一段。\n\n第二段。"
     assert report.next_recommended_action == "stop"
+    assert report.loop_state_snapshot["mode"] == "debug_agent_loop"
 
 
 def test_prompt_builders_include_required_sections() -> None:

@@ -134,6 +134,27 @@ def _check_detail_coverage(
     return issues
 
 
+def _build_precomputed_detail_coverage_issues(
+    messages: tuple[str, ...],
+) -> list[QualityIssue]:
+    issues: list[QualityIssue] = []
+    for message in messages:
+        normalized = str(message or "").strip()
+        if not normalized:
+            continue
+        issues.append(
+            QualityIssue(
+                layer="L1 硬约束",
+                check_type="detail_coverage",
+                position=-1,
+                matched=normalized,
+                message=normalized,
+                fix_hint=normalized,
+            )
+        )
+    return issues
+
+
 def _check_output_length(
     text: str, spec: SkillOutputSpec
 ) -> list[QualityIssue]:
@@ -232,11 +253,13 @@ def check_article_quality(
     source_text: str,
     skill_config: SkillConfig,
     detail_ledger: DetailLedger | None = None,
+    precomputed_detail_coverage_issues: tuple[str, ...] | None = None,
 ) -> QualityReport:
     """Check article quality layer by layer per skill_config.quality_layers."""
     all_issues: list[QualityIssue] = []
     layers_checked = 0
     layers_passed = 0
+    used_precomputed_detail_coverage = False
 
     for layer in skill_config.quality_layers:
         layers_checked += 1
@@ -247,7 +270,18 @@ def check_article_quality(
             handler = _CHECK_DISPATCH.get(check_name)
             if handler:
                 if check_name == "detail_coverage":
-                    layer_issues.extend(_check_detail_coverage(text, source_text, detail_ledger))
+                    if (
+                        precomputed_detail_coverage_issues is not None
+                        and not used_precomputed_detail_coverage
+                    ):
+                        layer_issues.extend(
+                            _build_precomputed_detail_coverage_issues(
+                                precomputed_detail_coverage_issues
+                            )
+                        )
+                        used_precomputed_detail_coverage = True
+                    else:
+                        layer_issues.extend(_check_detail_coverage(text, source_text, detail_ledger))
                 else:
                     layer_issues.extend(handler(text, skill_config, detail_ledger))
         if not layer_issues:
