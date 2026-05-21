@@ -49,7 +49,7 @@ def _make_latepost_config() -> SkillConfig:
             min_chars=0, target_chars=0, max_chars=0,
             min_sections=3, max_sections=6,
             source_length_ratio_min=0.4,
-            source_length_ratio_max=0.65,
+            source_length_ratio_max=0.6,
         ),
         constraints=(
             StyleConstraint("forbidden_word", "说白了", ""),
@@ -141,7 +141,7 @@ def test_output_length_ratio_is_soft():
             min_chars=0, target_chars=0, max_chars=0,
             min_sections=3, max_sections=6,
             source_length_ratio_min=0.4,
-            source_length_ratio_max=0.65,
+            source_length_ratio_max=0.6,
         ),
         constraints=(),
         perspective_markers=(),

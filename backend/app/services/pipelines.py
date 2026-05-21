@@ -1,6 +1,7 @@
 """Pipeline strategies for WriterAgent."""
 
 from dataclasses import dataclass, field
+import time
 import re
 from typing import Literal, Protocol
 
@@ -36,6 +37,9 @@ from app.services.quality_check_service import (
     check_article_quality,
 )
 from app.services.skill_config_service import SkillConfig
+from app.services.rewrite_stage_router import (
+    THIN_LONGFORM_PROMPT_PROFILE,
+)
 from app.services.writer_versions import (
     ARTICLE_LONGFORM_PROMPT_VERSION,
     FULL_PROMPT_PROMPT_VERSION,
@@ -219,6 +223,7 @@ class SpeechVerbatimPipeline:
             normalized_source,
             self._skill_config,
             detail_ledger,
+            precomputed_detail_coverage_issues=format_detail_coverage_issues(coverage),
         )
         if not quality_report.passed:
             revise_prompt = build_revision_prompt(quality_report)
@@ -234,7 +239,7 @@ class SpeechVerbatimPipeline:
                 cancellation_checker=cancellation_checker,
             )
 
-        spec = resolve_article_spec(normalized_source)
+        spec = resolve_article_spec(normalized_source, thin=True)
         validation = _build_soft_validation(final_result.rewritten_text)
         return WriterRunReport(
             rewritten_text=final_result.rewritten_text,
@@ -366,33 +371,48 @@ class ArticleLongformPipeline:
         trace_id = new_writer_trace_id()
         normalized_source = material.source_text
         article_source = material.article_input_text()
-        spec = resolve_article_spec(normalized_source)
+        spec = resolve_article_spec(normalized_source, thin=True)
         length_bounds = self._resolve_length_bounds(normalized_source)
         length_guidance = self._build_length_guidance(normalized_source)
         detail_ledger = build_detail_ledger(article_source)
         topic_ledger = build_longform_topic_ledger(article_source)
         longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
+        stage_timings_ms: dict[str, int] = {}
+        stage_models: dict[str, str] = {}
+        stage_call_count = 0
+        outline_used = False
+        revision_used = False
+        outline = ("按素材主线组织段落",)
 
         if callable(cancellation_checker) and cancellation_checker():
             raise ContentRewriteInputError("Rewrite cancelled.")
-        planning_result = rewrite_content(
-            source_text=article_source,
-            rewrite_focus=_build_outline_prompt(
-                spec=spec,
-                rewrite_focus=rewrite_focus,
-                length_guidance=length_guidance,
-                soft_length_mode=bool(length_guidance),
-                detail_ledger_text=longform_ledger.to_prompt_text(),
-            ),
-            rewrite_style="article_longform",
-            rewrite_config=rewrite_config,
-            skill_config=self._skill_config,
-            cancellation_checker=cancellation_checker,
-        )
-        outline = _extract_outline(planning_result.rewritten_text)
+        if _should_run_thin_outline(normalized_source, longform_ledger):
+            outline_started_at = time.monotonic()
+            planning_result = rewrite_content(
+                source_text=article_source,
+                rewrite_focus=_build_outline_prompt(
+                    spec=spec,
+                    rewrite_focus=rewrite_focus,
+                    length_guidance=length_guidance,
+                    soft_length_mode=bool(length_guidance),
+                    detail_ledger_text=longform_ledger.to_prompt_text(),
+                ),
+                rewrite_style="article_longform",
+                rewrite_config=rewrite_config,
+                skill_config=self._skill_config,
+                cancellation_checker=cancellation_checker,
+                rewrite_stage="outline",
+                prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
+            )
+            stage_timings_ms["outline"] = int((time.monotonic() - outline_started_at) * 1000)
+            stage_models["outline"] = planning_result.model
+            stage_call_count += 1
+            outline_used = True
+            outline = _extract_outline(planning_result.rewritten_text)
 
         if callable(cancellation_checker) and cancellation_checker():
             raise ContentRewriteInputError("Rewrite cancelled.")
+        draft_started_at = time.monotonic()
         draft_result = rewrite_content(
             source_text=article_source,
             rewrite_focus=_build_draft_prompt(
@@ -407,73 +427,126 @@ class ArticleLongformPipeline:
             rewrite_config=rewrite_config,
             skill_config=self._skill_config,
             cancellation_checker=cancellation_checker,
+            rewrite_stage="draft",
+            prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
         )
-        validation = (
-            _build_soft_validation(draft_result.rewritten_text)
-            if length_guidance
-            else validate_generated_article(draft_result.rewritten_text, spec)
-        )
-        final_result = draft_result
-        revised_once = False
-        quality_report = check_article_quality(
-            draft_result.rewritten_text,
-            normalized_source,
-            self._skill_config,
-            longform_ledger,
-        )
-        soft_length_issues = tuple(
-            issue
-            for issue in quality_report.issues
-            if issue.severity == "soft" and issue.check_type == "output_length_ratio"
+        stage_timings_ms["draft"] = int((time.monotonic() - draft_started_at) * 1000)
+        stage_models["draft"] = draft_result.model
+        stage_call_count += 1
+
+        validation = validate_generated_article(draft_result.rewritten_text, spec)
+        draft_coverage = analyze_detail_coverage_enhanced(longform_ledger, draft_result.rewritten_text)
+        draft_coverage_issues = format_detail_coverage_issues(draft_coverage)
+        style_issues = _validate_style_constraints(draft_result.rewritten_text, self._skill_config)
+        soft_length_issues = _collect_length_ratio_issues(
+            text=draft_result.rewritten_text,
+            source_text=normalized_source,
+            skill_config=self._skill_config,
         )
 
-        revision_round = 0
-        while revision_round < self._MAX_REVISION_ROUNDS and (
-            not quality_report.passed or soft_length_issues
+        final_result = draft_result
+        revision_stage = "patch"
+        revision_prompt = ""
+        if (
+            not validation.ok
+            or draft_coverage_issues
+            or style_issues
+            or soft_length_issues
         ):
-            revised_once = True
-            revise_prompt = _build_article_longform_revision_prompt(
+            revision_stage, revision_prompt = _build_thin_revision_prompt(
                 previous_article=final_result.rewritten_text,
                 spec=spec,
                 validation=validation,
-                quality_report=quality_report,
+                detail_coverage_issues=draft_coverage_issues,
+                style_issues=style_issues,
+                soft_length_issues=soft_length_issues,
                 length_guidance=length_guidance,
+                source_length_bounds=length_bounds,
+                source_text=normalized_source,
+                detail_ledger=longform_ledger,
             )
-            if soft_length_issues:
-                revise_prompt += _build_article_longform_length_expansion_prompt(
-                    previous_article=final_result.rewritten_text,
-                    spec=spec,
-                    soft_length_issues=soft_length_issues,
-                    length_guidance=length_guidance,
-                    source_length_bounds=length_bounds,
-                )
             if callable(cancellation_checker) and cancellation_checker():
                 raise ContentRewriteInputError("Rewrite cancelled.")
+            revision_started_at = time.monotonic()
             final_result = rewrite_content(
                 source_text=article_source,
-                rewrite_focus=revise_prompt,
+                rewrite_focus=revision_prompt,
                 rewrite_style="article_longform",
                 rewrite_config=rewrite_config,
                 skill_config=self._skill_config,
                 cancellation_checker=cancellation_checker,
+                skip_prompt_validation=True,
+                rewrite_stage=revision_stage,
+                prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
             )
-            validation = (
-                _build_soft_validation(final_result.rewritten_text)
-                if length_guidance
-                else validate_generated_article(final_result.rewritten_text, spec)
-            )
-            quality_report = check_article_quality(
-                final_result.rewritten_text,
-                normalized_source,
-                self._skill_config,
-                longform_ledger,
-            )
-            soft_length_issues = tuple(
-                issue
-                for issue in quality_report.issues
-                if issue.severity == "soft" and issue.check_type == "output_length_ratio"
-            )
-            revision_round += 1
+            stage_timings_ms[revision_stage] = int((time.monotonic() - revision_started_at) * 1000)
+            stage_models[revision_stage] = final_result.model
+            stage_call_count += 1
+            revision_used = True
+
+        final_validation = validate_generated_article(final_result.rewritten_text, spec)
+        final_coverage = analyze_detail_coverage_enhanced(longform_ledger, final_result.rewritten_text)
+        detail_coverage_issues = format_detail_coverage_issues(final_coverage)
+        final_quality_report = check_article_quality(
+            final_result.rewritten_text,
+            normalized_source,
+            self._skill_config,
+            longform_ledger,
+            precomputed_detail_coverage_issues=detail_coverage_issues,
+        )
+        final_style_issues = _validate_style_constraints(final_result.rewritten_text, self._skill_config)
+        final_soft_length_issues = _collect_length_ratio_issues(
+            text=final_result.rewritten_text,
+            source_text=normalized_source,
+            skill_config=self._skill_config,
+        )
+        failure_stage = None
+        if not final_validation.ok:
+            failure_stage = "validation"
+        elif detail_coverage_issues:
+            failure_stage = "validation"
+        elif final_style_issues:
+            failure_stage = "validation"
+        elif final_soft_length_issues:
+            failure_stage = "validation"
+        elif not final_quality_report.passed:
+            failure_stage = "validation"
+
+        next_recommended_action = "stop"
+        if failure_stage is not None:
+            if detail_coverage_issues or final_soft_length_issues:
+                next_recommended_action = "expand"
+            else:
+                next_recommended_action = "patch"
+
+        loop_snapshot = {
+            "mode": "thin_longform",
+            "outline_used": outline_used,
+            "revision_used": revision_used,
+            "stage_call_count": stage_call_count,
+            "stage_timings_ms": stage_timings_ms,
+            "stage_models": stage_models,
+            "validation": {
+                "passed": final_validation.ok,
+                "total_chars": final_validation.total_chars,
+                "section_count": final_validation.section_count,
+                "issues": list(final_validation.issues),
+            },
+            "quality": {
+                "passed": final_quality_report.passed,
+                "issue_count": len(final_quality_report.issues),
+                "layers_checked": final_quality_report.layers_checked,
+                "layers_passed": final_quality_report.layers_passed,
+            },
+            "coverage": {
+                "required_fact_count": len(longform_ledger.items),
+                "missing_fact_count": len(final_coverage.missing_items),
+                "issue_count": len(detail_coverage_issues),
+            },
+        }
+        covered_facts = tuple(
+            item.text for item in longform_ledger.items if item not in final_coverage.missing_items
+        )
 
         return WriterRunReport(
             rewritten_text=final_result.rewritten_text,
@@ -485,17 +558,201 @@ class ArticleLongformPipeline:
                 text=final_result.rewritten_text,
                 outline=outline,
                 spec=spec,
-                validation=validation,
-                revised_once=revised_once,
+                validation=final_validation,
+                revised_once=revision_used,
             ),
             rewrite_style="article_longform",
+            detail_coverage_issues=detail_coverage_issues,
             writer_trace_id=trace_id,
             writer_policy_version=WRITER_POLICY_VERSION,
             writer_prompt_version=ARTICLE_LONGFORM_PROMPT_VERSION,
+            loop_state_snapshot=loop_snapshot,
+            last_action="revision" if revision_used else "draft",
+            budget_usage={
+                "stage_call_count": stage_call_count,
+                "stage_timings_ms": stage_timings_ms,
+                "stage_models": stage_models,
+                "outline_used": outline_used,
+                "revision_used": revision_used,
+            },
+            failure_stage=failure_stage,
+            next_recommended_action=next_recommended_action,
+            covered_facts_summary=covered_facts,
         )
 
 
 # --- helpers ---
+
+_THIN_OUTLINE_SOURCE_LENGTH_THRESHOLD = 3600
+_THIN_OUTLINE_DETAIL_THRESHOLD = 8
+
+
+def _should_run_thin_outline(source_text: str, detail_ledger: DetailLedger) -> bool:
+    return (
+        measure_source_text_length(source_text) >= _THIN_OUTLINE_SOURCE_LENGTH_THRESHOLD
+        or len(detail_ledger.items) >= _THIN_OUTLINE_DETAIL_THRESHOLD
+    )
+
+
+def _collect_length_ratio_issues(
+    *,
+    text: str,
+    source_text: str,
+    skill_config: SkillConfig,
+) -> tuple[str, ...]:
+    output = getattr(skill_config, "output", None)
+    ratio_min = getattr(output, "source_length_ratio_min", None)
+    ratio_max = getattr(output, "source_length_ratio_max", None)
+    if ratio_min is None and ratio_max is None:
+        return ()
+
+    normalized_source = (source_text or "").strip()
+    source_length = measure_source_text_length(normalized_source)
+    if source_length <= 0:
+        return ()
+
+    min_ratio = ratio_min if ratio_min is not None else 0.0
+    max_ratio = ratio_max if ratio_max is not None else 1.0
+    if max_ratio < min_ratio:
+        min_ratio, max_ratio = max_ratio, min_ratio
+
+    min_chars = max(1, round(source_length * min_ratio))
+    max_chars = max(min_chars, round(source_length * max_ratio))
+    current_chars = measure_source_text_length(text)
+    if min_chars <= current_chars <= max_chars:
+        return ()
+
+    return (
+        f"输出字数 {current_chars} 建议控制在原文长度的 {int(min_ratio * 100)}%-{int(max_ratio * 100)}%（约 {min_chars}-{max_chars} 字）",
+    )
+
+
+def _build_thin_revision_prompt(
+    *,
+    previous_article: str,
+    spec: ArticleSpec,
+    validation: ArticleValidationResult,
+    detail_coverage_issues: tuple[str, ...],
+    style_issues: tuple[str, ...],
+    soft_length_issues: tuple[str, ...],
+    length_guidance: str | None,
+    source_length_bounds: tuple[int, int, int] | None,
+    source_text: str,
+    detail_ledger: DetailLedger,
+) -> tuple[str, str]:
+    if detail_coverage_issues:
+        lines = [
+            "请先回查证据，再重写当前稿件。",
+            "",
+            "当前问题：",
+        ]
+        if not validation.ok:
+            lines.append("结构问题：")
+            lines.extend(f"- {issue}" for issue in validation.issues)
+        if detail_coverage_issues:
+            lines.append("缺失细节：")
+            lines.extend(f"- {issue}" for issue in detail_coverage_issues)
+        if style_issues:
+            lines.append("风格问题：")
+            lines.extend(f"- {issue}" for issue in style_issues)
+        if soft_length_issues:
+            lines.append("篇幅问题：")
+            lines.extend(f"- {issue}" for issue in soft_length_issues)
+        if length_guidance:
+            lines.extend(["", f"篇幅标准：{length_guidance}"])
+        if source_length_bounds is not None:
+            source_length, min_chars, max_chars = source_length_bounds
+            current_chars = measure_source_text_length(previous_article)
+            deficit = max(0, min_chars - current_chars)
+            lines.append(
+                f"当前稿件约 {current_chars} 字，原文约 {source_length} 字，目标区间 {min_chars}-{max_chars} 字，当前至少还需要补足约 {deficit} 字。"
+            )
+        lines.extend(
+            [
+                "- 先修正事实锚点和信息顺序，再输出修订后的正文。",
+                "- 报道主语优先使用事件、变化、机制、平台和边界，不要让人物发言顺序主导段落顺序。",
+                "- 如果仍然像翻译稿或逐字稿，请重新组织段落结构，而不是只改几个句子。",
+                "",
+                "原始素材：",
+                source_text.strip(),
+                "",
+                "当前完整草稿：",
+                previous_article.strip(),
+                "",
+                f"必须保留的关键细节：\n{detail_ledger.to_prompt_text()}",
+            ]
+        )
+        return "re_ground", "\n".join(lines)
+
+    if soft_length_issues:
+        issue_lines = "\n".join(f"- {issue}" for issue in soft_length_issues)
+        source_length = measure_source_text_length(source_text)
+        current_chars = measure_source_text_length(previous_article)
+        deficit = 0
+        if source_length_bounds is not None:
+            source_length, min_chars, max_chars = source_length_bounds
+            deficit = max(0, min_chars - current_chars)
+            length_line = (
+                f"当前稿件约 {current_chars} 字，原文约 {source_length} 字，目标区间 {min_chars}-{max_chars} 字，当前至少还需要补足约 {deficit} 字。"
+            )
+        else:
+            min_chars = max_chars = 0
+            length_line = f"当前稿件约 {current_chars} 字，原文约 {source_length} 字。"
+        lines = [
+            "请基于下面这版内容进行一次扩写式重写，目标是补足篇幅和报道层次，不要只做局部润色。",
+            f"篇幅标准：{length_guidance or f'总长度尽量达到 {spec.min_total_chars}-{spec.max_total_chars} 字。'}",
+            length_line,
+            "- 这不是摘要压缩任务，而是扩写任务；如果当前稿子偏短，请补出机制、代价、边界、对比和下一步判断。",
+            "- 叙事主语优先使用事件、变化、系统、平台和产业链，不要沿着演讲顺序逐条复述。",
+            "- 继续保持报道视角，不要把人物发言顺序当成段落顺序。",
+            "- 每一段都要有明确的事实锚点或机制锚点，避免空泛判断。",
+            "- 如果仍然像逐字稿，先重组结构，再补充细节。",
+            f"当前软性问题：\n{issue_lines}",
+            "",
+            "待扩写文本：",
+            previous_article.strip(),
+            "",
+            f"必须保留的关键细节：\n{detail_ledger.to_prompt_text()}",
+        ]
+        return "expand", "\n".join(lines)
+
+    lines = [
+        "请修订下面这版文章，只改有问题的部分，保留其余内容。",
+        "",
+    ]
+    if not validation.ok:
+        lines.append("当前结构问题：")
+        lines.extend(f"- {issue}" for issue in validation.issues)
+    if style_issues:
+        lines.append("当前风格问题：")
+        lines.extend(f"- {issue}" for issue in style_issues)
+    if length_guidance:
+        lines.extend(["", f"篇幅标准：{length_guidance}"])
+    if source_length_bounds is not None:
+        source_length, min_chars, max_chars = source_length_bounds
+        current_chars = measure_source_text_length(previous_article)
+        deficit = max(0, min_chars - current_chars)
+        lines.append(
+            f"当前稿件约 {current_chars} 字，原文约 {source_length} 字，目标区间 {min_chars}-{max_chars} 字，当前至少还需要补足约 {deficit} 字。"
+        )
+    if soft_length_issues:
+        lines.append("当前篇幅提示：")
+        lines.extend(f"- {issue}" for issue in soft_length_issues)
+    lines.extend(
+        [
+            "",
+            "处理原则：仅返回修订后的正文，不要解释。",
+            "",
+            "原始素材：",
+            source_text.strip(),
+            "",
+            "当前完整草稿：",
+            previous_article.strip(),
+            "",
+            f"必须保留的关键细节：\n{detail_ledger.to_prompt_text()}",
+        ]
+    )
+    return "patch", "\n".join(lines)
 
 def _build_soft_validation(text: str) -> ArticleValidationResult:
     normalized_text = (text or "").strip()
@@ -644,7 +901,7 @@ def _build_outline_prompt(
     ]
     if soft_length_mode:
         prompt_lines.append(
-            f"篇幅要求：{length_guidance or '总长度尽量控制在原文的 40%-65% 之间。'}"
+            f"篇幅要求：{length_guidance or '总长度尽量控制在原文的 40%-60% 之间。'}"
         )
     else:
         prompt_lines.append(
@@ -681,7 +938,7 @@ def _build_draft_prompt(
     ]
     if soft_length_mode:
         prompt_lines.append(
-            f"篇幅要求：{length_guidance or '总长度尽量控制在原文的 40%-65% 之间。'}"
+            f"篇幅要求：{length_guidance or '总长度尽量控制在原文的 40%-60% 之间。'}"
         )
     else:
         prompt_lines.extend(

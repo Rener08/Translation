@@ -24,6 +24,7 @@ from app.services.rewrite_loop_planner import decide_next_action
 from app.services.rewrite_loop_state import LoopBudget, LoopTraceStep, RewriteGoal, RewriteState
 from app.services.rewrite_loop_validator import ValidationReport, validate_longform_rewrite
 from app.services.skill_config_service import SkillConfig
+from app.services.rewrite_stage_router import THIN_LONGFORM_PROMPT_PROFILE
 from app.services.writer_versions import (
     ARTICLE_LONGFORM_PROMPT_VERSION,
     WRITER_POLICY_VERSION,
@@ -90,8 +91,10 @@ def run_article_longform_loop(
             skill_config=skill_config,
             cancellation_checker=cancellation_checker,
             skip_prompt_validation=True,
+            rewrite_stage="draft",
+            prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
         )
-        spec = resolve_article_spec(normalized_source)
+        spec = resolve_article_spec(normalized_source, thin=True)
         validation = validate_generated_article(direct_result.rewritten_text, spec)
         return WriterRunReport(
             rewritten_text=direct_result.rewritten_text,
@@ -155,7 +158,7 @@ def run_article_longform_loop(
             pass
     topic_ledger = build_longform_topic_ledger(article_source)
     longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
-    spec = resolve_article_spec(normalized_source)
+    spec = resolve_article_spec(normalized_source, thin=True)
     length_guidance = _build_length_guidance_line(normalized_source, skill_config)
     evidence_bundle = _build_evidence_snapshot(
         source_text=article_source,
@@ -207,6 +210,8 @@ def run_article_longform_loop(
         skill_config=skill_config,
         cancellation_checker=cancellation_checker,
         skip_prompt_validation=True,
+        rewrite_stage="outline",
+        prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
     )
     outline = _extract_outline(outline_result.rewritten_text)
     state = state.with_stage("outline")
@@ -251,6 +256,8 @@ def run_article_longform_loop(
         skill_config=skill_config,
         cancellation_checker=cancellation_checker,
         skip_prompt_validation=True,
+        rewrite_stage="draft",
+        prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
     )
     final_result = draft_result
     validation = validate_longform_rewrite(
@@ -352,6 +359,8 @@ def run_article_longform_loop(
             skill_config=skill_config,
             cancellation_checker=cancellation_checker,
             skip_prompt_validation=True,
+            rewrite_stage=followup_stage,
+            prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
         )
         final_result = revised_result
         validation = validate_longform_rewrite(
@@ -727,7 +736,7 @@ def _build_followup_prompt(
             "当前软性提示：",
             *[f"- {issue}" for issue in validation.soft_failures],
             "",
-            f"篇幅标准：{length_guidance or f'总长度尽量控制在原文的 40%-65% 之间。'}",
+            f"篇幅标准：{length_guidance or f'总长度尽量控制在原文的 40%-60% 之间。'}",
             "",
             "处理原则：仅返回修订后的正文，不要解释。",
             "",

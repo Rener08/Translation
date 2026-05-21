@@ -53,7 +53,7 @@ def test_validate_longform_rewrite_classifies_hard_soft_and_detail(monkeypatch) 
     )
     monkeypatch.setattr(
         "app.services.rewrite_loop_validator.check_article_quality",
-        lambda text, source_text, skill_config, detail_ledger: QualityReport(
+        lambda text, source_text, skill_config, detail_ledger, **kwargs: QualityReport(
             passed=False,
             issues=(
                 QualityIssue(
@@ -129,7 +129,7 @@ def test_validate_longform_rewrite_expands_for_only_detail_gaps(monkeypatch) -> 
     )
     monkeypatch.setattr(
         "app.services.rewrite_loop_validator.check_article_quality",
-        lambda text, source_text, skill_config, detail_ledger: QualityReport(
+        lambda text, source_text, skill_config, detail_ledger, **kwargs: QualityReport(
             passed=True,
             issues=(),
             layers_checked=1,
