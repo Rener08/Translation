@@ -5,6 +5,7 @@ from __future__ import annotations
 from app.config import get_env_str
 
 THIN_LONGFORM_PROMPT_PROFILE = "thin_longform"
+THIN_LONGFORM_SPEED_MODE_ENV = "THIN_LONGFORM_SPEED_MODE"
 DEEPSEEK_CONTROL_MODEL = "deepseek-v4-flash"
 DEEPSEEK_CONTENT_MODEL = "deepseek-v4-pro"
 
@@ -72,6 +73,21 @@ def resolve_stage_model(
         )
 
     return None
+
+
+def is_thin_longform_speed_mode_enabled(raw_config: dict[str, object] | None = None) -> bool:
+    """Resolve whether the thin longform speed profile should be used."""
+
+    if isinstance(raw_config, dict):
+        candidate = raw_config.get("speed_mode")
+        if isinstance(candidate, bool):
+            return candidate
+        if isinstance(candidate, str):
+            normalized = candidate.strip().lower()
+            if normalized:
+                return normalized in {"1", "true", "yes", "on"}
+
+    return get_env_str(THIN_LONGFORM_SPEED_MODE_ENV).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _normalize_provider(provider: str | None, raw_config: dict[str, object] | None) -> str:

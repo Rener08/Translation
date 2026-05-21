@@ -1,6 +1,6 @@
 """Pipeline strategies for WriterAgent."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import time
 import re
 from typing import Literal, Protocol
@@ -39,6 +39,7 @@ from app.services.quality_check_service import (
 from app.services.skill_config_service import SkillConfig
 from app.services.rewrite_stage_router import (
     THIN_LONGFORM_PROMPT_PROFILE,
+    is_thin_longform_speed_mode_enabled,
 )
 from app.services.writer_versions import (
     ARTICLE_LONGFORM_PROMPT_VERSION,
@@ -322,8 +323,13 @@ class ArticleLongformPipeline:
     def __init__(self, skill_config: SkillConfig):
         self._skill_config = skill_config
 
-    def _resolve_length_bounds(self, source_text: str) -> tuple[int, int, int] | None:
-        output = getattr(self._skill_config, "output", None)
+    def _resolve_length_bounds(
+        self,
+        source_text: str,
+        skill_config: SkillConfig | None = None,
+    ) -> tuple[int, int, int] | None:
+        config = skill_config or self._skill_config
+        output = getattr(config, "output", None)
         ratio_min = getattr(output, "source_length_ratio_min", None)
         ratio_max = getattr(output, "source_length_ratio_max", None)
         if ratio_min is None and ratio_max is None:
@@ -342,12 +348,17 @@ class ArticleLongformPipeline:
         max_chars = max(min_chars, round(source_length * max_ratio))
         return source_length, min_chars, max_chars
 
-    def _build_length_guidance(self, source_text: str) -> str | None:
-        bounds = self._resolve_length_bounds(source_text)
+    def _build_length_guidance(
+        self,
+        source_text: str,
+        skill_config: SkillConfig | None = None,
+    ) -> str | None:
+        config = skill_config or self._skill_config
+        bounds = self._resolve_length_bounds(source_text, config)
         if bounds is None:
             return None
         source_length, min_chars, max_chars = bounds
-        output = getattr(self._skill_config, "output", None)
+        output = getattr(config, "output", None)
         ratio_min = getattr(output, "source_length_ratio_min", 0.0) or 0.0
         ratio_max = getattr(output, "source_length_ratio_max", 1.0) or 1.0
         if ratio_max < ratio_min:
@@ -371,9 +382,11 @@ class ArticleLongformPipeline:
         trace_id = new_writer_trace_id()
         normalized_source = material.source_text
         article_source = material.article_input_text()
-        spec = resolve_article_spec(normalized_source, thin=True)
-        length_bounds = self._resolve_length_bounds(normalized_source)
-        length_guidance = self._build_length_guidance(normalized_source)
+        speed_mode = is_thin_longform_speed_mode_enabled(rewrite_config)
+        effective_skill_config = _apply_thin_longform_speed_mode(self._skill_config, speed_mode)
+        spec = resolve_article_spec(normalized_source, thin=True, speed_mode=speed_mode)
+        length_bounds = self._resolve_length_bounds(normalized_source, effective_skill_config)
+        length_guidance = self._build_length_guidance(normalized_source, effective_skill_config)
         detail_ledger = build_detail_ledger(article_source)
         topic_ledger = build_longform_topic_ledger(article_source)
         longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
@@ -386,7 +399,7 @@ class ArticleLongformPipeline:
 
         if callable(cancellation_checker) and cancellation_checker():
             raise ContentRewriteInputError("Rewrite cancelled.")
-        if _should_run_thin_outline(normalized_source, longform_ledger):
+        if _should_run_thin_outline(normalized_source, longform_ledger, speed_mode=speed_mode):
             outline_started_at = time.monotonic()
             planning_result = rewrite_content(
                 source_text=article_source,
@@ -399,7 +412,7 @@ class ArticleLongformPipeline:
                 ),
                 rewrite_style="article_longform",
                 rewrite_config=rewrite_config,
-                skill_config=self._skill_config,
+                skill_config=effective_skill_config,
                 cancellation_checker=cancellation_checker,
                 rewrite_stage="outline",
                 prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
@@ -425,7 +438,7 @@ class ArticleLongformPipeline:
             ),
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
-            skill_config=self._skill_config,
+            skill_config=effective_skill_config,
             cancellation_checker=cancellation_checker,
             rewrite_stage="draft",
             prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
@@ -437,16 +450,22 @@ class ArticleLongformPipeline:
         validation = validate_generated_article(draft_result.rewritten_text, spec)
         draft_coverage = analyze_detail_coverage_enhanced(longform_ledger, draft_result.rewritten_text)
         draft_coverage_issues = format_detail_coverage_issues(draft_coverage)
-        style_issues = _validate_style_constraints(draft_result.rewritten_text, self._skill_config)
+        style_issues = _validate_style_constraints(draft_result.rewritten_text, effective_skill_config)
         soft_length_issues = _collect_length_ratio_issues(
             text=draft_result.rewritten_text,
             source_text=normalized_source,
-            skill_config=self._skill_config,
+            skill_config=effective_skill_config,
         )
 
         final_result = draft_result
         revision_stage = "patch"
         revision_prompt = ""
+        final_validation = validation
+        final_coverage = draft_coverage
+        detail_coverage_issues = draft_coverage_issues
+        final_quality_report = None
+        final_style_issues = style_issues
+        final_soft_length_issues = soft_length_issues
         if (
             not validation.ok
             or draft_coverage_issues
@@ -473,7 +492,7 @@ class ArticleLongformPipeline:
                 rewrite_focus=revision_prompt,
                 rewrite_style="article_longform",
                 rewrite_config=rewrite_config,
-                skill_config=self._skill_config,
+                skill_config=effective_skill_config,
                 cancellation_checker=cancellation_checker,
                 skip_prompt_validation=True,
                 rewrite_stage=revision_stage,
@@ -483,23 +502,30 @@ class ArticleLongformPipeline:
             stage_models[revision_stage] = final_result.model
             stage_call_count += 1
             revision_used = True
-
-        final_validation = validate_generated_article(final_result.rewritten_text, spec)
-        final_coverage = analyze_detail_coverage_enhanced(longform_ledger, final_result.rewritten_text)
-        detail_coverage_issues = format_detail_coverage_issues(final_coverage)
-        final_quality_report = check_article_quality(
-            final_result.rewritten_text,
-            normalized_source,
-            self._skill_config,
-            longform_ledger,
-            precomputed_detail_coverage_issues=detail_coverage_issues,
-        )
-        final_style_issues = _validate_style_constraints(final_result.rewritten_text, self._skill_config)
-        final_soft_length_issues = _collect_length_ratio_issues(
-            text=final_result.rewritten_text,
-            source_text=normalized_source,
-            skill_config=self._skill_config,
-        )
+            final_validation = validate_generated_article(final_result.rewritten_text, spec)
+            final_coverage = analyze_detail_coverage_enhanced(longform_ledger, final_result.rewritten_text)
+            detail_coverage_issues = format_detail_coverage_issues(final_coverage)
+            final_style_issues = _validate_style_constraints(final_result.rewritten_text, effective_skill_config)
+            final_soft_length_issues = _collect_length_ratio_issues(
+                text=final_result.rewritten_text,
+                source_text=normalized_source,
+                skill_config=effective_skill_config,
+            )
+            final_quality_report = check_article_quality(
+                final_result.rewritten_text,
+                normalized_source,
+                effective_skill_config,
+                longform_ledger,
+                precomputed_detail_coverage_issues=detail_coverage_issues,
+            )
+        else:
+            final_quality_report = check_article_quality(
+                final_result.rewritten_text,
+                normalized_source,
+                effective_skill_config,
+                longform_ledger,
+                precomputed_detail_coverage_issues=detail_coverage_issues,
+            )
         failure_stage = None
         if not final_validation.ok:
             failure_stage = "validation"
@@ -521,6 +547,7 @@ class ArticleLongformPipeline:
 
         loop_snapshot = {
             "mode": "thin_longform",
+            "speed_mode": speed_mode,
             "outline_used": outline_used,
             "revision_used": revision_used,
             "stage_call_count": stage_call_count,
@@ -574,6 +601,7 @@ class ArticleLongformPipeline:
                 "stage_models": stage_models,
                 "outline_used": outline_used,
                 "revision_used": revision_used,
+                "speed_mode": speed_mode,
             },
             failure_stage=failure_stage,
             next_recommended_action=next_recommended_action,
@@ -585,12 +613,45 @@ class ArticleLongformPipeline:
 
 _THIN_OUTLINE_SOURCE_LENGTH_THRESHOLD = 3600
 _THIN_OUTLINE_DETAIL_THRESHOLD = 8
+_THIN_OUTLINE_SPEED_SOURCE_LENGTH_THRESHOLD = 7200
+_THIN_OUTLINE_SPEED_DETAIL_THRESHOLD = 12
 
 
-def _should_run_thin_outline(source_text: str, detail_ledger: DetailLedger) -> bool:
+def _apply_thin_longform_speed_mode(skill_config: SkillConfig, speed_mode: bool) -> SkillConfig:
+    if not speed_mode:
+        return skill_config
+    output = getattr(skill_config, "output", None)
+    ratio_max = getattr(output, "source_length_ratio_max", None)
+    if ratio_max is None:
+        return skill_config
+    adjusted_ratio_max = min(ratio_max, 0.55)
+    if adjusted_ratio_max == ratio_max:
+        return skill_config
+    return replace(
+        skill_config,
+        output=replace(output, source_length_ratio_max=adjusted_ratio_max),
+    )
+
+
+def _should_run_thin_outline(
+    source_text: str,
+    detail_ledger: DetailLedger,
+    *,
+    speed_mode: bool = False,
+) -> bool:
+    source_threshold = (
+        _THIN_OUTLINE_SPEED_SOURCE_LENGTH_THRESHOLD
+        if speed_mode
+        else _THIN_OUTLINE_SOURCE_LENGTH_THRESHOLD
+    )
+    detail_threshold = (
+        _THIN_OUTLINE_SPEED_DETAIL_THRESHOLD
+        if speed_mode
+        else _THIN_OUTLINE_DETAIL_THRESHOLD
+    )
     return (
-        measure_source_text_length(source_text) >= _THIN_OUTLINE_SOURCE_LENGTH_THRESHOLD
-        or len(detail_ledger.items) >= _THIN_OUTLINE_DETAIL_THRESHOLD
+        measure_source_text_length(source_text) >= source_threshold
+        or len(detail_ledger.items) >= detail_threshold
     )
 
 

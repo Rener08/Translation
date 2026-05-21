@@ -28,11 +28,16 @@ class ArticleValidationResult:
     issues: tuple[str, ...]
 
 
-def resolve_article_spec(source_text: str, *, thin: bool = False) -> ArticleSpec:
+def resolve_article_spec(
+    source_text: str,
+    *,
+    thin: bool = False,
+    speed_mode: bool = False,
+) -> ArticleSpec:
     source_length = measure_source_text_length(source_text)
 
     if thin:
-        return _build_thin_article_spec(source_length)
+        return _build_thin_article_spec(source_length, speed_mode=speed_mode)
 
     if source_length <= 3000:
         return _build_article_spec(
@@ -213,10 +218,12 @@ def _build_article_spec(
     )
 
 
-def _build_thin_article_spec(source_length: int) -> ArticleSpec:
-    target_total_chars = max(1, round(source_length * 0.5))
+def _build_thin_article_spec(source_length: int, *, speed_mode: bool = False) -> ArticleSpec:
     min_total_chars = max(1, round(source_length * 0.4))
-    max_total_chars = max(min_total_chars, round(source_length * 0.6))
+    target_ratio = 0.47 if speed_mode else 0.5
+    max_ratio = 0.55 if speed_mode else 0.6
+    target_total_chars = max(1, round(source_length * target_ratio))
+    max_total_chars = max(min_total_chars, round(source_length * max_ratio))
 
     if source_length < 1800:
         min_sections = 2

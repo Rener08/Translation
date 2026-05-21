@@ -176,6 +176,7 @@ def rewrite_content(
                 config,
                 messages,
                 rewrite_style=normalized_style,
+                rewrite_stage=rewrite_stage,
                 cancellation_checker=cancellation_checker,
             )
         else:
@@ -183,6 +184,7 @@ def rewrite_content(
                 config,
                 messages,
                 rewrite_style=normalized_style,
+                rewrite_stage=rewrite_stage,
                 cancellation_checker=cancellation_checker,
             )
 

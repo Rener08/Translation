@@ -183,6 +183,73 @@ def test_writer_agent_latepost_skill_forces_article_longform_pipeline(monkeypatc
     assert report.model == "qwen3.5:4b"
 
 
+def test_writer_agent_latepost_speed_mode_skips_outline(monkeypatch) -> None:
+    from app.services.detail_ledger import DetailCoverageResult
+
+    calls: list[dict[str, object]] = []
+
+    latepost_config = SkillConfig(
+        style_name="晚点",
+        perspective="third_person",
+        output=SkillOutputSpec(
+            min_chars=0,
+            target_chars=0,
+            max_chars=0,
+            min_sections=3,
+            max_sections=6,
+            source_length_ratio_min=0.4,
+            source_length_ratio_max=0.6,
+        ),
+        constraints=(),
+        perspective_markers=(),
+        template_routing_enabled=True,
+        content_filters=(),
+        quality_layers=(),
+    )
+
+    def fake_rewrite_content(**kwargs) -> ContentRewriteResult:
+        calls.append(kwargs)
+        assert kwargs["rewrite_stage"] == "draft"
+        assert "初稿" in str(kwargs["rewrite_focus"])
+        return ContentRewriteResult(
+            rewritten_text=(
+                "这是一篇更短但仍完整的晚点文章。" + ("甲" * 700) + "\n\n"
+                "第二部分继续展开机制和代价。" + ("乙" * 700) + "\n\n"
+                "第三部分完成收束。" + ("丙" * 700)
+            ),
+            provider="ollama",
+            model="qwen3.5:4b",
+        )
+
+    monkeypatch.setenv("THIN_LONGFORM_SPEED_MODE", "true")
+    monkeypatch.setattr(
+        "app.services.pipelines.rewrite_content",
+        fake_rewrite_content,
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.analyze_detail_coverage_enhanced",
+        lambda ledger, text: DetailCoverageResult(missing_items=()),
+    )
+    monkeypatch.setattr(
+        "app.services.pipelines.check_article_quality",
+        _passing_quality_report,
+    )
+
+    report = WriterAgent().run(
+        material=MaterialPackage(source_text="a" * 5000),
+        rewrite_focus="改写成晚点风格的第三视角中文报道文章。",
+        rewrite_style="speech_verbatim",
+        rewrite_config={"provider": "ollama", "model": "qwen3.5:4b"},
+        skill_config=latepost_config,
+    )
+
+    assert len(calls) == 1
+    assert report.draft.revised_once is False
+    assert report.draft.validation.ok is True
+    assert report.provider == "ollama"
+    assert report.model == "qwen3.5:4b"
+
+
 def test_writer_agent_latepost_soft_length_issue_triggers_expansion(monkeypatch) -> None:
     from app.services.detail_ledger import DetailCoverageResult
 

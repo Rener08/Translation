@@ -24,7 +24,10 @@ from app.services.rewrite_loop_planner import decide_next_action
 from app.services.rewrite_loop_state import LoopBudget, LoopTraceStep, RewriteGoal, RewriteState
 from app.services.rewrite_loop_validator import ValidationReport, validate_longform_rewrite
 from app.services.skill_config_service import SkillConfig
-from app.services.rewrite_stage_router import THIN_LONGFORM_PROMPT_PROFILE
+from app.services.rewrite_stage_router import (
+    THIN_LONGFORM_PROMPT_PROFILE,
+    is_thin_longform_speed_mode_enabled,
+)
 from app.services.writer_versions import (
     ARTICLE_LONGFORM_PROMPT_VERSION,
     WRITER_POLICY_VERSION,
@@ -81,6 +84,8 @@ def run_article_longform_loop(
         raise ContentRewriteInputError("material.source_text must not be empty.")
 
     article_source = material.article_input_text()
+    speed_mode = is_thin_longform_speed_mode_enabled(rewrite_config)
+    effective_skill_config = _apply_thin_longform_speed_mode(skill_config, speed_mode)
     if not _should_run_agent_loop(rewrite_style):
         direct_focus = (rewrite_focus or "").strip() or None
         direct_result = rewrite_content(
@@ -88,13 +93,13 @@ def run_article_longform_loop(
             rewrite_focus=direct_focus,
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
-            skill_config=skill_config,
+            skill_config=effective_skill_config,
             cancellation_checker=cancellation_checker,
             skip_prompt_validation=True,
             rewrite_stage="draft",
             prompt_profile=THIN_LONGFORM_PROMPT_PROFILE,
         )
-        spec = resolve_article_spec(normalized_source, thin=True)
+        spec = resolve_article_spec(normalized_source, thin=True, speed_mode=speed_mode)
         validation = validate_generated_article(direct_result.rewritten_text, spec)
         return WriterRunReport(
             rewritten_text=direct_result.rewritten_text,
@@ -158,8 +163,8 @@ def run_article_longform_loop(
             pass
     topic_ledger = build_longform_topic_ledger(article_source)
     longform_ledger = merge_detail_ledgers(detail_ledger, topic_ledger)
-    spec = resolve_article_spec(normalized_source, thin=True)
-    length_guidance = _build_length_guidance_line(normalized_source, skill_config)
+    spec = resolve_article_spec(normalized_source, thin=True, speed_mode=speed_mode)
+    length_guidance = _build_length_guidance_line(normalized_source, effective_skill_config)
     evidence_bundle = _build_evidence_snapshot(
         source_text=article_source,
         longform_ledger=longform_ledger,
@@ -170,7 +175,7 @@ def run_article_longform_loop(
         stage="plan",
         rounds_left=LoopBudget().max_rounds,
         covered_facts=(),
-        style_constraints=_collect_style_constraints(skill_config),
+        style_constraints=_collect_style_constraints(effective_skill_config),
         evidence_bundle=evidence_bundle,
         budget=LoopBudget(),
     )
@@ -207,7 +212,7 @@ def run_article_longform_loop(
         rewrite_focus=outline_prompt,
         rewrite_style="article_longform",
         rewrite_config=rewrite_config,
-        skill_config=skill_config,
+        skill_config=effective_skill_config,
         cancellation_checker=cancellation_checker,
         skip_prompt_validation=True,
         rewrite_stage="outline",
@@ -253,7 +258,7 @@ def run_article_longform_loop(
         rewrite_focus=draft_prompt,
         rewrite_style="article_longform",
         rewrite_config=rewrite_config,
-        skill_config=skill_config,
+        skill_config=effective_skill_config,
         cancellation_checker=cancellation_checker,
         skip_prompt_validation=True,
         rewrite_stage="draft",
@@ -263,7 +268,7 @@ def run_article_longform_loop(
     validation = validate_longform_rewrite(
         text=final_result.rewritten_text,
         source_text=normalized_source,
-        skill_config=skill_config,
+        skill_config=effective_skill_config,
         detail_ledger=longform_ledger,
     )
     evidence_bundle = _build_evidence_snapshot(
@@ -356,7 +361,7 @@ def run_article_longform_loop(
             rewrite_focus=next_prompt,
             rewrite_style="article_longform",
             rewrite_config=rewrite_config,
-            skill_config=skill_config,
+            skill_config=effective_skill_config,
             cancellation_checker=cancellation_checker,
             skip_prompt_validation=True,
             rewrite_stage=followup_stage,
@@ -366,7 +371,7 @@ def run_article_longform_loop(
         validation = validate_longform_rewrite(
             text=final_result.rewritten_text,
             source_text=normalized_source,
-            skill_config=skill_config,
+            skill_config=effective_skill_config,
             detail_ledger=longform_ledger,
         )
         evidence_bundle = _build_evidence_snapshot(
@@ -426,6 +431,8 @@ def run_article_longform_loop(
         else:
             failure_stage = "validation"
     loop_snapshot = {
+        "mode": "debug_agent_loop",
+        "speed_mode": speed_mode,
         "state": state.to_snapshot(),
         "goal": goal.to_snapshot(),
         "route": {"key": route_key, "label": route_label, "reason": route_reason},
@@ -944,6 +951,22 @@ def _collect_style_constraints(skill_config: SkillConfig) -> tuple[str, ...]:
         f"{constraint.constraint_type}:{constraint.pattern}"
         for constraint in skill_config.constraints
         if constraint.enabled
+    )
+
+
+def _apply_thin_longform_speed_mode(skill_config: SkillConfig, speed_mode: bool) -> SkillConfig:
+    if not speed_mode:
+        return skill_config
+    output = getattr(skill_config, "output", None)
+    ratio_max = getattr(output, "source_length_ratio_max", None)
+    if ratio_max is None:
+        return skill_config
+    adjusted_ratio_max = min(ratio_max, 0.55)
+    if adjusted_ratio_max == ratio_max:
+        return skill_config
+    return replace(
+        skill_config,
+        output=replace(output, source_length_ratio_max=adjusted_ratio_max),
     )
 
 

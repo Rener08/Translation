@@ -123,9 +123,13 @@ def rewrite_with_openai_compatible(
     messages: list[dict[str, str]],
     *,
     rewrite_style: str,
+    rewrite_stage: str | None = None,
     cancellation_checker=None,
 ) -> str:
-    temperature, max_tokens = rewrite_generation_settings(rewrite_style)
+    temperature, max_tokens = rewrite_generation_settings(
+        rewrite_style,
+        rewrite_stage=rewrite_stage,
+    )
     payload = {
         "model": config.model,
         "messages": messages,
@@ -187,9 +191,13 @@ def rewrite_with_ollama(
     messages: list[dict[str, str]],
     *,
     rewrite_style: str,
+    rewrite_stage: str | None = None,
     cancellation_checker=None,
 ) -> str:
-    temperature, max_tokens = rewrite_generation_settings(rewrite_style)
+    temperature, max_tokens = rewrite_generation_settings(
+        rewrite_style,
+        rewrite_stage=rewrite_stage,
+    )
     payload = {
         "model": config.model,
         "messages": messages,
@@ -237,9 +245,43 @@ def rewrite_with_ollama(
     return content
 
 
-def rewrite_generation_settings(rewrite_style: str) -> tuple[float, int]:
+_THIN_LONGFORM_CONTROL_STAGES = {
+    "collect_evidence",
+    "evidence_summary",
+    "outline",
+    "route",
+    "validation",
+    "validation_summary",
+}
+_THIN_LONGFORM_EDIT_STAGES = {
+    "patch",
+    "re_ground",
+    "repair",
+}
+_THIN_LONGFORM_CONTENT_STAGES = {
+    "draft",
+    "final",
+    "expand",
+    "revision",
+}
+
+
+def rewrite_generation_settings(
+    rewrite_style: str,
+    *,
+    rewrite_stage: str | None = None,
+) -> tuple[float, int]:
     if rewrite_style == "speech_verbatim":
         return 0.7, 32000
+    normalized_stage = str(rewrite_stage or "").strip().lower()
+    if normalized_stage in _THIN_LONGFORM_CONTROL_STAGES:
+        return 0.25, 2048
+    if normalized_stage == "outline":
+        return 0.25, 2048
+    if normalized_stage in _THIN_LONGFORM_EDIT_STAGES:
+        return 0.35, 4096
+    if normalized_stage in _THIN_LONGFORM_CONTENT_STAGES:
+        return 0.4, 8192
     return 0.4, 20000
 
 
